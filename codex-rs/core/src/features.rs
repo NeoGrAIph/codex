@@ -520,7 +520,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Collab,
         key: "collab",
-        stage: Stage::UnderDevelopment,
+        stage: Stage::Experimental {
+            name: "Collaboration (multi-agent)",
+            menu_description:
+                "Enable multi-agent collaboration tools (spawn_agent, send_input, wait, close_agent).",
+            announcement: "",
+        },
         default_enabled: false,
     },
     FeatureSpec {
