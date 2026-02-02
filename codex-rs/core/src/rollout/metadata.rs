@@ -311,7 +311,7 @@ mod tests {
             timestamp: "2026-01-27T12:34:56Z".to_string(),
             cwd: dir.path().to_path_buf(),
             originator: "cli".to_string(),
-            cli_version: "0.0.0".to_string(),
+            cli_version: env!("CARGO_PKG_VERSION").to_string(),
             source: SessionSource::default(),
             model_provider: Some("openai".to_string()),
             base_instructions: None,

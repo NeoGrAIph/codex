@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -14,6 +15,7 @@ use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
 use crate::agent::MAX_THREAD_SPAWN_DEPTH;
 use crate::agent::agent_status_from_event;
+use crate::agent::registry::AgentRegistry;
 use crate::analytics_client::AnalyticsEventsClient;
 use crate::analytics_client::build_track_events_context;
 use crate::compact;
@@ -220,6 +222,24 @@ use codex_utils_readiness::Readiness;
 use codex_utils_readiness::ReadinessFlag;
 use tokio::sync::watch;
 
+/// Instructions for the parent agent on how to use multi-agent collaboration tools.
+const COLLAB_MULTI_AGENT_PROMPT: &str = include_str!("../templates/collab/experimental_prompt.md");
+
+const COLLAB_PROMPT_FILENAME: &str = "colab_prompt.md";
+
+/// Resolves the collab prompt by checking for user overrides in the standard
+/// `.codex/agents/` directories. Repo-local takes precedence over user-global,
+/// matching the agent registry resolution order.
+fn resolve_collab_prompt(cwd: &Path, codex_home: &Path) -> Option<String> {
+    let candidates = [
+        cwd.join(".codex/agents").join(COLLAB_PROMPT_FILENAME),
+        codex_home.join("agents").join(COLLAB_PROMPT_FILENAME),
+    ];
+    candidates
+        .iter()
+        .find_map(|path| std::fs::read_to_string(path).ok())
+}
+
 /// The high-level interface to the Codex system.
 /// It operates as a queue pair where you send submissions and receive events.
 pub struct Codex {
@@ -282,6 +302,11 @@ impl Codex {
         agent_control: AgentControl,
         dynamic_tools: Vec<DynamicToolSpec>,
     ) -> CodexResult<CodexSpawnOk> {
+        // Seed built-in agents if needed
+        if let Err(e) = crate::agent::registry::seed_builtin_agents(&config.codex_home) {
+            warn!("Failed to seed built-in agents: {e}");
+        }
+
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
 
@@ -679,10 +704,42 @@ impl Session {
             transport_manager,
         );
 
+        let (agent_registry_present, agent_descriptions, agent_name_descriptions) =
+            if per_turn_config.features.enabled(Feature::Collab) {
+                let registry = AgentRegistry::load_for_config(per_turn_config.as_ref());
+                let agent_registry_present = !registry.agents.is_empty();
+                let agent_descriptions = if agent_registry_present {
+                    Some(registry.format_agent_descriptions())
+                } else {
+                    None
+                };
+                let agent_name_descriptions = if agent_registry_present {
+                    let formatted = registry.format_agent_name_descriptions();
+                    if formatted.is_empty() {
+                        None
+                    } else {
+                        Some(formatted)
+                    }
+                } else {
+                    None
+                };
+                (
+                    agent_registry_present,
+                    agent_descriptions,
+                    agent_name_descriptions,
+                )
+            } else {
+                (false, None, None)
+            };
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &per_turn_config.features,
             web_search_mode: per_turn_config.web_search_mode,
+            tool_allowlist: per_turn_config.tool_allowlist.as_deref(),
+            tool_denylist: per_turn_config.tool_denylist.as_deref(),
+            agent_registry_present,
+            agent_descriptions,
+            agent_name_descriptions,
         });
 
         TurnContext {
@@ -1890,17 +1947,23 @@ impl Session {
             items.push(DeveloperInstructions::new(developer_instructions.to_string()).into());
         }
         // Add developer instructions from collaboration_mode if they exist and are non-empty
-        let (collaboration_mode, base_instructions) = {
+        let (collaboration_mode, base_instructions, codex_home) = {
             let state = self.state.lock().await;
             (
                 state.session_configuration.collaboration_mode.clone(),
                 state.session_configuration.base_instructions.clone(),
+                state.session_configuration.codex_home.clone(),
             )
         };
         if let Some(collab_instructions) =
             DeveloperInstructions::from_collaboration_mode(&collaboration_mode)
         {
             items.push(collab_instructions.into());
+        }
+        if self.features.enabled(Feature::Collab) {
+            let prompt = resolve_collab_prompt(&turn_context.cwd, &codex_home)
+                .unwrap_or_else(|| COLLAB_MULTI_AGENT_PROMPT.to_string());
+            items.push(DeveloperInstructions::new(prompt).into());
         }
         if self.features.enabled(Feature::Personality)
             && let Some(personality) = turn_context.personality
@@ -3167,10 +3230,42 @@ async fn spawn_review_thread(
         .disable(crate::features::Feature::WebSearchRequest)
         .disable(crate::features::Feature::WebSearchCached);
     let review_web_search_mode = WebSearchMode::Disabled;
+    let (agent_registry_present, agent_descriptions, agent_name_descriptions) =
+        if review_features.enabled(Feature::Collab) {
+            let registry = AgentRegistry::load_for_config(config.as_ref());
+            let agent_registry_present = !registry.agents.is_empty();
+            let agent_descriptions = if agent_registry_present {
+                Some(registry.format_agent_descriptions())
+            } else {
+                None
+            };
+            let agent_name_descriptions = if agent_registry_present {
+                let formatted = registry.format_agent_name_descriptions();
+                if formatted.is_empty() {
+                    None
+                } else {
+                    Some(formatted)
+                }
+            } else {
+                None
+            };
+            (
+                agent_registry_present,
+                agent_descriptions,
+                agent_name_descriptions,
+            )
+        } else {
+            (false, None, None)
+        };
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_info: &review_model_info,
         features: &review_features,
         web_search_mode: Some(review_web_search_mode),
+        tool_allowlist: config.tool_allowlist.as_deref(),
+        tool_denylist: config.tool_denylist.as_deref(),
+        agent_registry_present,
+        agent_descriptions,
+        agent_name_descriptions,
     });
 
     let review_prompt = resolved.prompt.clone();

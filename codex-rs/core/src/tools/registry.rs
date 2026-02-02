@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -218,6 +219,19 @@ impl ToolRegistryBuilder {
     //         }
     //     }
     // }
+
+    pub fn retain_tools<F>(&mut self, mut allow: F)
+    where
+        F: FnMut(&str) -> bool,
+    {
+        self.specs.retain(|spec| allow(spec.spec.name()));
+        let allowed: HashSet<String> = self
+            .specs
+            .iter()
+            .map(|spec| spec.spec.name().to_string())
+            .collect();
+        self.handlers.retain(|name, _| allowed.contains(name));
+    }
 
     pub fn build(self) -> (Vec<ConfiguredToolSpec>, ToolRegistry) {
         let registry = ToolRegistry::new(self.handlers);

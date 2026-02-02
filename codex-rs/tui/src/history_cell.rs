@@ -434,7 +434,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
                 padded_emoji("✨").bold().cyan(),
                 "Update available!".bold().cyan(),
                 " ",
-                format!("{CODEX_CLI_VERSION} -> {}", self.latest_version).bold(),
+                format!("{CODEX_CLI_VERSION} FN -> {}", self.latest_version).bold(),
             ],
             update_instruction,
             "",
@@ -954,7 +954,7 @@ pub(crate) fn new_session_info(
         model.clone(),
         reasoning_effort,
         config.cwd.clone(),
-        CODEX_CLI_VERSION,
+        concat!("FN", env!("CARGO_PKG_VERSION")),
     );
     let mut parts: Vec<Box<dyn HistoryCell>> = vec![Box::new(header)];
 

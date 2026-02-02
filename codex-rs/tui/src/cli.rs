@@ -5,7 +5,7 @@ use codex_common::CliConfigOverrides;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(version)]
+#[command(version = concat!("FN", env!("CARGO_PKG_VERSION")))]
 pub struct Cli {
     /// Optional user prompt to start the session.
     #[arg(value_name = "PROMPT", value_hint = clap::ValueHint::Other)]

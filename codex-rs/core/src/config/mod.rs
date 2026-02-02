@@ -263,8 +263,16 @@ pub struct Config {
     /// Token budget applied when storing tool/function outputs in the context manager.
     pub tool_output_token_limit: Option<usize>,
 
+    /// Optional allow-list of tool names for this session. When set, only these tools are exposed.
+    pub tool_allowlist: Option<Vec<String>>,
+
+    /// Optional deny-list of tool names for this session. Applied after the allow-list.
+    pub tool_denylist: Option<Vec<String>>,
+
     /// Maximum number of agent threads that can be open concurrently.
     pub agent_max_threads: Option<usize>,
+
+    /// Mapping table for agent model aliases to concrete model + reasoning effort.
 
     /// Directory containing all Codex state (defaults to `~/.codex` but can be
     /// overridden by the `CODEX_HOME` environment variable).
@@ -1583,6 +1591,8 @@ impl Config {
                 })
                 .collect(),
             tool_output_token_limit: cfg.tool_output_token_limit,
+            tool_allowlist: None,
+            tool_denylist: None,
             agent_max_threads,
             codex_home,
             config_layer_stack,
@@ -3798,6 +3808,8 @@ model_verbosity = "high"
                 project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
                 project_doc_fallback_filenames: Vec::new(),
                 tool_output_token_limit: None,
+                tool_allowlist: None,
+                tool_denylist: None,
                 agent_max_threads: DEFAULT_AGENT_MAX_THREADS,
                 codex_home: fixture.codex_home(),
                 config_layer_stack: Default::default(),
@@ -3883,6 +3895,8 @@ model_verbosity = "high"
             project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
             project_doc_fallback_filenames: Vec::new(),
             tool_output_token_limit: None,
+            tool_allowlist: None,
+            tool_denylist: None,
             agent_max_threads: DEFAULT_AGENT_MAX_THREADS,
             codex_home: fixture.codex_home(),
             config_layer_stack: Default::default(),
@@ -3983,6 +3997,8 @@ model_verbosity = "high"
             project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
             project_doc_fallback_filenames: Vec::new(),
             tool_output_token_limit: None,
+            tool_allowlist: None,
+            tool_denylist: None,
             agent_max_threads: DEFAULT_AGENT_MAX_THREADS,
             codex_home: fixture.codex_home(),
             config_layer_stack: Default::default(),
@@ -4069,6 +4085,8 @@ model_verbosity = "high"
             project_doc_max_bytes: PROJECT_DOC_MAX_BYTES,
             project_doc_fallback_filenames: Vec::new(),
             tool_output_token_limit: None,
+            tool_allowlist: None,
+            tool_denylist: None,
             agent_max_threads: DEFAULT_AGENT_MAX_THREADS,
             codex_home: fixture.codex_home(),
             config_layer_stack: Default::default(),

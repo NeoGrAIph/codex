@@ -81,7 +81,7 @@ impl ToolHandler for CollabHandler {
 
 mod spawn {
     use super::*;
-    use crate::agent::AgentRole;
+    use crate::agent::registry::AgentRegistry;
 
     use crate::agent::exceeds_thread_spawn_depth_limit;
     use crate::agent::next_thread_spawn_depth;
@@ -92,7 +92,10 @@ mod spawn {
     #[derive(Debug, Deserialize)]
     struct SpawnAgentArgs {
         message: String,
-        agent_type: Option<AgentRole>,
+        /// Agent type to spawn (e.g., worker, reviewer). Resolved from registry.
+        agent_type: Option<String>,
+        /// Optional agent_name within agent_type for alternate instructions.
+        agent_name: Option<String>,
     }
 
     #[derive(Debug, Serialize)]
@@ -107,13 +110,15 @@ mod spawn {
         arguments: String,
     ) -> Result<ToolOutput, FunctionCallError> {
         let args: SpawnAgentArgs = parse_arguments(&arguments)?;
-        let agent_role = args.agent_type.unwrap_or(AgentRole::Default);
+
         let prompt = args.message;
         if prompt.trim().is_empty() {
             return Err(FunctionCallError::RespondToModel(
                 "Empty message can't be sent to an agent".to_string(),
             ));
         }
+        let registry = AgentRegistry::load_for_config(turn.client.config().as_ref());
+
         let session_source = turn.client.get_session_source();
         let child_depth = next_thread_spawn_depth(&session_source);
         if exceeds_thread_spawn_depth_limit(child_depth) {
@@ -137,9 +142,22 @@ mod spawn {
             turn.as_ref(),
             child_depth,
         )?;
-        agent_role
-            .apply_to_config(&mut config)
-            .map_err(FunctionCallError::RespondToModel)?;
+
+        // Resolve agent by agent_type from registry
+        if let Some(agent_type) = args.agent_type.as_deref() {
+            let agent_def = registry.find(agent_type).ok_or_else(|| {
+                let available: Vec<_> = registry.agents.iter().map(|a| a.name.as_str()).collect();
+                FunctionCallError::RespondToModel(format!(
+                    "Agent type '{}' not found. Available: {}",
+                    agent_type,
+                    available.join(", ")
+                ))
+            })?;
+
+            agent_def
+                .apply_to_config(&mut config, args.agent_name.as_deref())
+                .map_err(FunctionCallError::RespondToModel)?;
+        }
 
         let result = session
             .services
@@ -602,6 +620,7 @@ fn build_agent_spawn_config(
     config.model_reasoning_summary = turn.client.get_reasoning_summary();
     config.developer_instructions = turn.developer_instructions.clone();
     config.compact_prompt = turn.compact_prompt.clone();
+    config.user_instructions = turn.user_instructions.clone();
     config.shell_environment_policy = turn.shell_environment_policy.clone();
     config.codex_linux_sandbox_exe = turn.codex_linux_sandbox_exe.clone();
     config.cwd = turn.cwd.clone();
@@ -1216,7 +1235,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_agent_spawn_config_preserves_base_user_instructions() {
+    async fn build_agent_spawn_config_uses_resolved_user_instructions() {
         let (session, mut turn) = make_session_and_context().await;
         let session_source = turn.client.get_session_source();
         let mut base_config = (*turn.client.config()).clone();
@@ -1224,7 +1243,7 @@ mod tests {
         turn.user_instructions = Some("resolved-user".to_string());
         let transport_manager = turn.client.transport_manager();
         turn.client = ModelClient::new(
-            Arc::new(base_config.clone()),
+            Arc::new(base_config),
             Some(session.services.auth_manager.clone()),
             turn.client.get_model_info(),
             turn.client.get_otel_manager(),
@@ -1241,6 +1260,6 @@ mod tests {
 
         let config = build_agent_spawn_config(&base_instructions, &turn, 0).expect("spawn config");
 
-        assert_eq!(config.user_instructions, base_config.user_instructions);
+        assert_eq!(config.user_instructions, turn.user_instructions);
     }
 }

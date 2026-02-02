@@ -29,7 +29,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-use crate::version::CODEX_CLI_VERSION;
 use codex_backend_client::Client as BackendClient;
 use codex_chatgpt::connectors;
 use codex_core::config::Config;
@@ -5406,7 +5405,7 @@ impl ChatWidget {
             placeholder_style,
             None,
             config.cwd.clone(),
-            CODEX_CLI_VERSION,
+            concat!("FN", env!("CARGO_PKG_VERSION")),
         ))
     }
 

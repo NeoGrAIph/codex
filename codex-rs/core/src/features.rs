@@ -517,17 +517,19 @@ pub const FEATURES: &[FeatureSpec] = &[
         stage: Stage::Stable,
         default_enabled: true,
     },
+    // === FORK: COLLAB PROMOTED TO EXPERIMENTAL START ===
+    // Original: Stage::UnderDevelopment
     FeatureSpec {
         id: Feature::Collab,
         key: "collab",
         stage: Stage::Experimental {
             name: "Collaboration (multi-agent)",
-            menu_description:
-                "Enable multi-agent collaboration tools (spawn_agent, send_input, wait, close_agent).",
+            menu_description: "Enable multi-agent collaboration tools (spawn_agent, send_input, wait, close_agent).",
             announcement: "",
         },
         default_enabled: false,
     },
+    // === FORK: COLLAB PROMOTED TO EXPERIMENTAL END ===
     FeatureSpec {
         id: Feature::Apps,
         key: "apps",
@@ -563,15 +565,22 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::CollaborationModes,
         key: "collaboration_modes",
-        stage: Stage::Stable,
-        default_enabled: true,
+        stage: Stage::Experimental {
+            name: "Collaboration modes",
+            menu_description: "Enable collaboration modes (plan/execute/etc).",
+            announcement: "",
+        },
+        default_enabled: false,
     },
+    // === FORK: PERSONALITY PROMOTED TO STABLE START ===
+    // Original: Stage::Experimental, default_enabled: false
     FeatureSpec {
         id: Feature::Personality,
         key: "personality",
         stage: Stage::Stable,
         default_enabled: true,
     },
+    // === FORK: PERSONALITY PROMOTED TO STABLE END ===
     FeatureSpec {
         id: Feature::ResponsesWebsockets,
         key: "responses_websockets",

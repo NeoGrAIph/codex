@@ -108,7 +108,7 @@ impl UpdatePromptScreen {
         Self {
             request_frame,
             latest_version,
-            current_version: env!("CARGO_PKG_VERSION").to_string(),
+            current_version: format!("{} FN", env!("CARGO_PKG_VERSION")),
             update_action,
             highlighted: UpdateSelection::UpdateNow,
             selection: None,

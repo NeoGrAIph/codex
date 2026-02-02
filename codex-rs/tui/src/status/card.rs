@@ -355,7 +355,7 @@ impl HistoryCell for StatusHistoryCell {
             Span::from(format!("{}>_ ", FieldFormatter::INDENT)).dim(),
             Span::from("OpenAI Codex").bold(),
             Span::from(" ").dim(),
-            Span::from(format!("(v{CODEX_CLI_VERSION})")).dim(),
+            Span::from(format!("(vFN{CODEX_CLI_VERSION})")).dim(),
         ]));
         lines.push(Line::from(Vec::<Span<'static>>::new()));
 

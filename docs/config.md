@@ -24,6 +24,36 @@ Codex can run a notification hook when the agent finishes a turn. See the config
 
 - https://developers.openai.com/codex/config-reference
 
+## Agents registry (YAML)
+
+When the `collab` feature flag is enabled, Codex can discover agent definitions from `agents/` folders alongside each config layer:
+
+- Project: `.codex/agents` (next to `.codex/config.toml`)
+- User: `~/.codex/agents`
+- System: the folder containing the system config file
+
+Each agent file is a Markdown file with YAML frontmatter and an instructions body:
+
+```md
+---
+name: "code-architect"
+description: "Architecture guidance and review."
+model: "gpt-5.2-codex"
+reasoning_effort: "medium"
+color: "cyan"
+tools: ["read_file", "apply_patch"]
+---
+
+You are a senior architect...
+```
+
+`model` must be a valid model slug (no alias mapping is applied). `reasoning_effort` is optional and should be one of: `minimal`, `low`, `medium`, `high`, `xhigh`.
+
+`tools` can be a list or a comma-separated string. If present, it acts as an allowlist
+that is intersected with any existing tool allowlist (it never expands beyond the
+current allowlist), and denylist rules still apply. Use `*` to leave tool access
+unchanged.
+
 ## JSON Schema
 
 The generated JSON Schema for `config.toml` lives at `codex-rs/core/config.schema.json`.

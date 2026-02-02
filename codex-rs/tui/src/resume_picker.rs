@@ -1361,7 +1361,7 @@ mod tests {
                             "timestamp": ts.to_rfc3339(),
                             "cwd": cwd,
                             "originator": "user",
-                            "cli_version": "0.0.0",
+                            "cli_version": env!("CARGO_PKG_VERSION"),
                             "source": "Cli",
                             "model_provider": "openai",
                         }
