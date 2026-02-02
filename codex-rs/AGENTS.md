@@ -19,6 +19,50 @@ git rebase upstream/main
 git push origin main --force-with-lease
 ```
 
+### Adding new fork features
+```bash
+# 1. Start from fork branch
+git checkout fork/colab-agents
+
+# 2. Make changes, use fork markers for inline edits
+# 3. Test
+cargo test -p codex-core
+
+# 4. Commit with "feat(fork):" prefix
+git commit -m "feat(fork): description of change"
+
+# 5. Push
+git push origin fork/colab-agents
+```
+
+### Updating fork after upstream changes
+```bash
+# 1. Sync main with upstream
+git checkout main
+git fetch upstream
+git rebase upstream/main
+git push origin main --force-with-lease
+
+# 2. Rebase fork branch onto updated main
+git checkout fork/colab-agents
+git rebase main
+
+# 3. Resolve conflicts if any:
+#    - Files with FORK markers: keep our changes
+#    - New upstream files: accept upstream
+#    - registry.rs, codex_*.md: always keep ours
+
+# 4. After resolving conflicts
+git rebase --continue
+git push origin fork/colab-agents --force-with-lease
+```
+
+### Conflict resolution tips
+- **Our files** (always keep): `registry.rs`, `tool_allowlist.rs`, `codex_*.md`, `AGENTS.md`
+- **Modified files**: look for `// === FORK:` markers, keep those blocks
+- **spec.rs, codex.rs, collab.rs**: merge carefully, keep fork logic
+- Run tests after resolving: `cargo test -p codex-core`
+
 ### Fork markers in code
 All fork-specific changes are marked with comments:
 ```rust
