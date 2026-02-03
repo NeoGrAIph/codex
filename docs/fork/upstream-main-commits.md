@@ -48,7 +48,7 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 29. 019d89ff8 make codex better at git (#10145) — status: integrated (cherry-pick `695cb113a`); notes: добавлен `x-codex-turn-metadata` (git root + remotes + HEAD), кэш заголовка на сессию, обновлены тесты
 30. d02db8b43 Add `codex app` macOS launcher (#10418) — status: integrated (cherry-pick `106e18ab3`); notes: добавлен macOS launcher, автоскачивание DMG, tooltip `codex app`
 31. 1096d6453 Fix plan implementation prompt reappearing after /agent thread switch (#10447) — status: integrated (cherry-pick `620df12b9`); notes: `saw_plan_item_this_turn` сбрасывается после live TurnComplete, чтобы prompt не дублировался; добавлен тест на replay→live
-32. 8f5edddf7 TUI: Render request_user_input results in history and simplify interrupt handling (#10064) — status: pending
+32. 8f5edddf7 TUI: Render request_user_input results in history and simplify interrupt handling (#10064) — status: integrated (cherry-pick `45c72845e`); notes: добавлен history‑cell с Q/A, interrupt теперь просто `Op::Interrupt` без частичной отправки, тесты обновлены
 33. 66447d5d2 feat: replace custom mcp-types crate with equivalents from rmcp (#10349) — status: pending
 34. 8dd41e229 Fixed sandbox mode inconsistency if untrusted is selected (#10415) — status: pending
 35. 97ff09010 Hide short worked-for label in final separator (#10452) — status: pending
