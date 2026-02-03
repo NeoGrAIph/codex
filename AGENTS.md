@@ -16,6 +16,15 @@ In the codex-rs folder where the rust code lives:
 - When making a change that adds or changes an API, ensure that the documentation in the `docs/` folder is up to date if applicable.
 - If you change `ConfigToml` or nested config types, run `just write-config-schema` to update `codex-rs/core/config.schema.json`.
 
+## Upstream integration workflow (fork/colab-agents)
+
+When integrating upstream changes into the fork, follow this process:
+
+1. **Commit-by-commit only.** Analyze and integrate upstream changes strictly one commit at a time.
+2. **Analyze → plan → confirm → implement.** For each commit, first produce a deep analysis and an integration plan; only implement after explicit confirmation.
+3. **Track status without removing commits.** Update `docs/fork/upstream-main-commits.md` by marking each commit with status and a short integration note (clean cherry-pick vs. manual adaptation). Do not remove commits from the list.
+4. **Canonical-first, fork-preserving.** Prefer upstream behavior as the default, but adapt as needed to preserve and improve fork-specific functionality.
+
 Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, run the tests:
 
 1. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `cargo test -p codex-tui`.
