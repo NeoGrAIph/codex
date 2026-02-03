@@ -54,7 +54,7 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 35. 97ff09010 Hide short worked-for label in final separator (#10452) — status: integrated (cherry-pick `0e94a7c3e`); notes: hide “Worked for” under 60s, add tests for <60s and >=61s
 36. 891ed8740 chore: remove deprecated mcp-types crate (#10357) — status: integrated (cherry-pick `46b9517ea`); notes: удалён legacy `mcp-types` крейт и схемы после миграции на `rmcp`
 37. 0999fd82b app tool tip (#10454) — status: integrated (cherry-pick `f884674f6`); notes: tooltip теперь предлагает `codex app`
-38. fc0537434 chore: add phase to message responseitem (#10455) — status: pending
+38. fc0537434 chore: add phase to message responseitem (#10455) — status: integrated (cherry-pick `4ec9b6452`); notes: добавлен `MessagePhase` и опциональный `phase` в `ResponseItem::Message`, обновлены schema/fixtures и тесты
 39. b8addcddb Require models refresh on cli version mismatch (#10414) — status: pending
 40. 7e07ec8f7 [Codex][CLI] Gate image inputs by model modalities (#10271) — status: pending
 41. cbfd2a37c Trim compaction input (#10374) — status: pending
