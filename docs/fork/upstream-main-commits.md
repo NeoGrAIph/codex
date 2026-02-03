@@ -37,7 +37,7 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 18. 9d976962e Add credits tooltip (#10274) — status: integrated (manual adaptation `aa1635241`)
 19. 0b460eda3 chore: ignore synthetic messages (#10394) — status: integrated (manual adaptation `bba09767a`); notes: исключили synthetic user‑messages (AGENTS instructions + session prefix) без логирования содержимого
 20. 34c0534f6 feat: drop sqlx logging (#10398) — status: integrated (manual adaptation `9f95bc334`)
-21. 74327fa59 Select experimental features with space (#10281) — status: pending
+21. 74327fa59 Select experimental features with space (#10281) — status: integrated (manual adaptation `842af0c3c`)
 22. 059d386f0 feat: add `--experimental` to `generate-ts` (#10402) — status: pending
 23. f50c8b2f8 fix: unsafe auto-approval of git commands (#10258) — status: pending
 24. 0f15ed432 Updated labeler workflow prompt to include "app" label (#10411) — status: pending
