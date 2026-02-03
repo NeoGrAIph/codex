@@ -23,7 +23,7 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 4. 8b95d3e08 fix(rules) Limit rules listed in conversation (#10351) — status: integrated (cherry-pick `ff8bccafa`, чистый cherry-pick); notes: ограничили вывод allow‑prefixes (сортировка по “широте”, лимит по количеству и байтам) и добавили тесты, чтобы список правил не раздувал контекст
 5. 03fcd12e7 Do not append items on override turn context (#10354) — status: integrated (manual adaptation `4f647d392`); doc: `docs/fork/commit-03fcd12e7.md`; notes: перешли на полный `CollaborationMode` в `TurnContext`, override не пишет update‑items до следующего user‑turn, тесты обновлены по upstream‑контракту
 6. 6c22360bc fix(core) Deduplicate prefix_rules before appending (#10309) — status: integrated (manual adaptation `cee4e2915`); notes: дедуп `prefix_rule` перед append, добавлен тест
-7. a90ff831e chore(core) gpt-5.2-codex personality template (#10373) — status: pending
+7. a90ff831e chore(core) gpt-5.2-codex personality template (#10373) — status: integrated (cherry-pick `a90ff831e`)
 8. 08a5ad95a fix(personality) prompt patch (#10375) — status: pending
 9. 974355cfd feat: vendor app-server protocol schema fixtures (#10371) — status: pending
 10. 1644cbfc6 Session picker shows thread_name if set (#10340) — status: pending
