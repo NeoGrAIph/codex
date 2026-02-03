@@ -20,7 +20,7 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 1. 3dd9a37e0 Improve plan mode interaction rules (#10329) — status: integrated (cherry-pick `44bd6a128`)
 2. d3514bbdd Bump thread updated_at on unarchive to refresh sidebar ordering (#10280) — status: integrated (cherry-pick `60abba13d`)
 3. 5fb46187b fix: System skills marker includes nested folders recursively (#10350) — status: integrated (cherry-pick `b46295b5d`)
-4. 8b95d3e08 fix(rules) Limit rules listed in conversation (#10351) — status: pending
+4. 8b95d3e08 fix(rules) Limit rules listed in conversation (#10351) — status: integrated (cherry-pick `ff8bccafa`, чистый cherry-pick); notes: ограничили вывод allow‑prefixes (сортировка по “широте”, лимит по количеству и байтам) и добавили тесты, чтобы список правил не раздувал контекст
 5. 03fcd12e7 Do not append items on override turn context (#10354) — status: pending
 6. 6c22360bc fix(core) Deduplicate prefix_rules before appending (#10309) — status: pending
 7. a90ff831e chore(core) gpt-5.2-codex personality template (#10373) — status: pending
