@@ -31,7 +31,7 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 12. 3cc9122ee feat: experimental flags (#10231) — status: integrated (manual adaptation `cd08d9932`); notes: experimental_api capability + gating, schema filtering, новые fixtures
 13. 4971e96a9 nit: shell snapshot retention to 3 days (#10382) — status: integrated (cherry-pick `4971e96a9`)
 14. e9a774e7a fix: thread listing (#10383) — status: integrated (cherry-pick `e9a774e7a`)
-15. 4f1cfaf89 fix: Rfc3339 casting (#10386) — status: pending
+15. 4f1cfaf89 fix: Rfc3339 casting (#10386) — status: integrated (cherry-pick `4f1cfaf89`)
 16. d1e71cd20 feat: add MCP protocol types and rmcp adapters (#10356) — status: pending
 17. 3392c5af2 Nicer highlighting of slash commands, /plan accepts prompt args and pasted images (#10269) — status: pending
 18. 9d976962e Add credits tooltip (#10274) — status: pending
