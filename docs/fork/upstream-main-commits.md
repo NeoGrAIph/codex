@@ -45,7 +45,7 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 26. 98debeda8 chore(tui) /personalities tip (#10377) — status: integrated (cherry-pick `98debeda8`)
 27. fb2df99cf [feat] persist thread_dynamic_tools in db (#10252) — status: integrated (cherry-pick `fb2df99cf`)
 28. e24058b7a feat: Read personal skills from .agents/skills (#10437) — status: integrated (cherry-pick `e24058b7a`)
-29. 019d89ff8 make codex better at git (#10145) — status: pending
+29. 019d89ff8 make codex better at git (#10145) — status: integrated (cherry-pick `695cb113a`); notes: добавлен `x-codex-turn-metadata` (git root + remotes + HEAD), кэш заголовка на сессию, обновлены тесты
 30. d02db8b43 Add `codex app` macOS launcher (#10418) — status: pending
 31. 1096d6453 Fix plan implementation prompt reappearing after /agent thread switch (#10447) — status: pending
 32. 8f5edddf7 TUI: Render request_user_input results in history and simplify interrupt handling (#10064) — status: pending
