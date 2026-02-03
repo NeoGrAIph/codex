@@ -52,7 +52,7 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 33. 66447d5d2 feat: replace custom mcp-types crate with equivalents from rmcp (#10349) — status: integrated (cherry-pick `2745ebdf7`); notes: rmcp типы + schema/fixtures обновлены; в `mcp_process` оставили `serverInfo.version` = `env!("CARGO_PKG_VERSION")` чтобы совпасть с фактическим ответом сервера
 34. 8dd41e229 Fixed sandbox mode inconsistency if untrusted is selected (#10415) — status: integrated (cherry-pick `750ea03af`); notes: reload config after any explicit trust decision so `/status` reflects untrusted selection
 35. 97ff09010 Hide short worked-for label in final separator (#10452) — status: integrated (cherry-pick `0e94a7c3e`); notes: hide “Worked for” under 60s, add tests for <60s and >=61s
-36. 891ed8740 chore: remove deprecated mcp-types crate (#10357) — status: pending
+36. 891ed8740 chore: remove deprecated mcp-types crate (#10357) — status: integrated (cherry-pick `46b9517ea`); notes: удалён legacy `mcp-types` крейт и схемы после миграции на `rmcp`
 37. 0999fd82b app tool tip (#10454) — status: pending
 38. fc0537434 chore: add phase to message responseitem (#10455) — status: pending
 39. b8addcddb Require models refresh on cli version mismatch (#10414) — status: pending
