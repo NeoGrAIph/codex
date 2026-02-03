@@ -517,19 +517,16 @@ pub const FEATURES: &[FeatureSpec] = &[
         stage: Stage::Stable,
         default_enabled: true,
     },
-    // === FORK: COLLAB PROMOTED TO EXPERIMENTAL START ===
-    // Original: Stage::UnderDevelopment
     FeatureSpec {
         id: Feature::Collab,
         key: "collab",
         stage: Stage::Experimental {
-            name: "Collaboration (multi-agent)",
-            menu_description: "Enable multi-agent collaboration tools (spawn_agent, send_input, wait, close_agent).",
-            announcement: "",
+            name: "Sub-agents",
+            menu_description: "Ask Codex to spawn multiple agents to parallelize the work and win in efficiency.",
+            announcement: "NEW: Sub-agents can now be spawned by Codex. Enable in /experimental and restart Codex!",
         },
         default_enabled: false,
     },
-    // === FORK: COLLAB PROMOTED TO EXPERIMENTAL END ===
     FeatureSpec {
         id: Feature::Apps,
         key: "apps",
@@ -565,22 +562,15 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::CollaborationModes,
         key: "collaboration_modes",
-        stage: Stage::Experimental {
-            name: "Collaboration modes",
-            menu_description: "Enable collaboration modes (plan/execute/etc).",
-            announcement: "",
-        },
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
-    // === FORK: PERSONALITY PROMOTED TO STABLE START ===
-    // Original: Stage::Experimental, default_enabled: false
     FeatureSpec {
         id: Feature::Personality,
         key: "personality",
         stage: Stage::Stable,
         default_enabled: true,
     },
-    // === FORK: PERSONALITY PROMOTED TO STABLE END ===
     FeatureSpec {
         id: Feature::ResponsesWebsockets,
         key: "responses_websockets",

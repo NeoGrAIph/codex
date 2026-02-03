@@ -27,7 +27,7 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 8. 08a5ad95a fix(personality) prompt patch (#10375) — status: integrated (cherry-pick `08a5ad95a`)
 9. 974355cfd feat: vendor app-server protocol schema fixtures (#10371) — status: integrated (manual adaptation `40ceb947c`); notes: добавлены schema fixtures, тест на синхронизацию, `just write-app-server-schema`, fixtures перегенерированы под fork
 10. 1644cbfc6 Session picker shows thread_name if set (#10340) — status: integrated (cherry-pick `1644cbfc6`)
-11. 9513f18bf chore: collab experimental (#10381) — status: pending
+11. 9513f18bf chore: collab experimental (#10381) — status: integrated (cherry-pick `9513f18bf`)
 12. 3cc9122ee feat: experimental flags (#10231) — status: pending
 13. 4971e96a9 nit: shell snapshot retention to 3 days (#10382) — status: pending
 14. e9a774e7a fix: thread listing (#10383) — status: pending
