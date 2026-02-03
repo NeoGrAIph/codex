@@ -39,7 +39,7 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 20. 34c0534f6 feat: drop sqlx logging (#10398) — status: integrated (manual adaptation `9f95bc334`)
 21. 74327fa59 Select experimental features with space (#10281) — status: integrated (manual adaptation `842af0c3c`)
 22. 059d386f0 feat: add `--experimental` to `generate-ts` (#10402) — status: pending
-23. f50c8b2f8 fix: unsafe auto-approval of git commands (#10258) — status: pending
+23. f50c8b2f8 fix: unsafe auto-approval of git commands (#10258) — status: integrated (manual adaptation `298b1552b`)
 24. 0f15ed432 Updated labeler workflow prompt to include "app" label (#10411) — status: pending
 25. a5066bef78 emit a separate metric when the user cancels UAT during elevated setup (#10399) — status: pending
 26. 98debeda8 chore(tui) /personalities tip (#10377) — status: pending
