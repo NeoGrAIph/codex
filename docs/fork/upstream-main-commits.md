@@ -35,7 +35,7 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 16. d1e71cd20 feat: add MCP protocol types and rmcp adapters (#10356) — status: integrated (cherry-pick `d1e71cd20`)
 17. 3392c5af2 Nicer highlighting of slash commands, /plan accepts prompt args and pasted images (#10269) — status: integrated (cherry-pick `3392c5af2`)
 18. 9d976962e Add credits tooltip (#10274) — status: integrated (manual adaptation `aa1635241`)
-19. 0b460eda3 chore: ignore synthetic messages (#10394) — status: pending
+19. 0b460eda3 chore: ignore synthetic messages (#10394) — status: integrated (manual adaptation `bba09767a`); notes: исключили synthetic user‑messages (AGENTS instructions + session prefix) без логирования содержимого
 20. 34c0534f6 feat: drop sqlx logging (#10398) — status: pending
 21. 74327fa59 Select experimental features with space (#10281) — status: pending
 22. 059d386f0 feat: add `--experimental` to `generate-ts` (#10402) — status: pending
