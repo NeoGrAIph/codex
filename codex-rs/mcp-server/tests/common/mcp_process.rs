@@ -175,8 +175,7 @@ impl McpProcess {
                     "user_agent": user_agent
                 },
                 "protocolVersion": ProtocolVersion::V_2025_03_26
-            }),
-            initialized
+            })
         );
 
         // Send notifications/initialized to ack the response.

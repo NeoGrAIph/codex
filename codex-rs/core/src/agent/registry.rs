@@ -216,11 +216,7 @@ impl AgentRegistry {
             if agent.agent_name_descriptions.is_empty() {
                 continue;
             }
-            let mut agent_names = agent
-                .agent_name_descriptions
-                .iter()
-                .map(|(name, description)| (name, description))
-                .collect::<Vec<_>>();
+            let mut agent_names = agent.agent_name_descriptions.iter().collect::<Vec<_>>();
             agent_names.sort_by(|a, b| a.0.cmp(b.0));
             let agent_names = agent_names
                 .into_iter()
