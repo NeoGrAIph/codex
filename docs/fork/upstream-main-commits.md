@@ -56,7 +56,7 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 37. 0999fd82b app tool tip (#10454) — status: integrated (cherry-pick `f884674f6`); notes: tooltip теперь предлагает `codex app`
 38. fc0537434 chore: add phase to message responseitem (#10455) — status: integrated (cherry-pick `4ec9b6452`); notes: добавлен `MessagePhase` и опциональный `phase` в `ResponseItem::Message`, обновлены schema/fixtures и тесты
 39. b8addcddb Require models refresh on cli version mismatch (#10414) — status: integrated (cherry-pick `111af2e47`); notes: добавлен `client_version` в models cache + refresh при несовпадении версии CLI
-40. 7e07ec8f7 [Codex][CLI] Gate image inputs by model modalities (#10271) — status: pending
+40. 7e07ec8f7 [Codex][CLI] Gate image inputs by model modalities (#10271) — status: integrated (cherry-pick `a806118dd`); notes: input_modalities в моделях + TUI блокирует/предупреждает для неподдерживаемых изображений
 41. cbfd2a37c Trim compaction input (#10374) — status: pending
 42. 8b280367b Updated bug and feature templates (#10453) — status: pending
 43. bf87468c2 Restore status after preamble (#10465) — status: pending
