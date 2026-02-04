@@ -47,6 +47,7 @@ use codex_core::features::Feature;
 use codex_core::models_manager::manager::RefreshStrategy;
 use codex_core::models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
 use codex_core::models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
+use codex_core::protocol::AgentStatus;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::DeprecationNoticeEvent;
 use codex_core::protocol::Event;
@@ -55,6 +56,7 @@ use codex_core::protocol::FinalOutput;
 use codex_core::protocol::ListSkillsResponseEvent;
 use codex_core::protocol::Op;
 use codex_core::protocol::SandboxPolicy;
+use codex_core::protocol::SessionSource as ProtocolSessionSource;
 use codex_core::protocol::SessionSource;
 use codex_core::protocol::SkillErrorInfo;
 use codex_core::protocol::TokenUsage;
@@ -78,6 +80,7 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
+use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use std::collections::BTreeMap;
@@ -103,6 +106,39 @@ use toml::Value as TomlValue;
 
 const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue.";
 const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
+
+fn agent_status_from_event_msg(msg: &EventMsg) -> Option<AgentStatus> {
+    match msg {
+        EventMsg::TurnStarted(_) => Some(AgentStatus::Running),
+        EventMsg::TurnComplete(ev) => Some(AgentStatus::Completed(ev.last_agent_message.clone())),
+        EventMsg::TurnAborted(ev) => Some(AgentStatus::Errored(format!("{:?}", ev.reason))),
+        EventMsg::Error(ev) => Some(AgentStatus::Errored(ev.message.clone())),
+        EventMsg::ShutdownComplete => Some(AgentStatus::Shutdown),
+        _ => None,
+    }
+}
+
+fn status_span(status: &AgentStatus) -> Span<'static> {
+    match status {
+        AgentStatus::PendingInit => "pending init".dim(),
+        AgentStatus::Running => "running".cyan(),
+        AgentStatus::Completed(_) => "completed".green(),
+        AgentStatus::Errored(_) => "errored".red(),
+        AgentStatus::Shutdown => "shutdown".dim(),
+        AgentStatus::NotFound => "not found".red(),
+    }
+}
+
+fn format_elapsed(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        let mins = secs / 60;
+        let rem = secs % 60;
+        format!("{mins}m{rem:02}s")
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AppExitInfo {
@@ -513,6 +549,13 @@ async fn handle_model_migration_prompt_if_needed(
     None
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CtrlTOverlayMode {
+    Transcript,
+    AgentsSummary,
+    AgentsDetails,
+}
+
 pub(crate) struct App {
     pub(crate) server: Arc<ThreadManager>,
     pub(crate) otel_manager: OtelManager,
@@ -533,6 +576,7 @@ pub(crate) struct App {
 
     // Pager overlay state (Transcript or Static like Diff)
     pub(crate) overlay: Option<Overlay>,
+    ctrl_t_overlay_mode: Option<CtrlTOverlayMode>,
     pub(crate) deferred_history_lines: Vec<Line<'static>>,
     has_emitted_history_lines: bool,
 
@@ -565,6 +609,8 @@ pub(crate) struct App {
     primary_thread_id: Option<ThreadId>,
     primary_session_configured: Option<SessionConfiguredEvent>,
     pending_primary_events: VecDeque<Event>,
+    collab_thread_created_at: HashMap<ThreadId, Instant>,
+    collab_thread_sources: HashMap<ThreadId, ProtocolSessionSource>,
 }
 
 #[derive(Default)]
@@ -592,6 +638,174 @@ fn normalize_harness_overrides_for_cwd(
 }
 
 impl App {
+    pub(crate) fn clear_ctrl_t_overlay_mode(&mut self) {
+        self.ctrl_t_overlay_mode = None;
+    }
+
+    pub(crate) async fn cycle_ctrl_t_overlay(&mut self, tui: &mut tui::Tui) {
+        match self.ctrl_t_overlay_mode {
+            None => {
+                self.open_transcript_overlay(tui);
+                self.ctrl_t_overlay_mode = Some(CtrlTOverlayMode::Transcript);
+            }
+            Some(CtrlTOverlayMode::Transcript) => {
+                self.backtrack.overlay_preview_active = false;
+                self.open_agents_summary_overlay(tui).await;
+                self.ctrl_t_overlay_mode = Some(CtrlTOverlayMode::AgentsSummary);
+            }
+            Some(CtrlTOverlayMode::AgentsSummary) => {
+                self.open_agents_details_overlay(tui).await;
+                self.ctrl_t_overlay_mode = Some(CtrlTOverlayMode::AgentsDetails);
+            }
+            Some(CtrlTOverlayMode::AgentsDetails) => {
+                self.clear_ctrl_t_overlay_mode();
+                self.close_transcript_overlay(tui);
+            }
+        }
+    }
+
+    async fn open_agents_summary_overlay(&mut self, tui: &mut tui::Tui) {
+        let _ = tui.enter_alt_screen();
+        let lines = self.build_agents_summary_lines().await;
+        self.overlay = Some(Overlay::new_static_with_lines(
+            lines,
+            "A G E N T S".to_string(),
+        ));
+        tui.frame_requester().schedule_frame();
+    }
+
+    async fn open_agents_details_overlay(&mut self, tui: &mut tui::Tui) {
+        let _ = tui.enter_alt_screen();
+        let lines = self.build_agents_details_lines().await;
+        self.overlay = Some(Overlay::new_static_with_lines(
+            lines,
+            "A G E N T S   (details)".to_string(),
+        ));
+        tui.frame_requester().schedule_frame();
+    }
+
+    async fn build_agents_summary_lines(&self) -> Vec<Line<'static>> {
+        let now = Instant::now();
+        let mut thread_ids: Vec<_> = self
+            .collab_thread_sources
+            .iter()
+            .filter_map(|(id, source)| {
+                matches!(source, ProtocolSessionSource::SubAgent(_)).then_some(*id)
+            })
+            .collect();
+        thread_ids.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+
+        if thread_ids.is_empty() {
+            return vec!["No active sub-agent threads.".italic().into()];
+        }
+
+        let mut out: Vec<Line<'static>> = Vec::with_capacity(thread_ids.len() + 2);
+        out.push("Sub-agents spawned in this session:".bold().into());
+        out.push("".into());
+
+        for id in thread_ids {
+            let created_at = self
+                .collab_thread_created_at
+                .get(&id)
+                .copied()
+                .unwrap_or(now);
+            let elapsed = now.saturating_duration_since(created_at);
+            let status = self.latest_agent_status(id).await;
+            let label = status_span(&status);
+            let elapsed_s = format_elapsed(elapsed);
+            out.push(
+                vec![
+                    "• ".into(),
+                    id.to_string().dim(),
+                    "  ".into(),
+                    label,
+                    "  ".into(),
+                    elapsed_s.dim(),
+                ]
+                .into(),
+            );
+        }
+
+        out
+    }
+
+    async fn build_agents_details_lines(&self) -> Vec<Line<'static>> {
+        let now = Instant::now();
+        let mut thread_ids: Vec<_> = self
+            .collab_thread_sources
+            .iter()
+            .filter_map(|(id, source)| {
+                matches!(source, ProtocolSessionSource::SubAgent(_)).then_some(*id)
+            })
+            .collect();
+        thread_ids.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+
+        if thread_ids.is_empty() {
+            return vec!["No active sub-agent threads.".italic().into()];
+        }
+
+        let mut out: Vec<Line<'static>> = Vec::new();
+        for (idx, id) in thread_ids.into_iter().enumerate() {
+            if idx > 0 {
+                out.push("".into());
+            }
+            let created_at = self
+                .collab_thread_created_at
+                .get(&id)
+                .copied()
+                .unwrap_or(now);
+            let elapsed = now.saturating_duration_since(created_at);
+            let status = self.latest_agent_status(id).await;
+            let label = status_span(&status);
+            let elapsed_s = format_elapsed(elapsed);
+
+            out.push(
+                vec![
+                    "• ".into(),
+                    id.to_string().cyan().bold(),
+                    "  ".into(),
+                    label,
+                    "  ".into(),
+                    elapsed_s.dim(),
+                ]
+                .into(),
+            );
+
+            let tail = self.latest_agent_event_tail(id, 12).await;
+            for line in tail {
+                out.push(line);
+            }
+        }
+
+        out
+    }
+
+    async fn latest_agent_status(&self, thread_id: ThreadId) -> codex_core::protocol::AgentStatus {
+        let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+            return codex_core::protocol::AgentStatus::PendingInit;
+        };
+        let snapshot = channel.store.lock().await.snapshot();
+        let mut status = codex_core::protocol::AgentStatus::PendingInit;
+        for event in snapshot.events {
+            if let Some(next) = agent_status_from_event_msg(&event.msg) {
+                status = next;
+            }
+        }
+        status
+    }
+
+    async fn latest_agent_event_tail(&self, thread_id: ThreadId, max: usize) -> Vec<Line<'static>> {
+        let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+            return Vec::new();
+        };
+        let snapshot = channel.store.lock().await.snapshot();
+        let start = snapshot.events.len().saturating_sub(max);
+        snapshot.events[start..]
+            .iter()
+            .map(|event| format!("  └ {:?}", event.msg).dim().into())
+            .collect()
+    }
+
     pub fn chatwidget_init_for_forked_or_resumed_thread(
         &self,
         tui: &mut tui::Tui,
@@ -857,6 +1071,7 @@ impl App {
 
     fn reset_for_thread_switch(&mut self, tui: &mut tui::Tui) -> Result<()> {
         self.overlay = None;
+        self.ctrl_t_overlay_mode = None;
         self.transcript_cells.clear();
         self.deferred_history_lines.clear();
         self.has_emitted_history_lines = false;
@@ -873,6 +1088,8 @@ impl App {
         self.active_thread_rx = None;
         self.primary_thread_id = None;
         self.pending_primary_events.clear();
+        self.collab_thread_created_at.clear();
+        self.collab_thread_sources.clear();
     }
 
     async fn drain_active_thread_events(&mut self, tui: &mut tui::Tui) -> Result<()> {
@@ -1096,6 +1313,7 @@ impl App {
             enhanced_keys_supported,
             transcript_cells: Vec::new(),
             overlay: None,
+            ctrl_t_overlay_mode: None,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
@@ -1112,6 +1330,8 @@ impl App {
             primary_thread_id: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
+            collab_thread_created_at: HashMap::new(),
+            collab_thread_sources: HashMap::new(),
         };
 
         // On startup, if Agent mode (workspace-write) or ReadOnly is active, warn about world-writable dirs on Windows.
@@ -2251,6 +2471,10 @@ impl App {
             }
         };
         let config_snapshot = thread.config_snapshot().await;
+        self.collab_thread_created_at
+            .insert(thread_id, Instant::now());
+        self.collab_thread_sources
+            .insert(thread_id, config_snapshot.session_source.clone());
         let event = Event {
             id: String::new(),
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
@@ -2409,10 +2633,7 @@ impl App {
                 kind: KeyEventKind::Press,
                 ..
             } => {
-                // Enter alternate screen and set viewport to full size.
-                let _ = tui.enter_alt_screen();
-                self.overlay = Some(Overlay::new_transcript(self.transcript_cells.clone()));
-                tui.frame_requester().schedule_frame();
+                self.cycle_ctrl_t_overlay(tui).await;
             }
             KeyEvent {
                 code: KeyCode::Char('g'),
@@ -2629,6 +2850,7 @@ mod tests {
             file_search,
             transcript_cells: Vec::new(),
             overlay: None,
+            ctrl_t_overlay_mode: None,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
             enhanced_keys_supported: false,
@@ -2646,6 +2868,8 @@ mod tests {
             primary_thread_id: None,
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
+            collab_thread_created_at: HashMap::new(),
+            collab_thread_sources: HashMap::new(),
         }
     }
 
@@ -2682,6 +2906,7 @@ mod tests {
                 file_search,
                 transcript_cells: Vec::new(),
                 overlay: None,
+                ctrl_t_overlay_mode: None,
                 deferred_history_lines: Vec::new(),
                 has_emitted_history_lines: false,
                 enhanced_keys_supported: false,
@@ -2699,6 +2924,8 @@ mod tests {
                 primary_thread_id: None,
                 primary_session_configured: None,
                 pending_primary_events: VecDeque::new(),
+                collab_thread_created_at: HashMap::new(),
+                collab_thread_sources: HashMap::new(),
             },
             rx,
             op_rx,

@@ -43,6 +43,7 @@ use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
 
 /// Aggregates all backtrack-related state used by the App.
 #[derive(Default)]
@@ -107,6 +108,17 @@ impl App {
         tui: &mut tui::Tui,
         event: TuiEvent,
     ) -> Result<bool> {
+        if let TuiEvent::Key(KeyEvent {
+            code: KeyCode::Char('t'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            ..
+        }) = event
+        {
+            self.cycle_ctrl_t_overlay(tui).await;
+            return Ok(true);
+        }
+
         if self.backtrack.overlay_preview_active {
             match event {
                 TuiEvent::Key(KeyEvent {
@@ -233,6 +245,7 @@ impl App {
             tui.insert_history_lines(lines);
         }
         self.overlay = None;
+        self.clear_ctrl_t_overlay_mode();
         self.backtrack.overlay_preview_active = false;
         if was_backtrack {
             // Ensure backtrack state is fully reset when overlay closes (e.g. via 'q').

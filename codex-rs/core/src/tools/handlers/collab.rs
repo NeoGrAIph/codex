@@ -85,9 +85,13 @@ mod spawn {
 
     use crate::agent::exceeds_thread_spawn_depth_limit;
     use crate::agent::next_thread_spawn_depth;
+    use crate::agent::status::is_final;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SubAgentSource;
     use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::watch::Receiver;
+    use tokio::time::Instant;
 
     #[derive(Debug, Deserialize)]
     struct SpawnAgentArgs {
@@ -112,6 +116,8 @@ mod spawn {
         let args: SpawnAgentArgs = parse_arguments(&arguments)?;
 
         let prompt = args.message;
+        let agent_type = args.agent_type.clone();
+        let agent_name = args.agent_name.clone();
         if prompt.trim().is_empty() {
             return Err(FunctionCallError::RespondToModel(
                 "Empty message can't be sent to an agent".to_string(),
@@ -183,7 +189,7 @@ mod spawn {
             .send_event(
                 &turn,
                 CollabAgentSpawnEndEvent {
-                    call_id,
+                    call_id: call_id.clone(),
                     sender_thread_id: session.conversation_id,
                     new_thread_id,
                     prompt,
@@ -193,6 +199,15 @@ mod spawn {
             )
             .await;
         let new_thread_id = result?;
+        maybe_spawn_status_relay(
+            session.clone(),
+            turn.clone(),
+            call_id.clone(),
+            new_thread_id,
+            agent_type,
+            agent_name,
+        )
+        .await;
 
         let content = serde_json::to_string(&SpawnAgentResult {
             agent_id: new_thread_id.to_string(),
@@ -206,6 +221,150 @@ mod spawn {
             success: Some(true),
             content_items: None,
         })
+    }
+
+    async fn maybe_spawn_status_relay(
+        session: Arc<Session>,
+        turn: Arc<TurnContext>,
+        call_id: String,
+        receiver_thread_id: ThreadId,
+        agent_type: Option<String>,
+        agent_name: Option<String>,
+    ) {
+        let Ok(status_rx) = session
+            .services
+            .agent_control
+            .subscribe_status(receiver_thread_id)
+            .await
+        else {
+            return;
+        };
+
+        spawn_status_relay_task(
+            session,
+            turn,
+            call_id,
+            receiver_thread_id,
+            agent_type,
+            agent_name,
+            status_rx,
+        );
+    }
+
+    pub(super) fn spawn_status_relay_task(
+        session: Arc<Session>,
+        turn: Arc<TurnContext>,
+        call_id: String,
+        receiver_thread_id: ThreadId,
+        agent_type: Option<String>,
+        agent_name: Option<String>,
+        mut status_rx: Receiver<AgentStatus>,
+    ) {
+        let start = Instant::now();
+        tokio::spawn(async move {
+            let mut last_emitted: Option<AgentStatus> = None;
+            loop {
+                let status = status_rx.borrow().clone();
+                if last_emitted.as_ref() != Some(&status) {
+                    emit_status_change(
+                        &session,
+                        &turn,
+                        &call_id,
+                        receiver_thread_id,
+                        agent_type.as_deref(),
+                        agent_name.as_deref(),
+                        start.elapsed(),
+                        &status,
+                    )
+                    .await;
+                    last_emitted = Some(status.clone());
+                }
+
+                if is_final(&status) {
+                    break;
+                }
+
+                if status_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    async fn emit_status_change(
+        session: &Session,
+        turn: &TurnContext,
+        call_id: &str,
+        receiver_thread_id: ThreadId,
+        agent_type: Option<&str>,
+        agent_name: Option<&str>,
+        elapsed: Duration,
+        status: &AgentStatus,
+    ) {
+        let agent_label = agent_label(agent_type, agent_name);
+        let elapsed = format_elapsed(elapsed);
+        let base = format!("agent {agent_label} ({receiver_thread_id}) [{call_id}]");
+
+        let message = match status {
+            AgentStatus::PendingInit => return,
+            AgentStatus::Running => format!("{base} started"),
+            AgentStatus::Completed(last) => {
+                let preview = last
+                    .as_deref()
+                    .map(|text| preview_single_line(text, 240))
+                    .filter(|text| !text.is_empty());
+                match preview {
+                    Some(preview) => format!("{base} completed in {elapsed}: {preview}"),
+                    None => format!("{base} completed in {elapsed}"),
+                }
+            }
+            AgentStatus::Errored(err) => {
+                let preview = preview_single_line(err, 240);
+                if preview.is_empty() {
+                    format!("{base} errored in {elapsed}")
+                } else {
+                    format!("{base} errored in {elapsed}: {preview}")
+                }
+            }
+            AgentStatus::Shutdown => format!("{base} shutdown in {elapsed}"),
+            AgentStatus::NotFound => return,
+        };
+
+        session.notify_background_event(turn, message).await;
+    }
+
+    fn agent_label(agent_type: Option<&str>, agent_name: Option<&str>) -> String {
+        match (agent_type, agent_name) {
+            (Some(agent_type), Some(agent_name)) => format!("{agent_type}/{agent_name}"),
+            (Some(agent_type), None) => agent_type.to_string(),
+            (None, Some(agent_name)) => agent_name.to_string(),
+            (None, None) => "default".to_string(),
+        }
+    }
+
+    fn format_elapsed(elapsed: Duration) -> String {
+        let secs = elapsed.as_secs_f64();
+        if secs < 1.0 {
+            format!("{:.0}ms", secs * 1000.0)
+        } else {
+            format!("{secs:.1}s")
+        }
+    }
+
+    fn preview_single_line(text: &str, max_chars: usize) -> String {
+        let mut out = String::with_capacity(max_chars.min(text.len()));
+        let mut count = 0usize;
+        for ch in text.chars() {
+            if ch == '\n' || ch == '\r' {
+                break;
+            }
+            out.push(ch);
+            count += 1;
+            if count >= max_chars {
+                break;
+            }
+        }
+        out.trim().to_string()
     }
 }
 
@@ -654,9 +813,12 @@ mod tests {
     use crate::built_in_model_providers;
     use crate::client::ModelClient;
     use crate::codex::make_session_and_context;
+    use crate::codex::make_session_and_context_with_rx;
     use crate::config::types::ShellEnvironmentPolicy;
     use crate::function_tool::FunctionCallError;
     use crate::protocol::AskForApproval;
+    use crate::protocol::BackgroundEventEvent;
+    use crate::protocol::EventMsg;
     use crate::protocol::Op;
     use crate::protocol::SandboxPolicy;
     use crate::protocol::SessionSource;
@@ -671,6 +833,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::Mutex;
+    use tokio::sync::watch;
     use tokio::time::timeout;
 
     fn invocation(
@@ -818,6 +981,51 @@ mod tests {
                 "Agent depth limit reached. Solve the task yourself.".to_string()
             )
         );
+    }
+
+    #[tokio::test]
+    async fn status_relay_emits_background_events_on_status_changes() {
+        let (session, turn, rx_event) = make_session_and_context_with_rx().await;
+        let receiver_thread_id = ThreadId::new();
+
+        let (tx, status_rx) = watch::channel(AgentStatus::PendingInit);
+        spawn::spawn_status_relay_task(
+            session.clone(),
+            turn.clone(),
+            "call-xyz".to_string(),
+            receiver_thread_id,
+            Some("worker".to_string()),
+            None,
+            status_rx,
+        );
+
+        // Drive status changes.
+        tokio::task::yield_now().await;
+        tx.send(AgentStatus::Running).expect("send running");
+        tokio::task::yield_now().await;
+        tx.send(AgentStatus::Completed(Some("done\nmore".to_string())))
+            .expect("send completed");
+
+        let mut saw_completed = false;
+        let deadline = Duration::from_secs(2);
+        let read = async move {
+            while !saw_completed {
+                let event = rx_event.recv().await.expect("event");
+                let EventMsg::BackgroundEvent(BackgroundEventEvent { message }) = event.msg else {
+                    continue;
+                };
+                if message.contains("completed") {
+                    saw_completed = true;
+                    assert!(message.contains(&receiver_thread_id.to_string()));
+                    assert!(message.contains("[call-xyz]"));
+                    assert!(message.contains("done"));
+                    assert!(!message.contains('\n'));
+                }
+            }
+        };
+        timeout(deadline, read)
+            .await
+            .expect("background events should arrive");
     }
 
     #[tokio::test]
