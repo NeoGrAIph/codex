@@ -2633,7 +2633,9 @@ impl App {
                 kind: KeyEventKind::Press,
                 ..
             } => {
-                self.cycle_ctrl_t_overlay(tui).await;
+                if self.config.features.enabled(Feature::CollaborationModes) {
+                    self.cycle_ctrl_t_overlay(tui).await;
+                }
             }
             KeyEvent {
                 code: KeyCode::Char('t'),
@@ -2641,7 +2643,11 @@ impl App {
                 kind: KeyEventKind::Press,
                 ..
             } => {
-                self.cycle_ctrl_t_overlay(tui).await;
+                // Native transcript pager shortcut (upstream): do not conflate this with the
+                // multi-agent overlay cycle which is bound to Ctrl+N.
+                if self.overlay.is_none() {
+                    self.open_transcript_overlay(tui);
+                }
             }
             KeyEvent {
                 code: KeyCode::Char('g'),

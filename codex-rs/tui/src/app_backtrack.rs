@@ -34,6 +34,7 @@ use crate::history_cell::UserHistoryCell;
 use crate::pager_overlay::Overlay;
 use crate::tui;
 use crate::tui::TuiEvent;
+use codex_core::features::Feature;
 use codex_core::protocol::CodexErrorInfo;
 use codex_core::protocol::ErrorEvent;
 use codex_core::protocol::EventMsg;
@@ -110,14 +111,16 @@ impl App {
         event: TuiEvent,
     ) -> Result<bool> {
         if let TuiEvent::Key(KeyEvent {
-            code: KeyCode::Char('n') | KeyCode::Char('t'),
+            code: KeyCode::Char('n'),
             modifiers: KeyModifiers::CONTROL,
             kind: KeyEventKind::Press,
             ..
         }) = event
         {
-            self.cycle_ctrl_t_overlay(tui).await;
-            return Ok(true);
+            if self.config.features.enabled(Feature::CollaborationModes) {
+                self.cycle_ctrl_t_overlay(tui).await;
+                return Ok(true);
+            }
         }
 
         if self.backtrack.overlay_preview_active {
