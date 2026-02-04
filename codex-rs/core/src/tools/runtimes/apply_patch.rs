@@ -46,18 +46,72 @@ impl ApplyPatchRuntime {
         Self
     }
 
-    fn build_command_spec(req: &ApplyPatchRequest) -> Result<CommandSpec, ToolError> {
-        use std::env;
-        let exe = if let Some(path) = &req.codex_exe {
-            path.clone()
+    fn is_named_exe(path: &PathBuf, base: &str) -> bool {
+        let file_name = path.file_name().and_then(|name| name.to_str());
+        match file_name {
+            Some(name) if name == base => true,
+            Some(name) if cfg!(windows) => name == format!("{base}.exe"),
+            _ => false,
+        }
+    }
+
+    fn sibling_exe(path: &PathBuf, base: &str) -> Option<PathBuf> {
+        let parent = path.parent()?;
+        let filename = if cfg!(windows) {
+            format!("{base}.exe")
         } else {
-            env::current_exe()
-                .map_err(|e| ToolError::Rejected(format!("failed to determine codex exe: {e}")))?
+            base.to_string()
         };
-        let program = exe.to_string_lossy().to_string();
+        let candidate = parent.join(filename);
+        if candidate.exists() {
+            Some(candidate)
+        } else {
+            None
+        }
+    }
+
+    fn resolve_invoker(req: &ApplyPatchRequest) -> Result<ApplyPatchInvoker, ToolError> {
+        if let Some(path) = &req.codex_exe {
+            if Self::is_named_exe(path, "apply_patch") {
+                return Ok(ApplyPatchInvoker::ApplyPatch(path.clone()));
+            }
+
+            if Self::is_named_exe(path, "codex-linux-sandbox") {
+                if let Some(candidate) = Self::sibling_exe(path, "codex") {
+                    return Ok(ApplyPatchInvoker::Codex(candidate));
+                }
+                if let Some(candidate) = Self::sibling_exe(path, "apply_patch") {
+                    return Ok(ApplyPatchInvoker::ApplyPatch(candidate));
+                }
+                let exe = std::env::current_exe().map_err(|e| {
+                    ToolError::Rejected(format!("failed to determine codex exe: {e}"))
+                })?;
+                return Ok(ApplyPatchInvoker::Codex(exe));
+            }
+
+            return Ok(ApplyPatchInvoker::Codex(path.clone()));
+        }
+
+        let exe = std::env::current_exe()
+            .map_err(|e| ToolError::Rejected(format!("failed to determine codex exe: {e}")))?;
+        Ok(ApplyPatchInvoker::Codex(exe))
+    }
+
+    fn build_command_spec(req: &ApplyPatchRequest) -> Result<CommandSpec, ToolError> {
+        let invoker = Self::resolve_invoker(req)?;
+        let (program, args) = match invoker {
+            ApplyPatchInvoker::Codex(exe) => (
+                exe.to_string_lossy().to_string(),
+                vec![CODEX_APPLY_PATCH_ARG1.to_string(), req.action.patch.clone()],
+            ),
+            ApplyPatchInvoker::ApplyPatch(exe) => (
+                exe.to_string_lossy().to_string(),
+                vec![req.action.patch.clone()],
+            ),
+        };
         Ok(CommandSpec {
             program,
-            args: vec![CODEX_APPLY_PATCH_ARG1.to_string(), req.action.patch.clone()],
+            args,
             cwd: req.action.cwd.clone(),
             expiration: req.timeout_ms.into(),
             // Run apply_patch with a minimal environment for determinism and to avoid leaks.
@@ -74,6 +128,11 @@ impl ApplyPatchRuntime {
             tx_event: ctx.session.get_tx_event(),
         })
     }
+}
+
+enum ApplyPatchInvoker {
+    Codex(PathBuf),
+    ApplyPatch(PathBuf),
 }
 
 impl Sandboxable for ApplyPatchRuntime {
