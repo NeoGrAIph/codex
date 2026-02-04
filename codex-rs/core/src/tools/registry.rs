@@ -202,6 +202,13 @@ impl ToolRegistryBuilder {
         }
     }
 
+    pub fn spec_names(&self) -> Vec<String> {
+        self.specs
+            .iter()
+            .map(|spec| spec.spec.name().to_string())
+            .collect()
+    }
+
     // TODO(jif) for dynamic tools.
     // pub fn register_many<I>(&mut self, names: I, handler: Arc<dyn ToolHandler>)
     // where

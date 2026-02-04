@@ -1315,6 +1315,7 @@ fn sanitize_json_schema(value: &mut JsonValue) {
 fn tool_allowed(config: &ToolsConfig, tool_name: &str) -> bool {
     if let Some(allowlist) = &config.tool_allowlist
         && !allowlist.allows(tool_name)
+        && !shell_alias_allows_tool(config, allowlist, tool_name)
     {
         return false;
     }
@@ -1324,6 +1325,18 @@ fn tool_allowed(config: &ToolsConfig, tool_name: &str) -> bool {
         return false;
     }
     true
+}
+
+fn shell_alias_allows_tool(
+    config: &ToolsConfig,
+    allowlist: &ToolAllowlist,
+    tool_name: &str,
+) -> bool {
+    if config.shell_type != ConfigShellToolType::UnifiedExec {
+        return false;
+    }
+    matches!(tool_name, "exec_command" | "write_stdin")
+        && (allowlist.allows("shell_command") || allowlist.allows("shell"))
 }
 
 /// Builds the tool registry builder while collecting tool specs for later serialization.
@@ -1523,8 +1536,21 @@ pub(crate) fn build_specs(
         }
     }
 
+    let before_tool_filter = if config.tool_allowlist.is_some() || config.tool_denylist.is_some() {
+        Some(builder.spec_names())
+    } else {
+        None
+    };
     if config.tool_allowlist.is_some() || config.tool_denylist.is_some() {
         builder.retain_tools(|tool_name| tool_allowed(config, tool_name));
+        if let Some(before_names) = before_tool_filter {
+            let after_names = builder.spec_names();
+            if !before_names.is_empty() && after_names.is_empty() {
+                tracing::warn!(
+                    "tool allowlist/denylist filtered out all tools; check agent allowlist"
+                );
+            }
+        }
     }
 
     builder
@@ -1898,6 +1924,28 @@ mod tests {
             "update_plan should be removed by denylist"
         );
         assert_contains_tool_names(&tools, &["request_user_input"]);
+    }
+
+    #[test]
+    fn tool_allowlist_maps_shell_command_to_unified_exec() {
+        let config = test_config();
+        let model_info = ModelsManager::construct_model_info_offline("gpt-5-codex", &config);
+        let mut features = Features::with_defaults();
+        features.enable(Feature::UnifiedExec);
+
+        let allowlist = vec!["shell_command".to_string()];
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: None,
+            tool_allowlist: Some(&allowlist),
+            tool_denylist: None,
+            agent_registry_present: false,
+            agent_descriptions: None,
+            agent_name_descriptions: None,
+        });
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
+        assert_contains_tool_names(&tools, &["exec_command", "write_stdin"]);
     }
 
     fn assert_model_tools(

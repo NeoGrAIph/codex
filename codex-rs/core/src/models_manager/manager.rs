@@ -141,11 +141,19 @@ impl ModelsManager {
             .await
             .into_iter()
             .find(|m| m.slug == model);
-        let model = if let Some(remote) = remote {
+        let mut model = if let Some(remote) = remote {
             remote
         } else {
             model_info::find_model_info_for_slug(model)
         };
+        // === FORK: backfill experimental_supported_tools from local defaults when remote omits them. ===
+        if model.experimental_supported_tools.is_empty() {
+            let local = model_info::find_model_info_for_slug(&model.slug);
+            if !local.experimental_supported_tools.is_empty() {
+                model.experimental_supported_tools = local.experimental_supported_tools;
+            }
+        }
+        // === FORK: backfill experimental_supported_tools from local defaults when remote omits them. ===
         model_info::with_config_overrides(model, config)
     }
 
@@ -764,6 +772,41 @@ mod tests {
         let available = manager.build_available_models(vec![hidden_model, visible_model]);
 
         assert_eq!(available, vec![expected_hidden, expected_visible]);
+    }
+
+    #[tokio::test]
+    async fn get_model_info_backfills_experimental_tools_from_local_defaults() {
+        let codex_home = tempdir().expect("temp dir");
+        let mut config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load default test config");
+        config.features.enable(Feature::RemoteModels);
+        let auth_manager =
+            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+        let manager = ModelsManager::new(codex_home.path().to_path_buf(), auth_manager);
+
+        manager
+            .apply_remote_models(vec![remote_model("gpt-5.2-codex", "Codex", 1)])
+            .await;
+
+        let model = manager.get_model_info("gpt-5.2-codex", &config).await;
+        assert!(
+            model
+                .experimental_supported_tools
+                .contains(&"read_file".to_string())
+        );
+        assert!(
+            model
+                .experimental_supported_tools
+                .contains(&"list_dir".to_string())
+        );
+        assert!(
+            model
+                .experimental_supported_tools
+                .contains(&"grep_files".to_string())
+        );
     }
 
     #[test]
