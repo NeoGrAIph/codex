@@ -67,7 +67,6 @@ coverage/
 
 # personal files
 personal/
-scripts/codex-fork-build.sh
 
 # os
 .DS_Store
