@@ -615,9 +615,7 @@ async fn remote_models_merge_preserves_bundled_models_on_empty_response() -> Res
     Ok(())
 }
 
-// === FORK: temporarily ignore flaky timing under load; tracked in docs/fork/multi-agent-notes.md.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "flaky under load: timeout threshold can drift"]
 async fn remote_models_request_times_out_after_5s() -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
