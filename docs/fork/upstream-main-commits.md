@@ -60,7 +60,7 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 41. cbfd2a37c Trim compaction input (#10374) — status: integrated (cherry-pick `b2ae7be71`); notes: учитываем trailing tool output в оценке контекста и режем воспроизводимые хвосты перед remote compaction
 42. 8b280367b Updated bug and feature templates (#10453) — status: integrated (cherry-pick `28f19969e`); notes: обновлены issue templates (версия/вариант продукта)
 43. bf87468c2 Restore status after preamble (#10465) — status: integrated (cherry-pick `486730989`); notes: при exec begin восстанавливаем status indicator после preamble
-44. 59707da85 fix: clarify deprecation message for features.web_search (#10406) — status: pending
+44. 59707da85 fix: clarify deprecation message for features.web_search (#10406) — status: integrated (cherry-pick `506086635`); notes: уточнён текст о `web_search` вне секции `[features]`
 
 ## Likely conflict zones for fork/colab-agents
 
