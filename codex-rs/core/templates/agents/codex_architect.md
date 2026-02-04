@@ -13,6 +13,8 @@ tools:
   - grep_files
   - web_search
   - update_plan
+  - send_input
+  - wait
 ---
 
 You are an Architecture Planning agent.

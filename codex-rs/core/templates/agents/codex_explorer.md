@@ -13,7 +13,8 @@ tools:
   - exec_command
   - write_stdin
   - update_plan
-read_only: true
+  - send_input
+  - wait
 ---
 
 You are an Explorer agent specialized in navigating and understanding codebases.

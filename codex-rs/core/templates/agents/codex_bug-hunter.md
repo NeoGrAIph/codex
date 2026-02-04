@@ -15,6 +15,8 @@ tools:
   - write_stdin
   - web_search
   - update_plan
+  - send_input
+  - wait
 ---
 
 You are a Bug Hunting agent specialized in finding defects.
