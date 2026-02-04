@@ -62,13 +62,13 @@
   1. Вызвать `spawn_agent` с `agent_type=explorer` и задачей “найди в коде X”.
   2. Получить ответ, что доступов/инструментов нет.
 - **Последствия/риск:** multi-agent распараллеливание “ломается” на базовом сценарии (поиск/навигация), теряем основную выгоду от `explorer`.
-- **Предложенное решение:** выяснить реальную причину “tool-less explorer” и сделать поведение детерминированным.
-  Текущая гипотеза (подтверждать кодом): `read_file/list_dir/grep_files` регистрируются только если модель объявляет их в `experimental_supported_tools` (`codex-rs/core/src/tools/spec.rs`), а для `gpt-5.2-codex` в offline `ModelInfo` список пустой (`codex-rs/core/src/models_manager/model_info.rs`). В результате `explorer` получает allowlist на несуществующие в registry tools → остаётся без инструментов.
-  Направления исправления:
-  1) Добавить фолбэк‑инструмент, который реально доступен для базовой модели (`shell_command`), чтобы `explorer` не становился tool-less даже при отсутствии `read_file/list_dir/grep_files`.
-  2) Опционально (отдельным решением): расширить `experimental_supported_tools` для `gpt-5.2-codex`, если хотим продвигать специализированные read-only file tools.
+- **Предложенное решение:** подтвердить источник “tool-less explorer” и сделать поведение детерминированным.
+  Выявленная причина: при включённых `RemoteModels` (по умолчанию) метаданные модели берутся из `codex-rs/core/models.json`. Там для `gpt-5.2-codex` `experimental_supported_tools` был пустой, поэтому `read_file/list_dir/grep_files` не регистрировались в tool registry → allowlist агента указывал на несуществующие инструменты.
+  Исправление:
+  1) Добавить `experimental_supported_tools` для `gpt-5.2-codex` в `codex-rs/core/models.json`.
+  2) Оставить фолбэк‑инструмент `shell_command` у `explorer`, чтобы агент не оставался без инструментария при рассинхроне метаданных.
 - **Связанные материалы:** `docs/fork/colab-agents.md`
 - **Теги:** spawn_agent, explorer, tools, dx, registry, allowlist
-- **Статус:** Resolved (fallback + расширение `experimental_supported_tools` для `gpt-5.2-codex`)
+- **Статус:** Resolved (модельные метаданные + `shell_command` fallback)
 
 ## Улучшения
