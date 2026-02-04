@@ -6,7 +6,7 @@ description: |
 model: gpt-5.2-codex
 reasoning_effort: medium
 color: cyan
-tools: read_file, list_dir, grep_files
+tools: read_file, list_dir, grep_files, shell_command
 read_only: true
 tool_denylist:
   - spawn_agent
@@ -22,7 +22,7 @@ You quickly and efficiently answer questions about codebases:
 - Identify dependencies and relationships
 - Locate specific implementations
 
-You have read-only access and cannot modify files or run commands.
+You have read-only access. Prefer `read_file`, `list_dir`, and `grep_files` when available; if they are unavailable in this runtime, use `shell_command` for read-only inspection (`ls`, `rg`, `sed`, `cat`). Do not modify files or run destructive commands.
 
 # Core Principles
 

@@ -62,10 +62,13 @@
   1. Вызвать `spawn_agent` с `agent_type=explorer` и задачей “найди в коде X”.
   2. Получить ответ, что доступов/инструментов нет.
 - **Последствия/риск:** multi-agent распараллеливание “ломается” на базовом сценарии (поиск/навигация), теряем основную выгоду от `explorer`.
-- **Предложенное решение:** выровнять “что задекларировано в реестре” и “что реально доступно под-агенту”.
-  Возможные направления: добавить реальные read-only tools для sub-agents; или маппинг `read_file/list_dir/grep_files` на существующие инструменты; или гарантировать, что `explorer` может вызывать ограниченный `exec_command` в read-only режиме.
+- **Предложенное решение:** выяснить реальную причину “tool-less explorer” и сделать поведение детерминированным.
+  Текущая гипотеза (подтверждать кодом): `read_file/list_dir/grep_files` регистрируются только если модель объявляет их в `experimental_supported_tools` (`codex-rs/core/src/tools/spec.rs`), а для `gpt-5.2-codex` в offline `ModelInfo` список пустой (`codex-rs/core/src/models_manager/model_info.rs`). В результате `explorer` получает allowlist на несуществующие в registry tools → остаётся без инструментов.
+  Направления исправления:
+  1) Добавить фолбэк‑инструмент, который реально доступен для базовой модели (`shell_command`), чтобы `explorer` не становился tool-less даже при отсутствии `read_file/list_dir/grep_files`.
+  2) Опционально (отдельным решением): расширить `experimental_supported_tools` для `gpt-5.2-codex`, если хотим продвигать специализированные read-only file tools.
 - **Связанные материалы:** `docs/fork/colab-agents.md`
 - **Теги:** spawn_agent, explorer, tools, dx, registry, allowlist
-- **Статус:** Open
+- **Статус:** Resolved (fallback + расширение `experimental_supported_tools` для `gpt-5.2-codex`)
 
 ## Улучшения
