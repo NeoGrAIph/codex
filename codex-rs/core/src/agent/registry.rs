@@ -140,9 +140,9 @@ impl AgentDefinition {
                 .map_err(|err| format!("sandbox_policy invalid: {err}"))?;
         }
 
-        // Apply tool_denylist
+        // Apply tool_denylist (merge with existing)
         if let Some(denylist) = self.tool_denylist.as_ref() {
-            config.tool_denylist = Some(denylist.clone());
+            apply_agent_tool_denylist(config, denylist);
         }
 
         Ok(())
@@ -828,6 +828,16 @@ fn apply_agent_tool_allowlist(config: &mut Config, tools: &[String]) {
     config.tool_allowlist = Some(next);
 }
 
+fn apply_agent_tool_denylist(config: &mut Config, denylist: &[String]) {
+    let mut next = config.tool_denylist.take().unwrap_or_default();
+    for tool in denylist {
+        if !next.contains(tool) {
+            next.push(tool.clone());
+        }
+    }
+    config.tool_denylist = if next.is_empty() { None } else { Some(next) };
+}
+
 /// Seeds built-in agents to ~/.codex/agents/ if no codex_*.md files exist.
 ///
 /// This function checks if the agents directory contains any files with the
@@ -985,6 +995,42 @@ Instructions for the agent
         assert_eq!(
             agent.tool_denylist,
             Some(vec!["apply_patch".to_string(), "shell".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_to_config_merges_tool_denylist() {
+        let codex_home = TempDir::new().expect("tempdir");
+        let mut config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load config");
+        config.tool_denylist = Some(vec!["shell".to_string()]);
+
+        let agent = AgentDefinition {
+            name: "worker".to_string(),
+            description: "Use for execution.".to_string(),
+            model: "gpt-5".to_string(),
+            reasoning_effort: None,
+            color: AgentColor::Blue,
+            tools: None,
+            read_only: false,
+            tool_denylist: Some(vec!["apply_patch".to_string(), "shell".to_string()]),
+            agent_name_descriptions: HashMap::new(),
+            agent_name_instructions: HashMap::new(),
+            instructions: "Do the work.".to_string(),
+            path: PathBuf::from("worker.md"),
+            scope: AgentScope::User,
+        };
+
+        agent
+            .apply_to_config(&mut config, None)
+            .expect("apply to config");
+
+        assert_eq!(
+            config.tool_denylist,
+            Some(vec!["shell".to_string(), "apply_patch".to_string()])
         );
     }
 

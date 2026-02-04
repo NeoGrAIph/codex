@@ -25,12 +25,42 @@ When integrating upstream changes into the fork, follow this process:
 3. **Track status without removing commits.** Update `docs/fork/upstream-main-commits.md` by marking each commit with status and a short integration note (clean cherry-pick vs. manual adaptation). Do not remove commits from the list.
 4. **Canonical-first, fork-preserving.** Prefer upstream behavior as the default, but adapt as needed to preserve and improve fork-specific functionality.
 
+References:
+- `docs/fork/diff-fork-vs-main.md` (complete diff analysis + recommendations)
+- `docs/fork/fork-update-plan.md` (plan of record for fork updates)
+- `docs/fork/task-fork-update-plan.md` (task definition + scope)
+
+Base update guidance:
+- Prefer release tags (e.g. `rust-vX.Y.Z`) as the canonical base for `main`.
+- Only track `upstream/main` directly if explicitly requested.
+
 Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, run the tests:
 
 1. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `cargo test -p codex-tui`.
 2. Once those pass, if any changes were made in common, core, or protocol, run the complete test suite with `cargo test --all-features`. project-specific or individual tests can be run without asking the user, but do ask the user before running the complete test suite.
 
 Before finalizing a large change to `codex-rs`, run `just fix -p <project>` (in `codex-rs` directory) to fix any linter issues in the code. Prefer scoping with `-p` to avoid slow workspace‑wide Clippy builds; only run `just fix` without `-p` if you changed shared crates.
+
+## Generated artifacts (do not hand-edit)
+
+- `codex-rs/app-server-protocol/schema/**` and schema fixtures are generated.
+- Rebuild with `just write-app-server-schema` after protocol changes.
+- Avoid manual edits; regenerate instead.
+
+## Version alignment
+
+When the base release changes:
+- Update `codex-rs/Cargo.toml` workspace version.
+- Update any TUI snapshots that embed the version string.
+
+## Fork-core change checklist (diff-minimizing)
+
+- Keep fork changes behind `fn_multi_agents` and avoid touching unrelated upstream paths.
+- Use fork markers for inline edits: `// === FORK: ...`.
+- Update docs when behavior changes:
+  - `docs/fork/colab-agents.md` (fork rationale/behavior)
+  - `docs/config.md` (config/schema behavior)
+- If `ConfigToml`/config types change: run `just write-config-schema`.
 
 ## TUI style conventions
 

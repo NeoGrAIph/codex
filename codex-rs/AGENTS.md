@@ -2,6 +2,11 @@
 
 This is a fork of the original Codex CLI with an extended agent registry system.
 
+References:
+- `docs/fork/diff-fork-vs-main.md` (complete diff analysis + recommendations)
+- `docs/fork/fork-update-plan.md` (plan of record for fork updates)
+- `docs/fork/task-fork-update-plan.md` (task definition + scope)
+
 ## Fork Management
 
 ### Remotes
@@ -10,14 +15,18 @@ origin    → your fork
 upstream  → https://github.com/openai/codex (original)
 ```
 
-### Sync with upstream
+### Sync main with upstream (base update)
 ```bash
-git fetch upstream
+# Prefer a release tag as the base (stability), unless explicitly requested to track upstream/main.
+git fetch upstream --tags
 git checkout main
-git rebase upstream/main
-# Resolve conflicts if any, then:
+git reset --hard rust-vX.Y.Z
 git push origin main --force-with-lease
 ```
+
+Base update guidance:
+- Prefer release tags (e.g. `rust-vX.Y.Z`) as the canonical base for `main`.
+- Only track `upstream/main` directly if explicitly requested.
 
 ### Adding new fork features
 ```bash
@@ -36,29 +45,17 @@ git push origin fork/colab-agents
 ```
 
 ### Updating fork after upstream changes
-```bash
-# 1. Sync main with upstream
-git checkout main
-git fetch upstream
-git rebase upstream/main
-git push origin main --force-with-lease
+Process (commit-by-commit, canonical-first):
 
-# 2. Rebase fork branch onto updated main
-git checkout fork/colab-agents
-git rebase main
-
-# 3. Resolve conflicts if any:
-#    - Files with FORK markers: keep our changes
-#    - New upstream files: accept upstream
-#    - registry.rs, codex_*.md: always keep ours
-
-# 4. After resolving conflicts
-git rebase --continue
-git push origin fork/colab-agents --force-with-lease
-```
+1) Read `docs/fork/upstream-main-commits.md` and pick the next upstream commit.
+2) Analyze and document the change (see `docs/fork/fork-update-plan.md`).
+3) Integrate via cherry-pick or manual adaptation.
+4) Record status in `docs/fork/upstream-main-commits.md`.
+5) Run tests for touched areas.
 
 ### Conflict resolution tips
-- **Our files** (always keep): `registry.rs`, `tool_allowlist.rs`, `codex_*.md`, `AGENTS.md`
+- **Fork core files** (keep): `registry.rs`, `tool_allowlist.rs`, `agent_tools.rs`, `tools/handlers/agents.rs`,
+  `tools/handlers/collab.rs`, `tools/spec.rs`, `templates/agents/codex_*.md`, `codex-rs/AGENTS.md`
 - **Modified files**: look for `// === FORK:` markers, keep those blocks
 - **spec.rs, codex.rs, collab.rs**: merge carefully, keep fork logic
 - Run tests after resolving: `cargo test -p codex-core`
@@ -72,6 +69,29 @@ All fork-specific changes are marked with comments:
 ```
 
 Search for fork changes: `rg "FORK:" --type rust`
+
+---
+
+## Generated artifacts (do not hand-edit)
+
+- `codex-rs/app-server-protocol/schema/**` and schema fixtures are generated.
+- Rebuild with `just write-app-server-schema` after protocol changes.
+- Avoid manual edits; regenerate instead.
+
+## Version alignment
+
+When the base release changes:
+- Update `codex-rs/Cargo.toml` workspace version.
+- Update any TUI snapshots that embed the version string.
+
+## Fork-core change checklist (diff-minimizing)
+
+- Keep fork changes behind `fn_multi_agents` and avoid touching unrelated upstream paths.
+- Use fork markers for inline edits: `// === FORK: ...`.
+- Update docs when behavior changes:
+  - `docs/fork/colab-agents.md` (fork rationale/behavior)
+  - `docs/config.md` (config/schema behavior)
+- If `ConfigToml`/config types change: run `just write-config-schema`.
 
 ---
 

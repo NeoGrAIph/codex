@@ -51,7 +51,8 @@ You are a senior architect...
 
 `tools` can be a list or a comma-separated string. If present, it acts as an allowlist
 that is intersected with any existing tool allowlist (it never expands beyond the
-current allowlist), and denylist rules still apply. Use `*` to leave tool access
+current allowlist), and denylist rules still apply. Agent `tool_denylist` entries
+are merged with any existing denylist rather than replacing it. Use `*` to leave tool access
 unchanged.
 
 ## JSON Schema
