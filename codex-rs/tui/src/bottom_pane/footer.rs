@@ -830,6 +830,13 @@ impl ShortcutDescriptor {
                     ]);
                 }
             }
+            ShortcutId::ShowTranscript => {
+                if state.collaboration_modes_enabled {
+                    line.push_span(" to view transcript / agents");
+                } else {
+                    line.push_span(self.label);
+                }
+            }
             _ => line.push_span(self.label),
         };
         Some(line)
@@ -934,10 +941,16 @@ const SHORTCUTS: &[ShortcutDescriptor] = &[
     },
     ShortcutDescriptor {
         id: ShortcutId::ShowTranscript,
-        bindings: &[ShortcutBinding {
-            key: key_hint::ctrl(KeyCode::Char('t')),
-            condition: DisplayCondition::Always,
-        }],
+        bindings: &[
+            ShortcutBinding {
+                key: key_hint::ctrl(KeyCode::Char('n')),
+                condition: DisplayCondition::WhenCollaborationModesEnabled,
+            },
+            ShortcutBinding {
+                key: key_hint::ctrl(KeyCode::Char('t')),
+                condition: DisplayCondition::Always,
+            },
+        ],
         prefix: "",
         label: " to view transcript",
     },
