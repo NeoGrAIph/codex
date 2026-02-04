@@ -34,9 +34,9 @@
 - Добавлен отдельный обработчик для перечисления агентов.
 
 4) **Feature-флаги**
-- `collab` помечен как experimental.
-- `collaboration_modes` перенесён в experimental и отключён по умолчанию.
-- `personality` промоутирован в stable и включён по умолчанию.
+- `fn_multi_agents` — единый экспериментальный флаг включения fork multi-agent (реестр + collab tools).
+- `collab` оставлен как legacy-алиас для совместимости.
+- `collaboration_modes` и `personality` остаются отдельными флагами (upstream-поведение).
 
 5) **Fork-идентификация и локальные сборки**
 - Явная маркировка версии в CLI/TUI префиксом `FN`.
@@ -79,9 +79,9 @@
 
 ### Feature-флаги
 - `codex-rs/core/src/features.rs`
-  - Перенос `collab` и `collaboration_modes` в experimental.
-  - `personality` переведён в stable по умолчанию.
-  - **Почему:** управляемый rollout экспериментальных фич.
+  - Введён `fn_multi_agents` как единый экспериментальный флаг включения fork multi-agent.
+  - `collab` переведён в legacy-алиас для совместимости.
+  - **Почему:** единая точка включения fork-функциональности.
 
 ### Fork-брендинг и UX
 - `codex-rs/tui/src/cli.rs`

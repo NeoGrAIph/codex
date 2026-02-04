@@ -14,6 +14,10 @@ const ALIASES: &[Alias] = &[
         feature: Feature::Apps,
     },
     Alias {
+        legacy_key: "collab",
+        feature: Feature::FnMultiAgents,
+    },
+    Alias {
         legacy_key: "enable_experimental_windows_sandbox",
         feature: Feature::WindowsSandbox,
     },

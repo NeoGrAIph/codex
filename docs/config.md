@@ -26,7 +26,7 @@ Codex can run a notification hook when the agent finishes a turn. See the config
 
 ## Agents registry (YAML)
 
-When the `collab` feature flag is enabled, Codex can discover agent definitions from `agents/` folders alongside each config layer:
+When the `fn_multi_agents` feature flag is enabled, Codex can discover agent definitions from `agents/` folders alongside each config layer:
 
 - Project: `.codex/agents` (next to `.codex/config.toml`)
 - User: `~/.codex/agents`

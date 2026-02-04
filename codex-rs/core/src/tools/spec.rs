@@ -66,7 +66,7 @@ impl ToolsConfig {
             agent_name_descriptions,
         } = params;
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
-        let include_collab_tools = features.enabled(Feature::Collab);
+        let include_collab_tools = features.enabled(Feature::FnMultiAgents);
         let include_collaboration_modes_tools = features.enabled(Feature::CollaborationModes);
         let request_rule_enabled = features.enabled(Feature::RequestRule);
 
@@ -1757,7 +1757,7 @@ mod tests {
         let config = test_config();
         let model_info = ModelsManager::construct_model_info_offline("gpt-5-codex", &config);
         let mut features = Features::with_defaults();
-        features.enable(Feature::Collab);
+        features.enable(Feature::FnMultiAgents);
         features.enable(Feature::CollaborationModes);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
@@ -1818,7 +1818,7 @@ mod tests {
         let config = test_config();
         let model_info = ModelsManager::construct_model_info_offline("gpt-5-codex", &config);
         let mut features = Features::with_defaults();
-        features.enable(Feature::Collab);
+        features.enable(Feature::FnMultiAgents);
 
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,

@@ -639,7 +639,7 @@ fn build_agent_spawn_config(
 
     // If the new agent will be at max depth:
     if exceeds_thread_spawn_depth_limit(child_depth + 1) {
-        config.features.disable(Feature::Collab);
+        config.features.disable(Feature::FnMultiAgents);
     }
 
     Ok(config)

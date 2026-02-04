@@ -111,8 +111,8 @@ pub enum Feature {
     PowershellUtf8,
     /// Compress request bodies (zstd) when sending streaming requests to codex-backend.
     EnableRequestCompression,
-    /// Enable collab tools.
-    Collab,
+    /// Enable fork multi-agent tools and registry.
+    FnMultiAgents,
     /// Enable apps.
     Apps,
     /// Allow prompting and installing missing MCP dependencies.
@@ -518,12 +518,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
-        id: Feature::Collab,
-        key: "collab",
+        id: Feature::FnMultiAgents,
+        key: "fn_multi_agents",
         stage: Stage::Experimental {
-            name: "Sub-agents",
-            menu_description: "Ask Codex to spawn multiple agents to parallelize the work and win in efficiency.",
-            announcement: "NEW: Sub-agents can now be spawned by Codex. Enable in /experimental and restart Codex!",
+            name: "Multi-agents (fork)",
+            menu_description: "Enable fork multi-agent registry and tools.",
+            announcement: "NEW: Fork multi-agents are available. Enable in /experimental and restart Codex!",
         },
         default_enabled: false,
     },

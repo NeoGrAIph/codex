@@ -4,7 +4,7 @@
 //! This module provides functionality to load custom agent definitions
 //! from `.codex/agents/*.md` files with YAML frontmatter.
 //!
-//! Part of Feature::Collab enhancements.
+//! Part of Feature::FnMultiAgents enhancements.
 // === FORK: AGENT REGISTRY MODULE ===
 
 use crate::config::Config;

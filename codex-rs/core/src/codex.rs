@@ -323,7 +323,7 @@ impl Codex {
         if let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { depth, .. }) = session_source
             && depth >= MAX_THREAD_SPAWN_DEPTH
         {
-            config.features.disable(Feature::Collab);
+            config.features.disable(Feature::FnMultiAgents);
         }
 
         let enabled_skills = loaded_skills.enabled_skills();
@@ -731,7 +731,7 @@ impl Session {
         );
 
         let (agent_registry_present, agent_descriptions, agent_name_descriptions) =
-            if per_turn_config.features.enabled(Feature::Collab) {
+            if per_turn_config.features.enabled(Feature::FnMultiAgents) {
                 let registry = AgentRegistry::load_for_config(per_turn_config.as_ref());
                 let agent_registry_present = !registry.agents.is_empty();
                 let agent_descriptions = if agent_registry_present {
@@ -1987,7 +1987,7 @@ impl Session {
         {
             items.push(collab_instructions.into());
         }
-        if self.features.enabled(Feature::Collab) {
+        if self.features.enabled(Feature::FnMultiAgents) {
             let prompt = resolve_collab_prompt(&turn_context.cwd, &codex_home)
                 .unwrap_or_else(|| COLLAB_MULTI_AGENT_PROMPT.to_string());
             items.push(DeveloperInstructions::new(prompt).into());
@@ -3222,7 +3222,7 @@ async fn spawn_review_thread(
         .disable(crate::features::Feature::WebSearchCached);
     let review_web_search_mode = WebSearchMode::Disabled;
     let (agent_registry_present, agent_descriptions, agent_name_descriptions) =
-        if review_features.enabled(Feature::Collab) {
+        if review_features.enabled(Feature::FnMultiAgents) {
             let registry = AgentRegistry::load_for_config(config.as_ref());
             let agent_registry_present = !registry.agents.is_empty();
             let agent_descriptions = if agent_registry_present {
