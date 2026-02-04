@@ -131,9 +131,8 @@ mod spawn {
                 "Empty message can't be sent to an agent".to_string(),
             ));
         }
-        let registry = AgentRegistry::load_for_config(turn.client.config().as_ref());
-
-        let session_source = turn.client.get_session_source();
+        let registry = AgentRegistry::load_for_config(turn.config.as_ref());
+        let session_source = turn.session_source.clone();
         let child_depth = next_thread_spawn_depth(&session_source);
         if exceeds_thread_spawn_depth_limit(child_depth) {
             return Err(FunctionCallError::RespondToModel(
@@ -278,7 +277,7 @@ mod spawn {
         let Ok(models) = session
             .services
             .models_manager
-            .try_list_models(turn.client.config().as_ref())
+            .try_list_models(turn.config.as_ref())
         else {
             return Ok(());
         };
@@ -817,20 +816,19 @@ fn build_agent_spawn_config(
     turn: &TurnContext,
     child_depth: i32,
 ) -> Result<Config, FunctionCallError> {
-    let base_config = turn.client.config();
+    let base_config = turn.config.clone();
     let mut config = (*base_config).clone();
     // Reset runtime allow/deny to the global policy so spawned agents
     // don't inherit a parent's narrowed tool list.
     config.tool_allowlist = config.tool_allowlist_policy.clone();
     config.tool_denylist = config.tool_denylist_policy.clone();
     config.base_instructions = Some(base_instructions.text.clone());
-    config.model = Some(turn.client.get_model());
-    config.model_provider = turn.client.get_provider();
-    config.model_reasoning_effort = turn.client.get_reasoning_effort();
-    config.model_reasoning_summary = turn.client.get_reasoning_summary();
+    config.model = Some(turn.model_info.slug.clone());
+    config.model_provider = turn.provider.clone();
+    config.model_reasoning_effort = turn.reasoning_effort;
+    config.model_reasoning_summary = turn.reasoning_summary;
     config.developer_instructions = turn.developer_instructions.clone();
     config.compact_prompt = turn.compact_prompt.clone();
-    config.user_instructions = turn.user_instructions.clone();
     config.shell_environment_policy = turn.shell_environment_policy.clone();
     config.codex_linux_sandbox_exe = turn.codex_linux_sandbox_exe.clone();
     config.cwd = turn.cwd.clone();
@@ -862,7 +860,6 @@ mod tests {
     use crate::ThreadManager;
     use crate::agent::MAX_THREAD_SPAWN_DEPTH;
     use crate::built_in_model_providers;
-    use crate::client::ModelClient;
     use crate::codex::make_session_and_context;
     use crate::codex::make_session_and_context_with_rx;
     use crate::config::types::ShellEnvironmentPolicy;
@@ -918,28 +915,14 @@ mod tests {
 
     #[tokio::test]
     async fn build_agent_spawn_config_resets_tool_policy() {
-        let (session, mut turn) = make_session_and_context().await;
-        let session_source = turn.client.get_session_source();
-        let transport_manager = turn.client.transport_manager();
-        let mut base_config = (*turn.client.config()).clone();
+        let (_session, mut turn) = make_session_and_context().await;
+        let mut base_config = (*turn.config).clone();
         base_config.tool_allowlist_policy =
             Some(vec!["shell".to_string(), "read_file".to_string()]);
         base_config.tool_allowlist = Some(vec!["spawn_agent".to_string()]);
         base_config.tool_denylist_policy = Some(vec!["apply_patch".to_string()]);
         base_config.tool_denylist = Some(vec!["shell".to_string()]);
-
-        turn.client = ModelClient::new(
-            Arc::new(base_config.clone()),
-            Some(session.services.auth_manager.clone()),
-            turn.client.get_model_info(),
-            turn.client.get_otel_manager(),
-            turn.client.get_provider(),
-            turn.client.get_reasoning_effort(),
-            turn.client.get_reasoning_summary(),
-            session.conversation_id,
-            session_source,
-            transport_manager,
-        );
+        turn.config = Arc::new(base_config.clone());
 
         let base_instructions = BaseInstructions::default();
         let config = build_agent_spawn_config(&base_instructions, &turn, 0).expect("spawn config");
@@ -1037,24 +1020,12 @@ mod tests {
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
 
-        let session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id: session.conversation_id,
             depth: MAX_THREAD_SPAWN_DEPTH,
             agent_type: None,
             agent_name: None,
         });
-        turn.client = ModelClient::new(
-            turn.client.config(),
-            Some(session.services.auth_manager.clone()),
-            turn.client.get_model_info(),
-            turn.client.get_otel_manager(),
-            turn.client.get_provider(),
-            turn.client.get_reasoning_effort(),
-            turn.client.get_reasoning_summary(),
-            session.conversation_id,
-            session_source,
-            session.services.transport_manager.clone(),
-        );
 
         let invocation = invocation(
             Arc::new(session),
@@ -1208,7 +1179,7 @@ mod tests {
         let (mut session, turn) = make_session_and_context().await;
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
-        let config = turn.client.config().as_ref().clone();
+        let config = turn.config.as_ref().clone();
         let thread = manager.start_thread(config).await.expect("start thread");
         let agent_id = thread.thread_id;
         let invocation = invocation(
@@ -1353,7 +1324,7 @@ mod tests {
         let (mut session, turn) = make_session_and_context().await;
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
-        let config = turn.client.config().as_ref().clone();
+        let config = turn.config.as_ref().clone();
         let thread = manager.start_thread(config).await.expect("start thread");
         let agent_id = thread.thread_id;
         let invocation = invocation(
@@ -1400,7 +1371,7 @@ mod tests {
         let (mut session, turn) = make_session_and_context().await;
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
-        let config = turn.client.config().as_ref().clone();
+        let config = turn.config.as_ref().clone();
         let thread = manager.start_thread(config).await.expect("start thread");
         let agent_id = thread.thread_id;
         let invocation = invocation(
@@ -1431,7 +1402,7 @@ mod tests {
         let (mut session, turn) = make_session_and_context().await;
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
-        let config = turn.client.config().as_ref().clone();
+        let config = turn.config.as_ref().clone();
         let thread = manager.start_thread(config).await.expect("start thread");
         let agent_id = thread.thread_id;
         let mut status_rx = manager
@@ -1487,7 +1458,7 @@ mod tests {
         let (mut session, turn) = make_session_and_context().await;
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
-        let config = turn.client.config().as_ref().clone();
+        let config = turn.config.as_ref().clone();
         let thread = manager.start_thread(config).await.expect("start thread");
         let agent_id = thread.thread_id;
         let status_before = manager.agent_control().get_status(agent_id).await;
@@ -1544,12 +1515,12 @@ mod tests {
         turn.sandbox_policy = SandboxPolicy::DangerFullAccess;
 
         let config = build_agent_spawn_config(&base_instructions, &turn, 0).expect("spawn config");
-        let mut expected = (*turn.client.config()).clone();
+        let mut expected = (*turn.config).clone();
         expected.base_instructions = Some(base_instructions.text);
-        expected.model = Some(turn.client.get_model());
-        expected.model_provider = turn.client.get_provider();
-        expected.model_reasoning_effort = turn.client.get_reasoning_effort();
-        expected.model_reasoning_summary = turn.client.get_reasoning_summary();
+        expected.model = Some(turn.model_info.slug.clone());
+        expected.model_provider = turn.provider.clone();
+        expected.model_reasoning_effort = turn.reasoning_effort;
+        expected.model_reasoning_summary = turn.reasoning_summary;
         expected.developer_instructions = turn.developer_instructions.clone();
         expected.compact_prompt = turn.compact_prompt.clone();
         expected.shell_environment_policy = turn.shell_environment_policy.clone();
@@ -1567,31 +1538,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_agent_spawn_config_uses_resolved_user_instructions() {
-        let (session, mut turn) = make_session_and_context().await;
-        let session_source = turn.client.get_session_source();
-        let mut base_config = (*turn.client.config()).clone();
+    async fn build_agent_spawn_config_preserves_base_user_instructions() {
+        let (_session, mut turn) = make_session_and_context().await;
+        let mut base_config = (*turn.config).clone();
         base_config.user_instructions = Some("base-user".to_string());
         turn.user_instructions = Some("resolved-user".to_string());
-        let transport_manager = turn.client.transport_manager();
-        turn.client = ModelClient::new(
-            Arc::new(base_config),
-            Some(session.services.auth_manager.clone()),
-            turn.client.get_model_info(),
-            turn.client.get_otel_manager(),
-            turn.client.get_provider(),
-            turn.client.get_reasoning_effort(),
-            turn.client.get_reasoning_summary(),
-            session.conversation_id,
-            session_source,
-            transport_manager,
-        );
+        turn.config = Arc::new(base_config.clone());
         let base_instructions = BaseInstructions {
             text: "base".to_string(),
         };
 
         let config = build_agent_spawn_config(&base_instructions, &turn, 0).expect("spawn config");
 
-        assert_eq!(config.user_instructions, turn.user_instructions);
+        assert_eq!(config.user_instructions, base_config.user_instructions);
     }
 }
