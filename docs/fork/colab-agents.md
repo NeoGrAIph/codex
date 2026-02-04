@@ -1,7 +1,7 @@
 # fork/colab-agents
 
 > Owner: <team/owner> | Scope: fork/colab-agents | Audience: devs
-> Status: active | Last reviewed: 2026-02-03 | Related: codex-rs/AGENTS.md
+> Status: active | Last reviewed: 2026-02-04 | Related: codex-rs/AGENTS.md
 
 ## Контекст
 
@@ -107,6 +107,10 @@
 - Реестр агентов не заменяет полностью legacy API, а сосуществует с ним.
 - Функциональность collab остаётся экспериментальной и требует явного включения.
 - Разрешения инструментов агента ограничиваются текущей allowlist/denylist политики.
+- При включённом `remote_models` метаданные инструментов берутся из `codex-rs/core/models.json`.
+  Если в модели отсутствуют `experimental_supported_tools`, инструменты не регистрируются,
+  и агент с allowlist на них останется без доступа. Держим `models.json` и модельные профили
+  в синхроне; фолбэк‑инструменты (например `shell_command`) оставляем как страховку.
 
 ## Что проверять после обновлений
 
