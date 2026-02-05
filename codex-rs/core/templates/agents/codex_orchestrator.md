@@ -5,7 +5,7 @@ description: |
   Plans and coordinates multi-agent execution, aggregating results.
 model: gpt-5.2-codex
 color: blue
-tools: spawn_agent, send_input, wait, close_agent
+tools: spawn_agent, send_input, wait, close_agent, list_agents, read_agent
 reasoning_effort: high
 agent_persons:
   - agent_name: lean

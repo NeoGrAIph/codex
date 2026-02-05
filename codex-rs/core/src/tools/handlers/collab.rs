@@ -71,80 +71,11 @@ impl ToolHandler for CollabHandler {
             "spawn_agent" => spawn::handle(session, turn, call_id, arguments).await,
             "send_input" => send_input::handle(session, turn, call_id, arguments).await,
             "wait" => wait::handle(session, turn, call_id, arguments).await,
-            "agent_list" => list_agent::handle(session, turn, call_id, arguments).await,
             "close_agent" => close_agent::handle(session, turn, call_id, arguments).await,
             other => Err(FunctionCallError::RespondToModel(format!(
                 "unsupported collab tool {other}"
             ))),
         }
-    }
-}
-
-mod list_agent {
-    use super::*;
-    use crate::agent::status::is_final;
-    use std::sync::Arc;
-
-    #[derive(Debug, Deserialize)]
-    struct ListAgentArgs {
-        /// Include agents with final statuses (completed/errored/shutdown). Default false.
-        include_completed: Option<bool>,
-        /// Include the current session thread. Default false.
-        include_self: Option<bool>,
-    }
-
-    #[derive(Debug, Serialize)]
-    struct ListAgentEntry {
-        id: String,
-        status: AgentStatus,
-    }
-
-    #[derive(Debug, Serialize)]
-    struct ListAgentResult {
-        agents: Vec<ListAgentEntry>,
-    }
-
-    pub async fn handle(
-        session: Arc<Session>,
-        _turn: Arc<TurnContext>,
-        _call_id: String,
-        arguments: String,
-    ) -> Result<ToolOutput, FunctionCallError> {
-        let args: ListAgentArgs = parse_arguments(&arguments)?;
-        let include_completed = args.include_completed.unwrap_or(false);
-        let include_self = args.include_self.unwrap_or(false);
-
-        let agent_ids = session
-            .services
-            .agent_control
-            .list_agent_ids()
-            .await
-            .map_err(collab_spawn_error)?;
-
-        let mut agents = Vec::new();
-        for agent_id in agent_ids {
-            if !include_self && agent_id == session.conversation_id {
-                continue;
-            }
-            let status = session.services.agent_control.get_status(agent_id).await;
-            if !include_completed && is_final(&status) {
-                continue;
-            }
-            agents.push(ListAgentEntry {
-                id: agent_id.to_string(),
-                status,
-            });
-        }
-
-        let content = serde_json::to_string(&ListAgentResult { agents }).map_err(|err| {
-            FunctionCallError::Fatal(format!("failed to serialize agent_list result: {err}"))
-        })?;
-
-        Ok(ToolOutput::Function {
-            content,
-            success: Some(true),
-            content_items: None,
-        })
     }
 }
 
@@ -983,17 +914,6 @@ mod tests {
         )
     }
 
-    #[derive(Debug, Deserialize, PartialEq)]
-    struct ListAgentEntry {
-        id: String,
-        status: AgentStatus,
-    }
-
-    #[derive(Debug, Deserialize)]
-    struct ListAgentResult {
-        agents: Vec<ListAgentEntry>,
-    }
-
     #[tokio::test]
     async fn handler_rejects_non_function_payloads() {
         let (session, turn) = make_session_and_context().await;
@@ -1032,57 +952,6 @@ mod tests {
             err,
             FunctionCallError::RespondToModel("unsupported collab tool unknown_tool".to_string())
         );
-    }
-
-    #[tokio::test]
-    async fn agent_list_excludes_self_by_default() {
-        let (mut session, turn) = make_session_and_context().await;
-        let manager = thread_manager();
-        session.services.agent_control = manager.agent_control();
-        let invocation = invocation(
-            Arc::new(session),
-            Arc::new(turn),
-            "agent_list",
-            function_payload(json!({})),
-        );
-        let output = CollabHandler
-            .handle(invocation)
-            .await
-            .expect("agent_list should succeed");
-        let ToolOutput::Function { content, .. } = output else {
-            panic!("expected function output");
-        };
-        let result: ListAgentResult =
-            serde_json::from_str(&content).expect("agent_list result should be json");
-        assert_eq!(result.agents, Vec::new());
-    }
-
-    #[tokio::test]
-    async fn agent_list_includes_self_when_requested() {
-        let (mut session, turn) = make_session_and_context().await;
-        let manager = thread_manager();
-        session.services.agent_control = manager.agent_control();
-        let config = turn.client.config().as_ref().clone();
-        let thread = manager.start_thread(config).await.expect("start thread");
-        session.conversation_id = thread.thread_id;
-        let session_id = thread.thread_id.to_string();
-        let invocation = invocation(
-            Arc::new(session),
-            Arc::new(turn),
-            "agent_list",
-            function_payload(json!({ "include_self": true })),
-        );
-        let output = CollabHandler
-            .handle(invocation)
-            .await
-            .expect("agent_list should succeed");
-        let ToolOutput::Function { content, .. } = output else {
-            panic!("expected function output");
-        };
-        let result: ListAgentResult =
-            serde_json::from_str(&content).expect("agent_list result should be json");
-        assert_eq!(result.agents.len(), 1);
-        assert_eq!(result.agents[0].id, session_id);
     }
 
     #[tokio::test]
