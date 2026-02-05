@@ -119,11 +119,6 @@ impl AgentControl {
         thread.agent_status().await
     }
 
-    pub(crate) async fn list_agent_ids(&self) -> CodexResult<Vec<ThreadId>> {
-        let state = self.upgrade()?;
-        Ok(state.list_thread_ids().await)
-    }
-
     /// Subscribe to status updates for `agent_id`, yielding the latest value and changes.
     pub(crate) async fn subscribe_status(
         &self,
