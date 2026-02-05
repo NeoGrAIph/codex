@@ -721,36 +721,18 @@ fn normalize_agent_names(
                 reason: format!("description is empty for agent_name \"{name}\""),
             });
         }
-        let model = entry.model.as_deref().map(str::trim);
-        let effort = entry.reasoning_effort;
-        match (model, effort) {
-            (Some(model), Some(effort)) => {
-                if model.is_empty() {
-                    return Err(AgentParseError::InvalidField {
-                        field: "agent_names",
-                        reason: format!("model is empty for agent_name \"{name}\""),
-                    });
-                }
-                models.insert(name.to_string(), model.to_string());
-                reasoning_efforts.insert(name.to_string(), effort);
-            }
-            (Some(_), None) => {
+        if let Some(model) = entry.model.as_deref() {
+            let model = model.trim();
+            if model.is_empty() {
                 return Err(AgentParseError::InvalidField {
                     field: "agent_names",
-                    reason: format!(
-                        "reasoning_effort is required when model is set for agent_name \"{name}\""
-                    ),
+                    reason: format!("model is empty for agent_name \"{name}\""),
                 });
             }
-            (None, Some(_)) => {
-                return Err(AgentParseError::InvalidField {
-                    field: "agent_names",
-                    reason: format!(
-                        "model is required when reasoning_effort is set for agent_name \"{name}\""
-                    ),
-                });
-            }
-            (None, None) => {}
+            models.insert(name.to_string(), model.to_string());
+        }
+        if let Some(effort) = entry.reasoning_effort {
+            reasoning_efforts.insert(name.to_string(), effort);
         }
         if entries
             .insert(name.to_string(), description.to_string())
@@ -798,36 +780,18 @@ fn normalize_agent_persons(
                 reason: format!("description is empty for agent_name \"{name}\""),
             });
         }
-        let model = entry.model.as_deref().map(str::trim);
-        let effort = entry.reasoning_effort;
-        match (model, effort) {
-            (Some(model), Some(effort)) => {
-                if model.is_empty() {
-                    return Err(AgentParseError::InvalidField {
-                        field: "agent_persons",
-                        reason: format!("model is empty for agent_name \"{name}\""),
-                    });
-                }
-                models.insert(name.to_string(), model.to_string());
-                reasoning_efforts.insert(name.to_string(), effort);
-            }
-            (Some(_), None) => {
+        if let Some(model) = entry.model.as_deref() {
+            let model = model.trim();
+            if model.is_empty() {
                 return Err(AgentParseError::InvalidField {
                     field: "agent_persons",
-                    reason: format!(
-                        "reasoning_effort is required when model is set for agent_name \"{name}\""
-                    ),
+                    reason: format!("model is empty for agent_name \"{name}\""),
                 });
             }
-            (None, Some(_)) => {
-                return Err(AgentParseError::InvalidField {
-                    field: "agent_persons",
-                    reason: format!(
-                        "model is required when reasoning_effort is set for agent_name \"{name}\""
-                    ),
-                });
-            }
-            (None, None) => {}
+            models.insert(name.to_string(), model.to_string());
+        }
+        if let Some(effort) = entry.reasoning_effort {
+            reasoning_efforts.insert(name.to_string(), effort);
         }
         if entries
             .insert(name.to_string(), description.to_string())
@@ -1292,56 +1256,6 @@ Instructions for the agent
             .expect("apply to config");
         assert_eq!(config.model.as_deref(), Some("gpt-4.1"));
         assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
-    }
-
-    #[test]
-    fn agent_persons_require_model_and_effort_together() {
-        let content = r#"---
-agent_type: test-agent
-description: Test agent description
-model: gpt-5
-color: red
-agent_persons:
-  - agent_name: strict
-    description: Strict mode
-    model: gpt-4.1
----
-Instructions
-"#;
-        let temp_dir = TempDir::new().expect("tempdir");
-        let path = temp_dir.path().join("test-agent.md");
-        fs::write(&path, content).expect("write agent file");
-
-        let err = parse_agent_file(&path, AgentScope::User).expect_err("should fail");
-        assert_eq!(
-            err.to_string(),
-            "invalid agent_persons: reasoning_effort is required when model is set for agent_name \"strict\""
-        );
-    }
-
-    #[test]
-    fn agent_names_require_model_and_effort_together() {
-        let content = r#"---
-name: test-agent
-description: Test agent description
-model: gpt-5
-color: red
-agent_names:
-  - name: strict
-    description: Strict mode
-    reasoning_effort: high
----
-Instructions
-"#;
-        let temp_dir = TempDir::new().expect("tempdir");
-        let path = temp_dir.path().join("test-agent.md");
-        fs::write(&path, content).expect("write agent file");
-
-        let err = parse_agent_file(&path, AgentScope::User).expect_err("should fail");
-        assert_eq!(
-            err.to_string(),
-            "invalid agent_names: model is required when reasoning_effort is set for agent_name \"strict\""
-        );
     }
 
     #[test]
