@@ -124,6 +124,9 @@
   - `agent_name: lean` → `gpt-5.2-codex`, `medium`
   - `agent_name: thorough` → `gpt-5.2-codex`, `high`
 
+### Персоналити для gpt-5.2-codex
+- Зафиксировано: `gpt-5.2-codex_pragmatic.md` (через `personality = "pragmatic"`).
+
 ### Локальные сборки
 - `scripts/codex-fork-build.sh`
   - Запись build-hash для детекта устаревших бинарей.
