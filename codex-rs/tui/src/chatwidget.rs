@@ -1843,27 +1843,45 @@ impl ChatWidget {
     /// Periodic tick to commit at most one queued line to history with a small delay,
     /// animating the output.
     pub(crate) fn on_commit_tick(&mut self) {
-        let mut has_controller = false;
-        let mut all_idle = true;
-        if let Some(controller) = self.stream_controller.as_mut() {
-            has_controller = true;
-            let (cell, is_idle) = controller.on_commit_tick();
-            if let Some(cell) = cell {
-                self.bottom_pane.hide_status_indicator();
-                self.add_boxed_history(cell);
-            }
-            all_idle &= is_idle;
+        self.run_commit_tick();
+    }
+
+    /// Runs a regular periodic commit tick.
+    fn run_commit_tick(&mut self) {
+        self.run_commit_tick_with_scope(CommitTickScope::AnyMode);
+    }
+
+    /// Runs an opportunistic commit tick only if catch-up mode is active.
+    fn run_catch_up_commit_tick(&mut self) {
+        self.run_commit_tick_with_scope(CommitTickScope::CatchUpOnly);
+    }
+
+    /// Runs a commit tick for the current stream queue snapshot.
+    ///
+    /// `scope` controls whether this call may commit in smooth mode or only when catch-up
+    /// is currently active. While lines are actively streaming we hide the status row to avoid
+    /// duplicate "in progress" affordances, but once all stream controllers go idle for this
+    /// turn we restore the status row if the task is still running so users keep a live
+    /// spinner/shimmer signal between preamble output and subsequent tool activity.
+    fn run_commit_tick_with_scope(&mut self, scope: CommitTickScope) {
+        let now = Instant::now();
+        let outcome = run_commit_tick(
+            &mut self.adaptive_chunking,
+            self.stream_controller.as_mut(),
+            self.plan_stream_controller.as_mut(),
+            scope,
+            now,
+        );
+        for cell in outcome.cells {
+            self.bottom_pane.hide_status_indicator();
+            self.add_boxed_history(cell);
         }
-        if let Some(controller) = self.plan_stream_controller.as_mut() {
-            has_controller = true;
-            let (cell, is_idle) = controller.on_commit_tick();
-            if let Some(cell) = cell {
-                self.bottom_pane.hide_status_indicator();
-                self.add_boxed_history(cell);
+
+        if outcome.has_controller && outcome.all_idle {
+            if self.bottom_pane.is_task_running() {
+                self.bottom_pane.ensure_status_indicator();
+                self.set_status_header(self.current_status_header.clone());
             }
-            all_idle &= is_idle;
-        }
-        if has_controller && all_idle {
             self.app_event_tx.send(AppEvent::StopCommitAnimation);
         }
     }
