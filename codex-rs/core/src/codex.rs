@@ -4662,6 +4662,7 @@ mod tests {
     use crate::tools::format_exec_output_str;
 
     use codex_protocol::ThreadId;
+    use codex_protocol::models::FunctionCallOutputBody;
     use codex_protocol::models::FunctionCallOutputPayload;
 
     use crate::protocol::CompactedItem;
@@ -5336,13 +5337,14 @@ mod tests {
 
         let got = FunctionCallOutputPayload::from(&ctr);
         let expected = FunctionCallOutputPayload {
-            content: serde_json::to_string(&json!({
-                "ok": true,
-                "value": 42
-            }))
-            .unwrap(),
+            body: FunctionCallOutputBody::Text(
+                serde_json::to_string(&json!({
+                    "ok": true,
+                    "value": 42
+                }))
+                .unwrap(),
+            ),
             success: Some(true),
-            ..Default::default()
         };
 
         assert_eq!(expected, got);
@@ -5379,10 +5381,10 @@ mod tests {
 
         let got = FunctionCallOutputPayload::from(&ctr);
         let expected = FunctionCallOutputPayload {
-            content: serde_json::to_string(&vec![text_block("hello"), text_block("world")])
-                .unwrap(),
+            body: FunctionCallOutputBody::Text(
+                serde_json::to_string(&vec![text_block("hello"), text_block("world")]).unwrap(),
+            ),
             success: Some(true),
-            ..Default::default()
         };
 
         assert_eq!(expected, got);
@@ -5399,9 +5401,10 @@ mod tests {
 
         let got = FunctionCallOutputPayload::from(&ctr);
         let expected = FunctionCallOutputPayload {
-            content: serde_json::to_string(&json!({ "message": "bad" })).unwrap(),
+            body: FunctionCallOutputBody::Text(
+                serde_json::to_string(&json!({ "message": "bad" })).unwrap(),
+            ),
             success: Some(false),
-            ..Default::default()
         };
 
         assert_eq!(expected, got);
@@ -5418,9 +5421,10 @@ mod tests {
 
         let got = FunctionCallOutputPayload::from(&ctr);
         let expected = FunctionCallOutputPayload {
-            content: serde_json::to_string(&vec![text_block("alpha")]).unwrap(),
+            body: FunctionCallOutputBody::Text(
+                serde_json::to_string(&vec![text_block("alpha")]).unwrap(),
+            ),
             success: Some(true),
-            ..Default::default()
         };
 
         assert_eq!(expected, got);
@@ -6261,7 +6265,10 @@ mod tests {
             .await;
 
         let output = match resp2.expect("expected Ok result") {
-            ToolOutput::Function { content, .. } => content,
+            ToolOutput::Function {
+                body: FunctionCallOutputBody::Text(content),
+                ..
+            } => content,
             _ => panic!("unexpected tool output"),
         };
 

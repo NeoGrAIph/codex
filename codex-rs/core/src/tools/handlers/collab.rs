@@ -15,6 +15,7 @@ use crate::tools::registry::ToolKind;
 use async_trait::async_trait;
 use codex_protocol::ThreadId;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::protocol::CollabAgentInteractionBeginEvent;
 use codex_protocol::protocol::CollabAgentInteractionEndEvent;
 use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
@@ -236,9 +237,8 @@ mod spawn {
         })?;
 
         Ok(ToolOutput::Function {
-            content,
+            body: FunctionCallOutputBody::Text(content),
             success: Some(true),
-            content_items: None,
         })
     }
 
@@ -500,9 +500,8 @@ mod send_input {
         })?;
 
         Ok(ToolOutput::Function {
-            content,
+            body: FunctionCallOutputBody::Text(content),
             success: Some(true),
-            content_items: None,
         })
     }
 }
@@ -668,9 +667,8 @@ mod wait {
         })?;
 
         Ok(ToolOutput::Function {
-            content,
+            body: FunctionCallOutputBody::Text(content),
             success: None,
-            content_items: None,
         })
     }
 
@@ -779,9 +777,8 @@ pub mod close_agent {
         })?;
 
         Ok(ToolOutput::Function {
-            content,
+            body: FunctionCallOutputBody::Text(content),
             success: Some(true),
-            content_items: None,
         })
     }
 }
@@ -1329,7 +1326,9 @@ mod tests {
             .await
             .expect("wait should succeed");
         let ToolOutput::Function {
-            content, success, ..
+            body: FunctionCallOutputBody::Text(content),
+            success,
+            ..
         } = output
         else {
             panic!("expected function output");
@@ -1371,7 +1370,9 @@ mod tests {
             .await
             .expect("wait should succeed");
         let ToolOutput::Function {
-            content, success, ..
+            body: FunctionCallOutputBody::Text(content),
+            success,
+            ..
         } = output
         else {
             panic!("expected function output");
@@ -1462,7 +1463,9 @@ mod tests {
             .await
             .expect("wait should succeed");
         let ToolOutput::Function {
-            content, success, ..
+            body: FunctionCallOutputBody::Text(content),
+            success,
+            ..
         } = output
         else {
             panic!("expected function output");
@@ -1500,7 +1503,9 @@ mod tests {
             .await
             .expect("close_agent should succeed");
         let ToolOutput::Function {
-            content, success, ..
+            body: FunctionCallOutputBody::Text(content),
+            success,
+            ..
         } = output
         else {
             panic!("expected function output");
