@@ -10,13 +10,14 @@
 - **Влияние**: `high` / `medium` / `low` (на UX/поведение/операции в multi-agent)
 - **Риск**: `high` / `medium` / `low` (регрессии, совместимость, поддержка)
 - **Решение**: `adopt` / `skip` / `adapt` / `tbd`
+- В **Notes** фиксируем вопросы и аспекты для всестороннего анализа, без директивных рекомендаций.
 
 ## rust-v0.96.0 (17 коммитов)
 
 | Commit | Summary | Usefulness | Impact | Risk | Decision | Notes |
 |---|---|---|---|---|---|---|
 | 2572f96fa | New Features bundle (thread/compact v2, websocket rate limits, unified_exec non‑Windows, requirements source provenance) | none | low | low | skip | Meta release commit; only bumps version in `codex-rs/Cargo.toml`, no functional multi-agent changes. Revisit only with actual commits in range. |
-| 49dd67a26 | feat: land unified_exec | high | high | medium | adapt | Unified exec becomes default on non‑Windows; improves parallel/async tool flow but breaks fork assumptions around `shell*` tools. Needs allowlist/tool routing updates and test expectation refresh. |
+| 49dd67a26 | feat: land unified_exec | high | high | medium | tbd | Требует детального анализа: смена дефолтных инструментов на non‑Windows, влияние на ожидания `shell*` в форке, совместимость маршрутизации/allowlist, влияние на параллелизм и тестовые ожидания. |
 | 0efd33f7f | Update tests to stop using sse_completed fixture | tbd | tbd | tbd | tbd | tbd |
 | 583e5d4f4 | Migrate state DB path helpers to versioned filename | tbd | tbd | tbd | tbd | tbd |
 | df000da91 | Add a codex.rate_limits event for websockets | tbd | tbd | tbd | tbd | tbd |
