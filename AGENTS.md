@@ -14,6 +14,7 @@ In the codex-rs folder where the rust code lives:
 - When possible, make `match` statements exhaustive and avoid wildcard arms.
 - When writing tests, prefer comparing the equality of entire objects over fields one by one.
 - When making a change that adds or changes an API, ensure that the documentation in the `docs/` folder is up to date if applicable.
+- Any new or changed fork-specific behavior must be covered by tests (unit/integration/snapshot) when feasible.
 - If you change `ConfigToml` or nested config types, run `just write-config-schema` to update `codex-rs/core/config.schema.json`.
 
 ## Upstream integration workflow (fork/colab-agents)
