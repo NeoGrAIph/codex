@@ -140,6 +140,191 @@ fn format_elapsed(elapsed: Duration) -> String {
     }
 }
 
+#[derive(Default)]
+struct AgentEventSummary {
+    last_message: Option<String>,
+    last_tool: Option<String>,
+    last_error: Option<String>,
+    last_warning: Option<String>,
+    recent: Vec<String>,
+}
+
+fn compress_whitespace(input: &str) -> String {
+    input.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_preview(input: &str, max_chars: usize) -> String {
+    let mut chars = input.chars();
+    let mut out = String::new();
+    for _ in 0..max_chars {
+        if let Some(ch) = chars.next() {
+            out.push(ch);
+        } else {
+            return out;
+        }
+    }
+    out.push('…');
+    out
+}
+
+fn format_agent_message_preview(message: &str, max_chars: usize) -> String {
+    let compressed = compress_whitespace(message);
+    if compressed.chars().count() <= max_chars {
+        compressed
+    } else {
+        truncate_preview(&compressed, max_chars)
+    }
+}
+
+fn format_command_preview(command: &[String], max_chars: usize) -> String {
+    if command.is_empty() {
+        return "unknown".to_string();
+    }
+    let joined = command.join(" ");
+    if joined.chars().count() <= max_chars {
+        joined
+    } else {
+        truncate_preview(&joined, max_chars)
+    }
+}
+
+fn summarize_agent_events(snapshot: &ThreadEventSnapshot) -> AgentEventSummary {
+    let mut summary = AgentEventSummary::default();
+
+    for event in snapshot.events.iter().rev() {
+        match &event.msg {
+            EventMsg::AgentMessage(ev) => {
+                if summary.last_message.is_none() {
+                    summary.last_message = Some(format_agent_message_preview(&ev.message, 200));
+                }
+                if summary.recent.len() < 3 {
+                    summary.recent.push("message".to_string());
+                }
+            }
+            EventMsg::TurnComplete(ev) => {
+                if summary.last_message.is_none()
+                    && let Some(message) = ev.last_agent_message.as_ref()
+                {
+                    summary.last_message = Some(format_agent_message_preview(message, 200));
+                }
+                if summary.recent.len() < 3 {
+                    summary.recent.push("turn complete".to_string());
+                }
+            }
+            EventMsg::ExecCommandEnd(ev) => {
+                if summary.last_tool.is_none() {
+                    let cmd = format_command_preview(&ev.command, 120);
+                    let elapsed = format_elapsed(ev.duration);
+                    summary.last_tool =
+                        Some(format!("exec: {cmd} (exit {}, {elapsed})", ev.exit_code));
+                }
+                if summary.recent.len() < 3 {
+                    summary.recent.push("exec finished".to_string());
+                }
+            }
+            EventMsg::ExecCommandBegin(ev) => {
+                if summary.last_tool.is_none() {
+                    let cmd = format_command_preview(&ev.command, 120);
+                    summary.last_tool = Some(format!("exec: {cmd}"));
+                }
+                if summary.recent.len() < 3 {
+                    summary.recent.push("exec started".to_string());
+                }
+            }
+            EventMsg::McpToolCallEnd(ev) => {
+                if summary.last_tool.is_none() {
+                    let status = if ev.is_success() { "ok" } else { "error" };
+                    let elapsed = format_elapsed(ev.duration);
+                    summary.last_tool =
+                        Some(format!("mcp: {} ({status}, {elapsed})", ev.invocation.tool));
+                }
+                if summary.recent.len() < 3 {
+                    summary.recent.push("mcp tool finished".to_string());
+                }
+            }
+            EventMsg::McpToolCallBegin(ev) => {
+                if summary.last_tool.is_none() {
+                    summary.last_tool = Some(format!("mcp: {}", ev.invocation.tool));
+                }
+                if summary.recent.len() < 3 {
+                    summary.recent.push("mcp tool started".to_string());
+                }
+            }
+            EventMsg::WebSearchEnd(ev) => {
+                if summary.last_tool.is_none() {
+                    let query = format_agent_message_preview(&ev.query, 120);
+                    summary.last_tool = Some(format!("web search: {query}"));
+                }
+                if summary.recent.len() < 3 {
+                    summary.recent.push("web search finished".to_string());
+                }
+            }
+            EventMsg::WebSearchBegin(_) => {
+                if summary.last_tool.is_none() {
+                    summary.last_tool = Some("web search started".to_string());
+                }
+                if summary.recent.len() < 3 {
+                    summary.recent.push("web search started".to_string());
+                }
+            }
+            EventMsg::PatchApplyEnd(ev) => {
+                if summary.last_tool.is_none() {
+                    let status = if ev.success { "ok" } else { "error" };
+                    let files = ev.changes.len();
+                    summary.last_tool = Some(format!("apply patch: {status} ({files} files)"));
+                }
+                if summary.recent.len() < 3 {
+                    summary.recent.push("patch applied".to_string());
+                }
+            }
+            EventMsg::PatchApplyBegin(ev) => {
+                if summary.last_tool.is_none() {
+                    let files = ev.changes.len();
+                    summary.last_tool = Some(format!("apply patch: {files} files"));
+                }
+                if summary.recent.len() < 3 {
+                    summary.recent.push("patch started".to_string());
+                }
+            }
+            EventMsg::Error(ev) => {
+                if summary.last_error.is_none() {
+                    summary.last_error = Some(format_agent_message_preview(&ev.message, 200));
+                }
+                if summary.recent.len() < 3 {
+                    summary.recent.push("error".to_string());
+                }
+            }
+            EventMsg::Warning(ev) => {
+                if summary.last_warning.is_none() {
+                    summary.last_warning = Some(format_agent_message_preview(&ev.message, 200));
+                }
+                if summary.recent.len() < 3 {
+                    summary.recent.push("warning".to_string());
+                }
+            }
+            EventMsg::BackgroundEvent(ev) => {
+                if summary.recent.len() < 3 {
+                    summary.recent.push(format!(
+                        "note: {}",
+                        format_agent_message_preview(&ev.message, 120)
+                    ));
+                }
+            }
+            _ => {}
+        }
+
+        if summary.last_message.is_some()
+            && summary.last_tool.is_some()
+            && summary.last_error.is_some()
+            && summary.recent.len() >= 3
+        {
+            break;
+        }
+    }
+
+    summary
+}
+
 #[derive(Debug, Clone)]
 pub struct AppExitInfo {
     pub token_usage: TokenUsage,
@@ -610,6 +795,7 @@ pub(crate) struct App {
     pending_primary_events: VecDeque<Event>,
     collab_thread_created_at: HashMap<ThreadId, Instant>,
     collab_thread_sources: HashMap<ThreadId, ProtocolSessionSource>,
+    collab_thread_prompts: HashMap<ThreadId, String>,
 }
 
 #[derive(Default)]
@@ -771,10 +957,12 @@ impl App {
                 .into(),
             );
 
-            let tail = self.latest_agent_event_tail(id, 12).await;
-            for line in tail {
-                out.push(line);
+            if let Some(prompt) = self.collab_thread_prompts.get(&id) {
+                out.push(vec!["  ".into(), "Task: ".dim(), prompt.clone().into()].into());
             }
+
+            let details = self.latest_agent_event_summary(id).await;
+            out.extend(details);
         }
 
         out
@@ -794,16 +982,34 @@ impl App {
         status
     }
 
-    async fn latest_agent_event_tail(&self, thread_id: ThreadId, max: usize) -> Vec<Line<'static>> {
+    async fn latest_agent_event_summary(&self, thread_id: ThreadId) -> Vec<Line<'static>> {
         let Some(channel) = self.thread_event_channels.get(&thread_id) else {
             return Vec::new();
         };
         let snapshot = channel.store.lock().await.snapshot();
-        let start = snapshot.events.len().saturating_sub(max);
-        snapshot.events[start..]
-            .iter()
-            .map(|event| format!("  └ {:?}", event.msg).dim().into())
-            .collect()
+        let summary = summarize_agent_events(&snapshot);
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        if let Some(message) = summary.last_message {
+            lines.push(vec!["  ".into(), "Last message: ".dim(), message.into()].into());
+        }
+        if let Some(tool) = summary.last_tool {
+            lines.push(vec!["  ".into(), "Last tool: ".dim(), tool.dim().into()].into());
+        }
+        if let Some(warning) = summary.last_warning {
+            lines.push(vec!["  ".into(), "Warning: ".yellow(), warning.into()].into());
+        }
+        if let Some(error) = summary.last_error {
+            lines.push(vec!["  ".into(), "Error: ".red(), error.into()].into());
+        }
+        if !summary.recent.is_empty() {
+            lines.push(vec!["  ".into(), "Recent:".dim()].into());
+            for item in summary.recent {
+                lines.push(vec!["  • ".into(), item.dim().into()].into());
+            }
+        }
+
+        lines
     }
 
     pub fn chatwidget_init_for_forked_or_resumed_thread(
@@ -1090,6 +1296,7 @@ impl App {
         self.pending_primary_events.clear();
         self.collab_thread_created_at.clear();
         self.collab_thread_sources.clear();
+        self.collab_thread_prompts.clear();
     }
 
     async fn drain_active_thread_events(&mut self, tui: &mut tui::Tui) -> Result<()> {
@@ -1332,6 +1539,7 @@ impl App {
             pending_primary_events: VecDeque::new(),
             collab_thread_created_at: HashMap::new(),
             collab_thread_sources: HashMap::new(),
+            collab_thread_prompts: HashMap::new(),
         };
 
         // On startup, if Agent mode (workspace-write) or ReadOnly is active, warn about world-writable dirs on Windows.
@@ -2443,6 +2651,14 @@ impl App {
             emit_skill_load_warnings(&self.app_event_tx, &errors);
         }
         self.handle_backtrack_event(&event.msg);
+        if let EventMsg::CollabAgentSpawnEnd(ev) = &event.msg
+            && let Some(thread_id) = ev.new_thread_id
+        {
+            let prompt = format_agent_message_preview(&ev.prompt, 200);
+            if !prompt.is_empty() {
+                self.collab_thread_prompts.insert(thread_id, prompt);
+            }
+        }
         self.chat_widget.handle_codex_event(event);
     }
 
@@ -2884,6 +3100,7 @@ mod tests {
             pending_primary_events: VecDeque::new(),
             collab_thread_created_at: HashMap::new(),
             collab_thread_sources: HashMap::new(),
+            collab_thread_prompts: HashMap::new(),
         }
     }
 
@@ -2940,6 +3157,7 @@ mod tests {
                 pending_primary_events: VecDeque::new(),
                 collab_thread_created_at: HashMap::new(),
                 collab_thread_sources: HashMap::new(),
+                collab_thread_prompts: HashMap::new(),
             },
             rx,
             op_rx,
