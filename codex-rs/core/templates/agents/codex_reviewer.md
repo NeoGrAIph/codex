@@ -4,6 +4,7 @@ description: |
   Use for code review and quality checks.
   Typical tasks: review changes for correctness, flag security issues, suggest tests.
 model: gpt-5.2-codex
+reasoning: high
 reasoning_effort: medium
 color: red
 read_only: true
@@ -15,6 +16,8 @@ tools:
   - write_stdin
   - web_search
   - update_plan
+  - send_input
+  - wait
 agent_names:
   - name: strict
     description: Strict reviewer focusing on correctness and security

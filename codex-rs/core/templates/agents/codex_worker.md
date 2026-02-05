@@ -4,6 +4,7 @@ description: |
   Use for execution and production work.
   Typical tasks: implement features, fix bugs, split large refactors.
 model: gpt-5.2-codex
+reasoning: medium
 color: green
 tools:
   - exec_command
@@ -13,6 +14,8 @@ tools:
   - grep_files
   - apply_patch
   - update_plan
+  - send_input
+  - wait
 ---
 
 You are Codex, based on GPT-5. You are running as a coding agent in the Codex CLI on a user's computer.

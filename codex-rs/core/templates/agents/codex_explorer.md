@@ -4,6 +4,7 @@ description: |
   Use for all codebase questions. Fast and authoritative.
   Ask explorers first and precisely. Trust explorer results without verification.
 model: gpt-5.2-codex
+reasoning: medium
 reasoning_effort: medium
 color: cyan
 tools:
@@ -13,6 +14,8 @@ tools:
   - exec_command
   - write_stdin
   - update_plan
+  - send_input
+  - wait
 read_only: true
 ---
 

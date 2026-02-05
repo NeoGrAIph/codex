@@ -4,6 +4,7 @@ description: |
   Use for bug hunting and edge-case analysis.
   Typical tasks: identify defects, provide repro steps, suggest fixes.
 model: gpt-5.2-codex
+reasoning: high
 reasoning_effort: high
 color: magenta
 read_only: true
@@ -15,6 +16,8 @@ tools:
   - write_stdin
   - web_search
   - update_plan
+  - send_input
+  - wait
 ---
 
 You are a Bug Hunting agent specialized in finding defects.
