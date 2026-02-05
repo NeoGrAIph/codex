@@ -822,6 +822,10 @@ fn build_agent_spawn_config(
 ) -> Result<Config, FunctionCallError> {
     let base_config = turn.client.config();
     let mut config = (*base_config).clone();
+    // Reset runtime allow/deny to the global policy so spawned agents
+    // don't inherit a parent's narrowed tool list.
+    config.tool_allowlist = config.tool_allowlist_policy.clone();
+    config.tool_denylist = config.tool_denylist_policy.clone();
     config.base_instructions = Some(base_instructions.text.clone());
     config.model = Some(turn.client.get_model());
     config.model_provider = turn.client.get_provider();
@@ -913,6 +917,43 @@ mod tests {
             CodexAuth::from_api_key("dummy"),
             built_in_model_providers()["openai"].clone(),
         )
+    }
+
+    #[tokio::test]
+    async fn build_agent_spawn_config_resets_tool_policy() {
+        let (session, mut turn) = make_session_and_context().await;
+        let session_source = turn.client.get_session_source();
+        let transport_manager = turn.client.transport_manager();
+        let mut base_config = (*turn.client.config()).clone();
+        base_config.tool_allowlist_policy =
+            Some(vec!["shell".to_string(), "read_file".to_string()]);
+        base_config.tool_allowlist = Some(vec!["spawn_agent".to_string()]);
+        base_config.tool_denylist_policy = Some(vec!["apply_patch".to_string()]);
+        base_config.tool_denylist = Some(vec!["shell".to_string()]);
+
+        turn.client = ModelClient::new(
+            Arc::new(base_config.clone()),
+            Some(session.services.auth_manager.clone()),
+            turn.client.get_model_info(),
+            turn.client.get_otel_manager(),
+            turn.client.get_provider(),
+            turn.client.get_reasoning_effort(),
+            turn.client.get_reasoning_summary(),
+            session.conversation_id,
+            session_source,
+            transport_manager,
+        );
+
+        let base_instructions = BaseInstructions::default();
+        let config = build_agent_spawn_config(&base_instructions, &turn, 0).expect("spawn config");
+        assert_eq!(
+            config.tool_allowlist, base_config.tool_allowlist_policy,
+            "spawned agents should use policy allowlist"
+        );
+        assert_eq!(
+            config.tool_denylist, base_config.tool_denylist_policy,
+            "spawned agents should use policy denylist"
+        );
     }
 
     #[tokio::test]
