@@ -1433,6 +1433,9 @@ impl Session {
             return None;
         }
         let previous = previous?;
+        if next.model_info.slug != previous.model_info.slug {
+            return None;
+        }
 
         // if a personality is specified and it's different from the previous one, build a personality update item
         if let Some(personality) = next.personality
