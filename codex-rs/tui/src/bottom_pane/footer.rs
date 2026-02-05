@@ -35,6 +35,7 @@
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::render::line_utils::prefix_lines;
+use crate::status::context_left_label_spans;
 use crate::status::format_tokens_compact;
 use crate::ui_consts::FOOTER_INDENT_COLS;
 use crossterm::event::KeyCode;
@@ -748,8 +749,8 @@ fn build_columns(entries: Vec<Line<'static>>) -> Vec<Line<'static>> {
 
 pub(crate) fn context_window_line(percent: Option<i64>, used_tokens: Option<i64>) -> Line<'static> {
     if let Some(percent) = percent {
-        let percent = percent.clamp(0, 100);
-        return Line::from(vec![Span::from(format!("{percent}% context left")).dim()]);
+        let spans = context_left_label_spans(percent, " context left", true, true);
+        return Line::from(spans);
     }
 
     if let Some(tokens) = used_tokens {
@@ -757,7 +758,7 @@ pub(crate) fn context_window_line(percent: Option<i64>, used_tokens: Option<i64>
         return Line::from(vec![Span::from(format!("{used_fmt} used")).dim()]);
     }
 
-    Line::from(vec![Span::from("100% context left").dim()])
+    Line::from(context_left_label_spans(100, " context left", true, true))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

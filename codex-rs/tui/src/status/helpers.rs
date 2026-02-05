@@ -7,6 +7,8 @@ use codex_core::CodexAuth;
 use codex_core::config::Config;
 use codex_core::project_doc::discover_project_doc_paths;
 use codex_protocol::account::PlanType;
+use ratatui::style::Stylize;
+use ratatui::text::Span;
 use std::path::Path;
 use unicode_width::UnicodeWidthStr;
 
@@ -141,6 +143,35 @@ pub(crate) fn format_tokens_compact(value: i64) -> String {
     }
 
     format!("{formatted}{suffix}")
+}
+
+pub(crate) fn context_left_label_spans(
+    percent: i64,
+    suffix: &'static str,
+    dim_default: bool,
+    dim_suffix: bool,
+) -> Vec<Span<'static>> {
+    let percent = percent.clamp(0, 100);
+    let percent_span = context_left_percent_span(percent, dim_default);
+    let suffix_span = if dim_suffix {
+        Span::from(suffix).dim()
+    } else {
+        Span::from(suffix)
+    };
+    vec![percent_span, suffix_span]
+}
+
+fn context_left_percent_span(percent: i64, dim_default: bool) -> Span<'static> {
+    let span = Span::from(format!("{percent}%"));
+    if percent < 15 {
+        span.red()
+    } else if percent < 30 {
+        span.yellow()
+    } else if dim_default {
+        span.dim()
+    } else {
+        span
+    }
 }
 
 pub(crate) fn format_directory_display(directory: &Path, max_width: Option<usize>) -> String {

@@ -29,6 +29,7 @@ use crate::pager_overlay::Overlay;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::Renderable;
 use crate::resume_picker::SessionSelection;
+use crate::status::context_left_label_spans;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
@@ -138,6 +139,13 @@ fn format_elapsed(elapsed: Duration) -> String {
         let mins = secs / 60;
         let rem = secs % 60;
         format!("{mins}m{rem:02}s")
+    }
+}
+
+fn context_left_display_spans(percent: Option<i64>) -> Vec<Span<'static>> {
+    match percent {
+        Some(percent) => context_left_label_spans(percent, " left", false, true),
+        None => vec![Span::from("—").dim()],
     }
 }
 
@@ -324,6 +332,21 @@ fn summarize_agent_events(snapshot: &ThreadEventSnapshot) -> AgentEventSummary {
     }
 
     summary
+}
+
+fn context_left_from_snapshot(snapshot: &ThreadEventSnapshot) -> Option<i64> {
+    let info = snapshot.events.iter().rev().find_map(|event| {
+        if let EventMsg::TokenCount(token) = &event.msg {
+            token.info.as_ref()
+        } else {
+            None
+        }
+    })?;
+    let window = info.model_context_window?;
+    Some(
+        info.last_token_usage
+            .percent_of_context_window_remaining(window),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -907,21 +930,22 @@ impl App {
             let status = self.latest_agent_status(id).await;
             let label = status_span(&status);
             let elapsed_s = format_elapsed(elapsed);
+            let context_left = self.latest_agent_context_left(id).await;
             let identity = self.agent_identity(id).await;
             let indent = "  ".repeat(depth);
             let bullet = format!("{indent}• ");
             let detail_indent = format!("{indent}  ");
-            out.push(
-                vec![
-                    bullet.into(),
-                    id.to_string().dim(),
-                    "  ".into(),
-                    label,
-                    "  ".into(),
-                    elapsed_s.dim(),
-                ]
-                .into(),
-            );
+            let mut spans = vec![
+                bullet.into(),
+                id.to_string().dim(),
+                "  ".into(),
+                label,
+                "  ".into(),
+                elapsed_s.dim(),
+                "  ".into(),
+            ];
+            spans.extend(context_left_display_spans(context_left));
+            out.push(spans.into());
             out.push(self.agent_identity_summary_line(&identity, &detail_indent));
         }
 
@@ -953,21 +977,22 @@ impl App {
             let status = self.latest_agent_status(id).await;
             let label = status_span(&status);
             let elapsed_s = format_elapsed(elapsed);
+            let context_left = self.latest_agent_context_left(id).await;
             let indent = "  ".repeat(depth);
             let bullet = format!("{indent}• ");
             let detail_indent = format!("{indent}  ");
 
-            out.push(
-                vec![
-                    bullet.into(),
-                    id.to_string().cyan().bold(),
-                    "  ".into(),
-                    label,
-                    "  ".into(),
-                    elapsed_s.dim(),
-                ]
-                .into(),
-            );
+            let mut spans = vec![
+                bullet.into(),
+                id.to_string().cyan().bold(),
+                "  ".into(),
+                label,
+                "  ".into(),
+                elapsed_s.dim(),
+                "  ".into(),
+            ];
+            spans.extend(context_left_display_spans(context_left));
+            out.push(spans.into());
 
             let identity = self.agent_identity(id).await;
             out.extend(self.agent_identity_detail_lines(&identity, &detail_indent));
@@ -1002,6 +1027,14 @@ impl App {
             }
         }
         status
+    }
+
+    async fn latest_agent_context_left(&self, thread_id: ThreadId) -> Option<i64> {
+        let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+            return None;
+        };
+        let snapshot = channel.store.lock().await.snapshot();
+        context_left_from_snapshot(&snapshot)
     }
 
     async fn latest_agent_session_config(
@@ -3208,6 +3241,9 @@ mod tests {
     use codex_core::protocol::SandboxPolicy;
     use codex_core::protocol::SessionConfiguredEvent;
     use codex_core::protocol::SessionSource;
+    use codex_core::protocol::TokenCountEvent;
+    use codex_core::protocol::TokenUsage;
+    use codex_core::protocol::TokenUsageInfo;
     use codex_otel::OtelManager;
     use codex_protocol::ThreadId;
     use codex_protocol::user_input::TextElement;
@@ -3529,6 +3565,67 @@ mod tests {
             rendered.iter().any(|line| line.starts_with(&child_prefix)),
             "expected child bullet line to start with '{child_prefix}'"
         );
+    }
+
+    #[tokio::test]
+    async fn agents_overlay_shows_context_left_when_available() -> Result<()> {
+        let mut app = make_test_app().await;
+        let with_usage = ThreadId::from_string("00000000-0000-0000-0000-000000000010").unwrap();
+        let without_usage = ThreadId::from_string("00000000-0000-0000-0000-000000000020").unwrap();
+
+        app.collab_thread_sources.insert(
+            with_usage,
+            ProtocolSessionSource::SubAgent(SubAgentSource::Review),
+        );
+        app.collab_thread_sources.insert(
+            without_usage,
+            ProtocolSessionSource::SubAgent(SubAgentSource::Review),
+        );
+
+        let now = Instant::now();
+        app.collab_thread_created_at.insert(with_usage, now);
+        app.collab_thread_created_at.insert(without_usage, now);
+
+        let context_window = 200_000;
+        let last_usage = TokenUsage {
+            total_tokens: 32_000,
+            ..TokenUsage::default()
+        };
+        let percent = last_usage.percent_of_context_window_remaining(context_window);
+        let token_event = Event {
+            id: String::new(),
+            msg: EventMsg::TokenCount(TokenCountEvent {
+                info: Some(TokenUsageInfo {
+                    total_token_usage: TokenUsage::default(),
+                    last_token_usage: last_usage,
+                    model_context_window: Some(context_window),
+                }),
+                rate_limits: None,
+            }),
+        };
+        app.enqueue_thread_event(with_usage, token_event).await?;
+
+        let lines = app.build_agents_summary_lines().await;
+        let rendered: Vec<String> = lines.iter().map(line_to_plain_text).collect();
+
+        let expected = format!("{percent}% left");
+        let with_usage_line = rendered
+            .iter()
+            .find(|line| line.contains(&with_usage.to_string()));
+        assert!(
+            with_usage_line.is_some_and(|line| line.contains(&expected)),
+            "expected summary line for {with_usage} to contain '{expected}', got {with_usage_line:?}"
+        );
+
+        let without_usage_line = rendered
+            .iter()
+            .find(|line| line.contains(&without_usage.to_string()));
+        assert!(
+            without_usage_line.is_some_and(|line| line.contains("—")),
+            "expected summary line for {without_usage} to contain '—', got {without_usage_line:?}"
+        );
+
+        Ok(())
     }
 
     #[tokio::test]
