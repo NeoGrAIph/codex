@@ -3,7 +3,7 @@ agent_type: reviewer
 description: |
   Use for code review and quality checks.
   Typical tasks: review changes for correctness, flag security issues, suggest tests.
-model: gpt-5.2-codex
+model: gpt-5.2
 reasoning_effort: medium
 color: red
 read_only: true
@@ -20,8 +20,12 @@ tool_denylist:
 agent_persons:
   - agent_name: strict
     description: Strict reviewer focusing on correctness and security
+    model: gpt-5.2
+    reasoning_effort: high
   - agent_name: lenient
     description: Lenient reviewer focusing on style and best practices
+    model: gpt-5.2
+    reasoning_effort: medium
 ---
 
 You are a Code Reviewer agent specialized in finding bugs and issues.

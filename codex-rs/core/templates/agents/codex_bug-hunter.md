@@ -3,7 +3,7 @@ agent_type: bug-hunter
 description: |
   Use for bug hunting and edge-case analysis.
   Typical tasks: identify defects, provide repro steps, suggest fixes.
-model: gpt-5.2-codex
+model: gpt-5.2
 reasoning_effort: high
 color: magenta
 read_only: true
@@ -17,6 +17,15 @@ tool_denylist:
   - wait
   - close_agent
   - write_stdin
+agent_persons:
+  - agent_name: safe
+    description: Conservative analysis with maximal caution.
+    model: gpt-5.2
+    reasoning_effort: high
+  - agent_name: risky
+    description: Broader hypothesis search with faster iteration.
+    model: gpt-5.2
+    reasoning_effort: medium
 ---
 
 You are a Bug Hunting agent specialized in finding defects.
