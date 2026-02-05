@@ -1143,8 +1143,9 @@ impl Session {
                 }
 
                 // If resuming, warn when the last recorded model differs from the current one.
-                let curr = turn_context.model_info.slug.as_str();
-                if let Some(prev) = Self::last_model_name(&rollout_items, curr) {
+                // === FORK: TurnContext doesn't store model_info; use client instead.
+                let curr = turn_context.client.get_model();
+                if let Some(prev) = Self::last_model_name(&rollout_items, curr.as_str()) {
                     warn!("resuming session with different model: previous={prev}, current={curr}");
                     self.send_event(
                         &turn_context,
@@ -1433,7 +1434,8 @@ impl Session {
             return None;
         }
         let previous = previous?;
-        if next.model_info.slug != previous.model_info.slug {
+        // === FORK: TurnContext doesn't store model_info; compare via client.
+        if next.client.get_model() != previous.client.get_model() {
             return None;
         }
 
@@ -1480,13 +1482,19 @@ impl Session {
         resumed_model: Option<&str>,
         next: &TurnContext,
     ) -> Option<ResponseItem> {
-        let previous_model =
-            resumed_model.or_else(|| previous.map(|prev| prev.model_info.slug.as_str()))?;
-        if previous_model == next.model_info.slug {
+        // === FORK: TurnContext doesn't store model_info; compare via client.
+        let previous_model = resumed_model
+            .map(str::to_string)
+            .or_else(|| previous.map(|prev| prev.client.get_model()))?;
+        let current_model = next.client.get_model();
+        if previous_model == current_model {
             return None;
         }
 
-        let model_instructions = next.model_info.get_model_instructions(next.personality);
+        let model_instructions = next
+            .client
+            .get_model_info()
+            .get_model_instructions(next.personality);
         if model_instructions.is_empty() {
             return None;
         }
