@@ -1121,6 +1121,32 @@ mod tests {
     }
 
     #[test]
+    fn builtins_parse_without_errors() {
+        let temp_dir = TempDir::new().expect("tempdir");
+        for (filename, content) in BUILTIN_AGENTS {
+            let path = temp_dir.path().join(format!("{filename}.md"));
+            fs::write(&path, content).expect("write builtin agent");
+            let agent = parse_agent_file(&path, AgentScope::System)
+                .unwrap_or_else(|err| panic!("failed to parse builtin {filename}: {err}"));
+            if !agent.agent_name_descriptions.is_empty() {
+                let mut desc_keys = agent
+                    .agent_name_descriptions
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let mut instr_keys = agent
+                    .agent_name_instructions
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                desc_keys.sort();
+                instr_keys.sort();
+                assert_eq!(instr_keys, desc_keys);
+            }
+        }
+    }
+
+    #[test]
     fn format_agent_descriptions_uses_full_description() {
         let registry = AgentRegistry {
             agents: vec![
