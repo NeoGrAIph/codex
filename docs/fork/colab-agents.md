@@ -58,6 +58,8 @@
 ### Collab-инструменты и спецификация
 - `codex-rs/core/src/tools/handlers/collab.rs`
   - `spawn_agent` переключён на реестр и агентские YAML-профили.
+  - `spawn_agent` поддерживает опциональные override `model`/`reasoning_effort` с наивысшим приоритетом.
+    - При наличии списка моделей — проверяется валидность `model` перед спавном.
   - **Почему:** согласовать runtime с декларативной моделью агентов.
 - `codex-rs/core/src/tools/handlers/agents.rs`
   - Новый handler для перечисления агентов.

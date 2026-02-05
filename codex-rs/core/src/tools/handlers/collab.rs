@@ -86,6 +86,7 @@ mod spawn {
     use crate::agent::exceeds_thread_spawn_depth_limit;
     use crate::agent::next_thread_spawn_depth;
     use crate::agent::status::is_final;
+    use codex_protocol::openai_models::ReasoningEffort;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SubAgentSource;
     use std::sync::Arc;
@@ -100,6 +101,10 @@ mod spawn {
         agent_type: Option<String>,
         /// Optional agent_name within agent_type for alternate instructions.
         agent_name: Option<String>,
+        /// Optional model override with highest priority.
+        model: Option<String>,
+        /// Optional reasoning effort override with highest priority.
+        reasoning_effort: Option<ReasoningEffort>,
     }
 
     #[derive(Debug, Serialize)]
@@ -118,6 +123,8 @@ mod spawn {
         let prompt = args.message;
         let agent_type = args.agent_type.clone();
         let agent_name = args.agent_name.clone();
+        let model_override = args.model.clone();
+        let reasoning_effort_override = args.reasoning_effort;
         if prompt.trim().is_empty() {
             return Err(FunctionCallError::RespondToModel(
                 "Empty message can't be sent to an agent".to_string(),
@@ -163,6 +170,14 @@ mod spawn {
             agent_def
                 .apply_to_config(&mut config, args.agent_name.as_deref())
                 .map_err(FunctionCallError::RespondToModel)?;
+        }
+
+        if let Some(model_override) = model_override.as_deref() {
+            validate_model_override(&session, turn.as_ref(), model_override)?;
+            config.model = Some(model_override.to_string());
+        }
+        if let Some(reasoning_effort_override) = reasoning_effort_override {
+            config.model_reasoning_effort = Some(reasoning_effort_override);
         }
 
         let result = session
@@ -251,6 +266,37 @@ mod spawn {
             agent_name,
             status_rx,
         );
+    }
+
+    fn validate_model_override(
+        session: &Session,
+        turn: &TurnContext,
+        model_override: &str,
+    ) -> Result<(), FunctionCallError> {
+        let Ok(models) = session
+            .services
+            .models_manager
+            .try_list_models(turn.client.config().as_ref())
+        else {
+            return Ok(());
+        };
+        if models.is_empty() {
+            return Ok(());
+        }
+        let matches = models
+            .iter()
+            .any(|preset| preset.model == model_override || preset.id == model_override);
+        if matches {
+            return Ok(());
+        }
+        let available = models
+            .iter()
+            .map(|preset| preset.model.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(FunctionCallError::RespondToModel(format!(
+            "Model '{model_override}' not found. Available: {available}"
+        )))
     }
 
     pub(super) fn spawn_status_relay_task(
@@ -983,6 +1029,32 @@ mod tests {
                 "Agent depth limit reached. Solve the task yourself.".to_string()
             )
         );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_rejects_unknown_model_override() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "model": "nonexistent-model"
+            })),
+        );
+        let Err(err) = CollabHandler.handle(invocation).await else {
+            panic!("spawn should fail on unknown model override");
+        };
+        match err {
+            FunctionCallError::RespondToModel(message) => {
+                assert!(message.starts_with("Model 'nonexistent-model' not found."));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[tokio::test]

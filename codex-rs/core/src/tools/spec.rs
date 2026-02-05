@@ -521,6 +521,24 @@ fn create_spawn_agent_tool(
             },
         );
     }
+    properties.insert(
+        "model".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional model override for the spawned agent (highest priority). If provided, must match an available model."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "reasoning_effort".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional reasoning effort override for the spawned agent (highest priority). Allowed: none, minimal, low, medium, high, xhigh."
+                    .to_string(),
+            ),
+        },
+    );
 
     ToolSpec::Function(ResponsesApiTool {
         name: "spawn_agent".to_string(),
