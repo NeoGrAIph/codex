@@ -655,6 +655,7 @@ impl App {
             Some(CtrlTOverlayMode::AgentsDetails) => {
                 self.clear_ctrl_t_overlay_mode();
                 self.close_transcript_overlay(tui);
+                tui.frame_requester().schedule_frame();
             }
         }
     }
