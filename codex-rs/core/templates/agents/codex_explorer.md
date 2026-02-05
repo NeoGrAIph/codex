@@ -1,5 +1,5 @@
 ---
-name: explorer
+agent_type: explorer
 description: |
   Use for all codebase questions. Fast and authoritative.
   Ask explorers first and precisely. Trust explorer results without verification.

@@ -284,12 +284,13 @@ impl Error for AgentParseError {}
 
 #[derive(Debug, Deserialize)]
 struct AgentFrontmatter {
-    name: String,
-    description: String,
-    model: String,
+    name: Option<String>,
+    agent_type: Option<String>,
+    description: Option<String>,
+    model: Option<String>,
     #[serde(default)]
     reasoning_effort: Option<ReasoningEffort>,
-    color: String,
+    color: Option<String>,
     #[serde(default)]
     tools: Option<ToolsField>,
     #[serde(default)]
@@ -298,11 +299,22 @@ struct AgentFrontmatter {
     tool_denylist: Option<ToolsField>,
     #[serde(default)]
     agent_names: Option<Vec<AgentNameEntry>>,
+    agent_persons: Option<Vec<AgentPersonEntry>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct AgentNameEntry {
     name: String,
+    description: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    reasoning_effort: Option<ReasoningEffort>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentPersonEntry {
+    agent_name: String,
     description: String,
     #[serde(default)]
     model: Option<String>,
@@ -478,26 +490,65 @@ fn parse_agent_file(path: &Path, scope: AgentScope) -> Result<AgentDefinition, A
     let parsed: AgentFrontmatter =
         serde_yaml::from_str(&frontmatter).map_err(AgentParseError::InvalidYaml)?;
 
-    let name = parsed.name.trim().to_string();
+    let has_legacy = parsed.name.is_some() || parsed.agent_names.is_some();
+    let has_new = parsed.agent_type.is_some() || parsed.agent_persons.is_some();
+    if has_legacy && has_new {
+        return Err(AgentParseError::InvalidField {
+            field: "frontmatter",
+            reason: "cannot mix legacy fields (name/agent_names) with agent_type/agent_persons"
+                .to_string(),
+        });
+    }
+
+    let name = parsed
+        .agent_type
+        .as_deref()
+        .or(parsed.name.as_deref())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if name.is_empty() {
-        return Err(AgentParseError::MissingField("name"));
+        return Err(AgentParseError::MissingField(if has_new {
+            "agent_type"
+        } else {
+            "name"
+        }));
     }
     validate_agent_name(&name)?;
 
-    let description = parsed.description.trim().to_string();
+    let description = parsed
+        .description
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if description.is_empty() {
         return Err(AgentParseError::MissingField("description"));
     }
     validate_len(&description, MAX_DESCRIPTION_LEN, "description")?;
 
-    let model = parsed.model.trim().to_string();
+    let model = parsed
+        .model
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if model.is_empty() {
         return Err(AgentParseError::MissingField("model"));
     }
 
-    let color = AgentColor::parse(&parsed.color).ok_or_else(|| AgentParseError::InvalidField {
+    let color_value = parsed
+        .color
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if color_value.is_empty() {
+        return Err(AgentParseError::MissingField("color"));
+    }
+    let color = AgentColor::parse(&color_value).ok_or_else(|| AgentParseError::InvalidField {
         field: "color",
-        reason: format!("unsupported color \"{}\"", parsed.color.trim()),
+        reason: format!("unsupported color \"{color_value}\""),
     })?;
     let reasoning_effort = parsed.reasoning_effort;
 
@@ -506,8 +557,20 @@ fn parse_agent_file(path: &Path, scope: AgentScope) -> Result<AgentDefinition, A
     let tool_denylist = normalize_tools(parsed.tool_denylist)?;
 
     let (instructions, agent_name_instructions) = split_agent_instructions(&body)?;
-    let agent_name_overrides = normalize_agent_names(parsed.agent_names)?;
-    validate_agent_name_blocks(&agent_name_instructions, &agent_name_overrides.descriptions)?;
+    let agent_name_overrides = if has_new {
+        normalize_agent_persons(parsed.agent_persons)?
+    } else {
+        normalize_agent_names(parsed.agent_names)?
+    };
+    validate_agent_name_blocks(
+        &agent_name_instructions,
+        &agent_name_overrides.descriptions,
+        if has_new {
+            "agent_persons"
+        } else {
+            "agent_names"
+        },
+    )?;
 
     let resolved_path = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
@@ -688,37 +751,97 @@ fn normalize_agent_names(
     })
 }
 
+fn normalize_agent_persons(
+    agent_persons: Option<Vec<AgentPersonEntry>>,
+) -> Result<AgentNameOverrides, AgentParseError> {
+    let Some(agent_persons) = agent_persons else {
+        return Ok(AgentNameOverrides {
+            descriptions: HashMap::new(),
+            models: HashMap::new(),
+            reasoning_efforts: HashMap::new(),
+        });
+    };
+    let mut entries = HashMap::new();
+    let mut models = HashMap::new();
+    let mut reasoning_efforts = HashMap::new();
+    for entry in agent_persons {
+        let name = entry.agent_name.trim();
+        if name.is_empty() {
+            return Err(AgentParseError::InvalidField {
+                field: "agent_persons",
+                reason: "agent_name is empty".to_string(),
+            });
+        }
+        validate_agent_name(name)?;
+        let description = entry.description.trim();
+        if description.is_empty() {
+            return Err(AgentParseError::InvalidField {
+                field: "agent_persons",
+                reason: format!("description is empty for agent_name \"{name}\""),
+            });
+        }
+        if let Some(model) = entry.model.as_deref() {
+            let model = model.trim();
+            if model.is_empty() {
+                return Err(AgentParseError::InvalidField {
+                    field: "agent_persons",
+                    reason: format!("model is empty for agent_name \"{name}\""),
+                });
+            }
+            models.insert(name.to_string(), model.to_string());
+        }
+        if let Some(effort) = entry.reasoning_effort {
+            reasoning_efforts.insert(name.to_string(), effort);
+        }
+        if entries
+            .insert(name.to_string(), description.to_string())
+            .is_some()
+        {
+            return Err(AgentParseError::InvalidField {
+                field: "agent_persons",
+                reason: format!("duplicate agent_name \"{name}\""),
+            });
+        }
+    }
+    Ok(AgentNameOverrides {
+        descriptions: entries,
+        models,
+        reasoning_efforts,
+    })
+}
+
 fn validate_agent_name_blocks(
     agent_name_instructions: &HashMap<String, String>,
     agent_name_descriptions: &HashMap<String, String>,
+    field_name: &'static str,
 ) -> Result<(), AgentParseError> {
     if agent_name_instructions.is_empty() && agent_name_descriptions.is_empty() {
         return Ok(());
     }
     if agent_name_instructions.is_empty() {
         return Err(AgentParseError::InvalidField {
-            field: "agent_names",
-            reason: "agent_names metadata requires agent_name blocks".to_string(),
+            field: field_name,
+            reason: format!("{field_name} metadata requires agent_name blocks"),
         });
     }
     if agent_name_descriptions.is_empty() {
         return Err(AgentParseError::InvalidField {
-            field: "agent_names",
-            reason: "agent_name blocks require agent_names metadata".to_string(),
+            field: field_name,
+            reason: format!("agent_name blocks require {field_name} metadata"),
         });
     }
     for name in agent_name_instructions.keys() {
         if !agent_name_descriptions.contains_key(name) {
             return Err(AgentParseError::InvalidField {
-                field: "agent_names",
-                reason: format!("missing agent_names entry for \"{name}\""),
+                field: field_name,
+                reason: format!("missing {field_name} entry for \"{name}\""),
             });
         }
     }
     for name in agent_name_descriptions.keys() {
         if !agent_name_instructions.contains_key(name) {
             return Err(AgentParseError::InvalidField {
-                field: "agent_names",
+                field: field_name,
                 reason: format!("missing agent_name block for \"{name}\""),
             });
         }
@@ -925,7 +1048,7 @@ mod tests {
     fn write_agent(dir: &Path, name: &str, model: &str, tools: &str) -> PathBuf {
         let path = dir.join(format!("{name}.md"));
         let contents = format!(
-            "---\nname: {name}\ndescription: test agent\nmodel: {model}\nreasoning_effort: high\ncolor: blue\ntools: {tools}\n---\n\nBody\n"
+            "---\nagent_type: {name}\ndescription: test agent\nmodel: {model}\nreasoning_effort: high\ncolor: blue\ntools: {tools}\n---\n\nBody\n"
         );
         fs::write(&path, contents).expect("write agent");
         path
@@ -1023,7 +1146,7 @@ mod tests {
     #[test]
     fn parses_read_only_and_tool_denylist() {
         let content = r#"---
-name: test-agent
+agent_type: test-agent
 description: Test agent description
 model: gpt-5
 color: red
@@ -1138,14 +1261,14 @@ Instructions for the agent
     #[test]
     fn parses_agent_name_blocks() {
         let content = r#"---
-name: reviewer
+agent_type: reviewer
 description: Default reviewer description
 model: gpt-5
 color: red
-agent_names:
-  - name: strict
+agent_persons:
+  - agent_name: strict
     description: Strict instructions
-  - name: lenient
+  - agent_name: lenient
     description: Lenient instructions
 ---
 Instructions for the reviewer
@@ -1176,14 +1299,43 @@ Lenient instructions
     }
 
     #[test]
-    fn instructions_for_uses_agent_name_blocks() {
+    fn parses_legacy_agent_names() {
         let content = r#"---
 name: reviewer
-description: Default description
+description: Default reviewer description
 model: gpt-5
 color: red
 agent_names:
   - name: strict
+    description: Strict instructions
+---
+Default instructions
+
+<!-- agent_name: strict -->
+Strict instructions
+"#;
+        let temp_dir = TempDir::new().expect("tempdir");
+        let path = temp_dir.path().join("reviewer.md");
+        fs::write(&path, content).expect("write agent file");
+
+        let agent = parse_agent_file(&path, AgentScope::User).expect("parse agent");
+        assert_eq!(agent.name, "reviewer");
+        assert_eq!(agent.agent_name_descriptions.len(), 1);
+        assert_eq!(
+            agent.agent_name_instructions.get("strict").unwrap(),
+            "Strict instructions"
+        );
+    }
+
+    #[test]
+    fn instructions_for_uses_agent_name_blocks() {
+        let content = r#"---
+agent_type: reviewer
+description: Default description
+model: gpt-5
+color: red
+agent_persons:
+  - agent_name: strict
     description: Strict variant instructions
 ---
 Default instructions
@@ -1214,7 +1366,7 @@ Strict variant instructions
     #[test]
     fn agent_name_blocks_require_metadata() {
         let content = r#"---
-name: reviewer
+agent_type: reviewer
 description: Default description
 model: gpt-5
 color: red
@@ -1231,19 +1383,19 @@ Strict variant instructions
         let err = parse_agent_file(&path, AgentScope::User).expect_err("parse should fail");
         assert_eq!(
             err.to_string(),
-            "invalid agent_names: agent_name blocks require agent_names metadata"
+            "invalid agent_persons: agent_name blocks require agent_persons metadata"
         );
     }
 
     #[test]
     fn agent_name_metadata_requires_blocks() {
         let content = r#"---
-name: reviewer
+agent_type: reviewer
 description: Default description
 model: gpt-5
 color: red
-agent_names:
-  - name: strict
+agent_persons:
+  - agent_name: strict
     description: Strict variant instructions
 ---
 Default instructions
@@ -1255,7 +1407,32 @@ Default instructions
         let err = parse_agent_file(&path, AgentScope::User).expect_err("parse should fail");
         assert_eq!(
             err.to_string(),
-            "invalid agent_names: agent_names metadata requires agent_name blocks"
+            "invalid agent_persons: agent_persons metadata requires agent_name blocks"
+        );
+    }
+
+    #[test]
+    fn rejects_mixed_agent_fields() {
+        let content = r#"---
+name: reviewer
+agent_type: reviewer
+description: Default description
+model: gpt-5
+color: red
+agent_persons:
+  - agent_name: strict
+    description: Strict variant instructions
+---
+Default instructions
+"#;
+        let temp_dir = TempDir::new().expect("tempdir");
+        let path = temp_dir.path().join("reviewer.md");
+        fs::write(&path, content).expect("write agent file");
+
+        let err = parse_agent_file(&path, AgentScope::User).expect_err("parse should fail");
+        assert_eq!(
+            err.to_string(),
+            "invalid frontmatter: cannot mix legacy fields (name/agent_names) with agent_type/agent_persons"
         );
     }
 

@@ -1,5 +1,5 @@
 ---
-name: architect
+agent_type: architect
 description: |
   Use for architecture and design guidance.
   Typical tasks: propose high-level design, outline implementation steps, identify risks.
