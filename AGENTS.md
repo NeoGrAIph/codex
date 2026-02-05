@@ -16,6 +16,7 @@ In the codex-rs folder where the rust code lives:
 - When making a change that adds or changes an API, ensure that the documentation in the `docs/` folder is up to date if applicable.
 - Any new or changed fork-specific behavior must be covered by tests (unit/integration/snapshot) when feasible.
 - If you change `ConfigToml` or nested config types, run `just write-config-schema` to update `codex-rs/core/config.schema.json`.
+- When delegating analysis-only tasks via orchestrator, prefer `explorer` agents (codebase questions, read-only investigation). Use `worker` agents only when you want them to execute changes or perform implementation work.
 
 ## Upstream integration workflow (fork/colab-agents)
 
