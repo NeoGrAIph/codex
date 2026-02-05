@@ -224,11 +224,8 @@ use tokio::sync::watch;
 
 /// Instructions for the parent agent on how to use multi-agent collaboration tools.
 const COLLAB_MULTI_AGENT_PROMPT: &str = include_str!("../templates/collab/experimental_prompt.md");
-const SYSTEM_FOOTER_DEFAULT: &str = include_str!("../templates/collab/codex_system_footer.md");
 
 const COLLAB_PROMPT_FILENAME: &str = "colab_prompt.md";
-const SYSTEM_FOOTER_FILENAME: &str = "codex_system_footer.md";
-const COLLAB_DIR: &str = "collab";
 
 /// Resolves the collab prompt by checking for user overrides in the standard
 /// `.codex/agents/` directories. Repo-local takes precedence over user-global,
@@ -241,39 +238,6 @@ fn resolve_collab_prompt(cwd: &Path, codex_home: &Path) -> Option<String> {
     candidates
         .iter()
         .find_map(|path| std::fs::read_to_string(path).ok())
-}
-
-/// Resolves the system footer by checking for overrides in `.codex/collab/`.
-/// Repo-local takes precedence over user-global, matching the agent registry
-/// resolution order.
-fn resolve_system_footer(cwd: &Path, codex_home: &Path) -> String {
-    let candidates = [
-        cwd.join(".codex")
-            .join(COLLAB_DIR)
-            .join(SYSTEM_FOOTER_FILENAME),
-        codex_home.join(COLLAB_DIR).join(SYSTEM_FOOTER_FILENAME),
-    ];
-    candidates
-        .iter()
-        .find_map(|path| std::fs::read_to_string(path).ok())
-        .unwrap_or_else(|| SYSTEM_FOOTER_DEFAULT.to_string())
-}
-
-fn append_system_footer(mut base_instructions: String, footer: &str) -> String {
-    let footer_trim = footer.trim();
-    if footer_trim.is_empty() {
-        return base_instructions;
-    }
-    if base_instructions.trim_end().ends_with(footer_trim) {
-        return base_instructions;
-    }
-    if !base_instructions.ends_with('\n') {
-        base_instructions.push('\n');
-    }
-    base_instructions.push('\n');
-    base_instructions.push_str(footer_trim);
-    base_instructions.push('\n');
-    base_instructions
 }
 
 /// The high-level interface to the Codex system.
@@ -394,8 +358,6 @@ impl Codex {
             .clone()
             .or_else(|| conversation_history.get_base_instructions().map(|s| s.text))
             .unwrap_or_else(|| model_info.get_model_instructions(config.personality));
-        let system_footer = resolve_system_footer(&config.cwd, &config.codex_home);
-        let base_instructions = append_system_footer(base_instructions, &system_footer);
 
         // Respect thread-start tools. When missing (resumed/forked threads), read from the db
         // first, then fall back to rollout-file tools.
@@ -4681,7 +4643,6 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration as StdDuration;
-    use tempfile::TempDir;
 
     struct InstructionsTestCase {
         slug: &'static str,
@@ -4777,40 +4738,6 @@ mod tests {
             let base_instructions = session.get_base_instructions().await;
             assert_eq!(base_instructions.text, model_info.base_instructions);
         }
-    }
-
-    #[test]
-    fn resolve_system_footer_prefers_repo_over_user() {
-        let repo = TempDir::new().expect("tempdir");
-        let codex_home = TempDir::new().expect("tempdir");
-
-        let repo_footer = repo
-            .path()
-            .join(".codex")
-            .join(COLLAB_DIR)
-            .join(SYSTEM_FOOTER_FILENAME);
-        let user_footer = codex_home
-            .path()
-            .join(COLLAB_DIR)
-            .join(SYSTEM_FOOTER_FILENAME);
-
-        std::fs::create_dir_all(repo_footer.parent().expect("repo footer parent"))
-            .expect("repo footer dir");
-        std::fs::create_dir_all(user_footer.parent().expect("user footer parent"))
-            .expect("user footer dir");
-
-        std::fs::write(&repo_footer, "repo footer").expect("write repo footer");
-        std::fs::write(&user_footer, "user footer").expect("write user footer");
-
-        let footer = resolve_system_footer(repo.path(), codex_home.path());
-        assert_eq!(footer, "repo footer");
-    }
-
-    #[test]
-    fn append_system_footer_skips_when_empty() {
-        let base = "Base instructions".to_string();
-        let next = append_system_footer(base.clone(), "   \n");
-        assert_eq!(next, base);
     }
 
     #[test]
