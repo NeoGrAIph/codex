@@ -3,7 +3,7 @@ name: bug-hunter
 description: |
   Use for bug hunting and edge-case analysis.
   Typical tasks: identify defects, provide repro steps, suggest fixes.
-model: gpt-5.2-codex
+model: gpt-5.3-codex
 reasoning: high
 reasoning_effort: high
 color: magenta

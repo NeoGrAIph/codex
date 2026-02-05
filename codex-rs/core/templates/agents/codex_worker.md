@@ -3,7 +3,7 @@ name: worker
 description: |
   Use for execution and production work.
   Typical tasks: implement features, fix bugs, split large refactors.
-model: gpt-5.2-codex
+model: gpt-5.3-codex
 reasoning: medium
 color: green
 tools:

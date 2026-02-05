@@ -3,7 +3,7 @@ name: orchestrator
 description: |
   Coordination-only agent that delegates to workers.
   Plans and coordinates multi-agent execution, aggregating results.
-model: gpt-5.2-codex
+model: gpt-5.3-codex
 color: blue
 tools:
   - exec_command

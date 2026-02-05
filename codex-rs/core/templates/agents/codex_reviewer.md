@@ -3,7 +3,7 @@ name: reviewer
 description: |
   Use for code review and quality checks.
   Typical tasks: review changes for correctness, flag security issues, suggest tests.
-model: gpt-5.2-codex
+model: gpt-5.3-codex
 reasoning: high
 reasoning_effort: medium
 color: red

@@ -3,7 +3,7 @@ name: architect
 description: |
   Use for architecture and design guidance.
   Typical tasks: propose high-level design, outline implementation steps, identify risks.
-model: gpt-5.2-codex
+model: gpt-5.3-codex
 reasoning: high
 reasoning_effort: high
 color: yellow
