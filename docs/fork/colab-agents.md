@@ -39,12 +39,7 @@
 - `collab` оставлен как legacy-алиас для совместимости.
 - `collaboration_modes` и `personality` остаются отдельными флагами (upstream-поведение).
 
-5) **System footer для системного промпта**
-- Базовый footer хранится в `core/templates/collab/codex_system_footer.md`.
-- Override порядок: `.codex/collab/codex_system_footer.md` (проект) → `~/.codex/collab/codex_system_footer.md` (пользователь) → шаблон.
-- При первом запуске footer seed’ится в `~/.codex/collab/` (без перезаписи существующего).
-
-6) **Fork-идентификация и локальные сборки**
+5) **Fork-идентификация и локальные сборки**
 - Явная маркировка версии в CLI/TUI префиксом `FN`.
 - Скрипт `scripts/codex-fork-build.sh` пишет `.codex-build-hash` для контроля актуальности бинаря.
 
@@ -66,7 +61,6 @@
   - `spawn_agent` переключён на реестр и агентские YAML-профили.
   - `spawn_agent` поддерживает опциональные override `model`/`reasoning_effort` с наивысшим приоритетом.
     - При наличии списка моделей — проверяется валидность `model` перед спавном.
-  - `agent_list` возвращает список активных агентов (с опциональным включением self/завершённых).
   - **Почему:** согласовать runtime с декларативной моделью агентов.
 - `codex-rs/core/src/tools/handlers/agents.rs`
   - Новый handler для перечисления агентов.
@@ -74,11 +68,6 @@
 - `codex-rs/core/src/tools/spec.rs` + `codex-rs/core/src/tools/spec/agent_tools.rs`
   - Динамическая спецификация для агентских tools.
   - **Почему:** корректные описания в tool schema и согласование с реестром.
-- `codex-rs/core/src/codex.rs`
-  - System footer для системного промпта + seeding в `~/.codex/collab/`.
-  - **Почему:** единая точка для org/проектных обязательных инструкций без изменения основных шаблонов.
-- `codex-rs/core/templates/collab/codex_system_footer.md`
-  - Базовый footer (подлежит override).
 - `codex-rs/core/src/tool_allowlist.rs`
   - Утилиты пересечения allowlist при применении агентских профилей.
   - **Почему:** агент не должен расширять доступ к инструментам поверх базовой политики.

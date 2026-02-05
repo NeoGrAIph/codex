@@ -89,22 +89,9 @@ Lenient instructions...
 
 If `model` or `reasoning_effort` are specified under an `agent_name`, they take priority over
 the top-level values for that variant. Omitted fields inherit from the top-level values.
-If either `model` or `reasoning_effort` is set for an `agent_name`, both must be set.
 
 Legacy fields `name` and `agent_names` are still accepted for compatibility, but must not be
 mixed with `agent_type` or `agent_persons` in the same file.
-
-## System prompt footer (collab)
-
-You can append a system-level footer to the generated system prompt without editing the core
-templates. The footer is resolved in this order:
-
-1) `.codex/collab/codex_system_footer.md` (project override)
-2) `~/.codex/collab/codex_system_footer.md` (user override)
-3) `core/templates/collab/codex_system_footer.md` (built-in default)
-
-On first run, the default footer is seeded to `~/.codex/collab/codex_system_footer.md`
-if it does not already exist.
 
 ## JSON Schema
 
