@@ -59,6 +59,7 @@ use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol::SessionSource as ProtocolSessionSource;
 use codex_core::protocol::SessionSource;
 use codex_core::protocol::SkillErrorInfo;
+use codex_core::protocol::SubAgentSource;
 use codex_core::protocol::TokenUsage;
 #[cfg(target_os = "windows")]
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
@@ -740,6 +741,20 @@ enum CtrlTOverlayMode {
     AgentsDetails,
 }
 
+#[derive(Debug, Clone)]
+struct AgentDescriptor {
+    agent_type: Option<String>,
+    agent_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AgentIdentity {
+    role: String,
+    name: Option<String>,
+    model: Option<String>,
+    reasoning: Option<String>,
+}
+
 pub(crate) struct App {
     pub(crate) server: Arc<ThreadManager>,
     pub(crate) otel_manager: OtelManager,
@@ -796,6 +811,7 @@ pub(crate) struct App {
     collab_thread_created_at: HashMap<ThreadId, Instant>,
     collab_thread_sources: HashMap<ThreadId, ProtocolSessionSource>,
     collab_thread_prompts: HashMap<ThreadId, String>,
+    collab_thread_agents: HashMap<ThreadId, AgentDescriptor>,
 }
 
 #[derive(Default)]
@@ -899,6 +915,7 @@ impl App {
             let status = self.latest_agent_status(id).await;
             let label = status_span(&status);
             let elapsed_s = format_elapsed(elapsed);
+            let identity = self.agent_identity(id).await;
             out.push(
                 vec![
                     "• ".into(),
@@ -910,6 +927,7 @@ impl App {
                 ]
                 .into(),
             );
+            out.push(self.agent_identity_summary_line(&identity));
         }
 
         out
@@ -957,6 +975,9 @@ impl App {
                 .into(),
             );
 
+            let identity = self.agent_identity(id).await;
+            out.extend(self.agent_identity_detail_lines(&identity));
+
             if let Some(prompt) = self.collab_thread_prompts.get(&id) {
                 out.push(vec!["  ".into(), "Task: ".dim(), prompt.clone().into()].into());
             }
@@ -980,6 +1001,113 @@ impl App {
             }
         }
         status
+    }
+
+    async fn latest_agent_session_config(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<SessionConfiguredEvent> {
+        let channel = self.thread_event_channels.get(&thread_id)?;
+        let snapshot = channel.store.lock().await.snapshot();
+        let event = snapshot.session_configured?;
+        match event.msg {
+            EventMsg::SessionConfigured(configured) => Some(configured),
+            _ => None,
+        }
+    }
+
+    fn agent_role_from_source(&self, thread_id: ThreadId) -> Option<String> {
+        let source = self.collab_thread_sources.get(&thread_id)?;
+        match source {
+            ProtocolSessionSource::SubAgent(sub_source) => match sub_source {
+                SubAgentSource::Review => Some("review".to_string()),
+                SubAgentSource::Compact => Some("compact".to_string()),
+                SubAgentSource::ThreadSpawn { .. } => Some("subagent".to_string()),
+                SubAgentSource::Other(other) => Some(other.clone()),
+            },
+            _ => None,
+        }
+    }
+
+    async fn agent_identity(&self, thread_id: ThreadId) -> AgentIdentity {
+        let mut role = None;
+        let mut name = None;
+        if let Some(meta) = self.collab_thread_agents.get(&thread_id) {
+            role = meta.agent_type.clone();
+            name = meta.agent_name.clone();
+        }
+        if role.is_none() {
+            role = self.agent_role_from_source(thread_id);
+        }
+        let role = role.unwrap_or_else(|| "default".to_string());
+
+        let mut model = None;
+        let mut reasoning = None;
+        if let Some(configured) = self.latest_agent_session_config(thread_id).await {
+            let label = Self::reasoning_label(configured.reasoning_effort);
+            model = Some(configured.model);
+            reasoning = Some(label.to_string());
+        }
+
+        AgentIdentity {
+            role,
+            name,
+            model,
+            reasoning,
+        }
+    }
+
+    fn agent_identity_summary_line(&self, identity: &AgentIdentity) -> Line<'static> {
+        let name = identity.name.clone().unwrap_or_else(|| "—".to_string());
+        let model = identity.model.clone().unwrap_or_else(|| "—".to_string());
+        let reasoning = identity
+            .reasoning
+            .clone()
+            .unwrap_or_else(|| "—".to_string());
+        vec![
+            "  ".into(),
+            "Role: ".dim(),
+            identity.role.clone().into(),
+            "  ".into(),
+            "Name: ".dim(),
+            name.into(),
+            "  ".into(),
+            "Model: ".dim(),
+            model.dim(),
+            "  ".into(),
+            "Reasoning: ".dim(),
+            reasoning.dim(),
+        ]
+        .into()
+    }
+
+    fn agent_identity_detail_lines(&self, identity: &AgentIdentity) -> Vec<Line<'static>> {
+        let name = identity.name.clone().unwrap_or_else(|| "—".to_string());
+        let model = identity.model.clone().unwrap_or_else(|| "—".to_string());
+        let reasoning = identity
+            .reasoning
+            .clone()
+            .unwrap_or_else(|| "—".to_string());
+        vec![
+            vec![
+                "  ".into(),
+                "Role: ".dim(),
+                identity.role.clone().into(),
+                "  ".into(),
+                "Name: ".dim(),
+                name.into(),
+            ]
+            .into(),
+            vec![
+                "  ".into(),
+                "Model: ".dim(),
+                model.into(),
+                "  ".into(),
+                "Reasoning: ".dim(),
+                reasoning.into(),
+            ]
+            .into(),
+        ]
     }
 
     async fn latest_agent_event_summary(&self, thread_id: ThreadId) -> Vec<Line<'static>> {
@@ -1297,6 +1425,7 @@ impl App {
         self.collab_thread_created_at.clear();
         self.collab_thread_sources.clear();
         self.collab_thread_prompts.clear();
+        self.collab_thread_agents.clear();
     }
 
     async fn drain_active_thread_events(&mut self, tui: &mut tui::Tui) -> Result<()> {
@@ -1540,6 +1669,7 @@ impl App {
             collab_thread_created_at: HashMap::new(),
             collab_thread_sources: HashMap::new(),
             collab_thread_prompts: HashMap::new(),
+            collab_thread_agents: HashMap::new(),
         };
 
         // On startup, if Agent mode (workspace-write) or ReadOnly is active, warn about world-writable dirs on Windows.
@@ -2658,6 +2788,15 @@ impl App {
             if !prompt.is_empty() {
                 self.collab_thread_prompts.insert(thread_id, prompt);
             }
+            if ev.agent_type.is_some() || ev.agent_name.is_some() {
+                self.collab_thread_agents.insert(
+                    thread_id,
+                    AgentDescriptor {
+                        agent_type: ev.agent_type.clone(),
+                        agent_name: ev.agent_name.clone(),
+                    },
+                );
+            }
         }
         self.chat_widget.handle_codex_event(event);
     }
@@ -3101,6 +3240,7 @@ mod tests {
             collab_thread_created_at: HashMap::new(),
             collab_thread_sources: HashMap::new(),
             collab_thread_prompts: HashMap::new(),
+            collab_thread_agents: HashMap::new(),
         }
     }
 
@@ -3158,6 +3298,7 @@ mod tests {
                 collab_thread_created_at: HashMap::new(),
                 collab_thread_sources: HashMap::new(),
                 collab_thread_prompts: HashMap::new(),
+                collab_thread_agents: HashMap::new(),
             },
             rx,
             op_rx,

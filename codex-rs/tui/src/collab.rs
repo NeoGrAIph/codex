@@ -24,6 +24,8 @@ pub(crate) fn spawn_end(ev: CollabAgentSpawnEndEvent) -> PlainHistoryCell {
         new_thread_id,
         prompt,
         status,
+        agent_type: _,
+        agent_name: _,
     } = ev;
     let new_agent = new_thread_id
         .map(|id| Span::from(id.to_string()))

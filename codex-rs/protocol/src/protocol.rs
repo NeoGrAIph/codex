@@ -2362,6 +2362,12 @@ pub struct CollabAgentSpawnEndEvent {
     pub prompt: String,
     /// Last known status of the new agent reported to the sender agent.
     pub status: AgentStatus,
+    /// Optional agent type requested for the spawned agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    /// Optional agent name requested for the spawned agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]

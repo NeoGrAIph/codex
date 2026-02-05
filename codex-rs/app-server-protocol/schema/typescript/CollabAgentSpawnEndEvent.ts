@@ -25,4 +25,12 @@ prompt: string,
 /**
  * Last known status of the new agent reported to the sender agent.
  */
-status: AgentStatus, };
+status: AgentStatus, 
+/**
+ * Optional agent type requested for the spawned agent.
+ */
+agent_type?: string | null, 
+/**
+ * Optional agent name requested for the spawned agent.
+ */
+agent_name?: string | null, };

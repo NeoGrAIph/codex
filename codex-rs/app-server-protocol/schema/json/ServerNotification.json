@@ -2982,6 +2982,20 @@
         {
           "description": "Collab interaction: agent spawn end.",
           "properties": {
+            "agent_name": {
+              "description": "Optional agent name requested for the spawned agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agent_type": {
+              "description": "Optional agent type requested for the spawned agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "call_id": {
               "description": "Identifier for the collab tool call.",
               "type": "string"

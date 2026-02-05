@@ -194,6 +194,8 @@ mod spawn {
                     new_thread_id,
                     prompt,
                     status,
+                    agent_type: agent_type.clone(),
+                    agent_name: agent_name.clone(),
                 }
                 .into(),
             )
