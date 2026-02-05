@@ -84,6 +84,8 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 65. a05aadfa1 chore(config) Default Personality Pragmatic (#10705) — status: integrated (adopt; cherry-pick `b599ce9e1`); notes: дефолтная personality = pragmatic + новые тесты
 66. 5ea107a08 feat(app-server, core): allow text + image content items for dynamic tool outputs (#10567) — status: integrated (adapt; cherry-pick `681348fc2` + fork fixes в `codex-api/src/requests/chat.rs`, `core/src/tools/handlers/agents.rs`); notes: FunctionCallOutputPayload.body + контент-айтемы, schema/fixtures перегенерированы
 67. 282f42c0c Add option to approve and remember MCP/Apps tool usage (#10584) — status: integrated (adopt; cherry-pick `5df704351`); notes: можно подтвердить и запомнить MCP/apps tool usage
+68. e9335374b feat: add phase 1 mem client (#10629) — status: integrated (adapt; cherry-pick `aadb57231` + fork fix в `codex-api/src/endpoint/memories.rs`); notes: mem client построен на provider+transport без EndpointSession
+69. 4922b3e57 feat: add phase 1 mem db (#10634) — status: integrated (adopt; cherry-pick `4bad02f1d`); notes: thread_memory таблица + runtime API + тесты
 
 ## Likely conflict zones for fork/colab-agents
 

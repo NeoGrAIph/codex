@@ -1,9 +1,10 @@
 use crate::auth::AuthProvider;
+use crate::auth::add_auth_headers;
 use crate::common::MemoryTraceSummarizeInput;
 use crate::common::MemoryTraceSummaryOutput;
-use crate::endpoint::session::EndpointSession;
 use crate::error::ApiError;
 use crate::provider::Provider;
+use crate::telemetry::run_with_request_telemetry;
 use codex_client::HttpTransport;
 use codex_client::RequestTelemetry;
 use http::HeaderMap;
@@ -13,19 +14,26 @@ use serde_json::to_value;
 use std::sync::Arc;
 
 pub struct MemoriesClient<T: HttpTransport, A: AuthProvider> {
-    session: EndpointSession<T, A>,
+    transport: T,
+    provider: Provider,
+    auth: A,
+    request_telemetry: Option<Arc<dyn RequestTelemetry>>,
 }
 
 impl<T: HttpTransport, A: AuthProvider> MemoriesClient<T, A> {
     pub fn new(transport: T, provider: Provider, auth: A) -> Self {
         Self {
-            session: EndpointSession::new(transport, provider, auth),
+            transport,
+            provider,
+            auth,
+            request_telemetry: None,
         }
     }
 
     pub fn with_telemetry(self, request: Option<Arc<dyn RequestTelemetry>>) -> Self {
         Self {
-            session: self.session.with_request_telemetry(request),
+            request_telemetry: request,
+            ..self
         }
     }
 
@@ -38,10 +46,20 @@ impl<T: HttpTransport, A: AuthProvider> MemoriesClient<T, A> {
         body: serde_json::Value,
         extra_headers: HeaderMap,
     ) -> Result<Vec<MemoryTraceSummaryOutput>, ApiError> {
-        let resp = self
-            .session
-            .execute(Method::POST, Self::path(), extra_headers, Some(body))
-            .await?;
+        let builder = || {
+            let mut req = self.provider.build_request(Method::POST, Self::path());
+            req.headers.extend(extra_headers.clone());
+            req.body = Some(body.clone());
+            add_auth_headers(&self.auth, req)
+        };
+
+        let resp = run_with_request_telemetry(
+            self.provider.retry.to_policy(),
+            self.request_telemetry.clone(),
+            builder,
+            |req| self.transport.execute(req),
+        )
+        .await?;
         let parsed: TraceSummarizeResponse =
             serde_json::from_slice(&resp.body).map_err(|e| ApiError::Stream(e.to_string()))?;
         Ok(parsed.output)
