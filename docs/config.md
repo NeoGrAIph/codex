@@ -55,6 +55,39 @@ current allowlist), and denylist rules still apply. Agent `tool_denylist` entrie
 are merged with any existing denylist rather than replacing it. Use `*` to leave tool access
 unchanged.
 
+### Agent name variants
+
+You can declare `agent_names` to provide named instruction variants (A/B) and optionally
+override model and reasoning effort per variant:
+
+```md
+---
+name: "code-reviewer"
+description: "Review code with optional strictness."
+model: "gpt-5.2-codex"
+reasoning_effort: "medium"
+color: "cyan"
+agent_names:
+  - name: strict
+    description: "Strict review mode."
+    model: "gpt-4.1"
+    reasoning_effort: "high"
+  - name: lenient
+    description: "Faster, higher-level review."
+---
+
+Default reviewer instructions...
+
+<!-- agent_name: strict -->
+Strict instructions...
+
+<!-- agent_name: lenient -->
+Lenient instructions...
+```
+
+If `model` or `reasoning_effort` are specified under an `agent_name`, they take priority over
+the top-level values for that variant. Omitted fields inherit from the top-level values.
+
 ## JSON Schema
 
 The generated JSON Schema for `config.toml` lives at `codex-rs/core/config.schema.json`.

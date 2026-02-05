@@ -104,6 +104,8 @@ pub(crate) struct AgentDefinition {
     pub(crate) description: String,
     pub(crate) model: String,
     pub(crate) reasoning_effort: Option<ReasoningEffort>,
+    pub(crate) agent_name_models: HashMap<String, String>,
+    pub(crate) agent_name_reasoning_efforts: HashMap<String, ReasoningEffort>,
     pub(crate) color: AgentColor,
     pub(crate) tools: Option<Vec<String>>,
     pub(crate) read_only: bool,
@@ -123,8 +125,16 @@ impl AgentDefinition {
     ) -> Result<(), String> {
         config.base_instructions = Some(self.instructions_for(agent_name)?.to_string());
         config.model = Some(self.model.clone());
-        // Only override reasoning_effort if explicitly set, otherwise inherit from parent
-        if let Some(effort) = self.reasoning_effort {
+        if let Some(agent_name) = agent_name {
+            if let Some(model) = self.agent_name_models.get(agent_name) {
+                config.model = Some(model.clone());
+            }
+            if let Some(effort) = self.agent_name_reasoning_efforts.get(agent_name) {
+                config.model_reasoning_effort = Some(*effort);
+            } else if let Some(effort) = self.reasoning_effort {
+                config.model_reasoning_effort = Some(effort);
+            }
+        } else if let Some(effort) = self.reasoning_effort {
             config.model_reasoning_effort = Some(effort);
         }
 
@@ -294,6 +304,10 @@ struct AgentFrontmatter {
 struct AgentNameEntry {
     name: String,
     description: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -492,8 +506,8 @@ fn parse_agent_file(path: &Path, scope: AgentScope) -> Result<AgentDefinition, A
     let tool_denylist = normalize_tools(parsed.tool_denylist)?;
 
     let (instructions, agent_name_instructions) = split_agent_instructions(&body)?;
-    let agent_name_descriptions = normalize_agent_names(parsed.agent_names)?;
-    validate_agent_name_blocks(&agent_name_instructions, &agent_name_descriptions)?;
+    let agent_name_overrides = normalize_agent_names(parsed.agent_names)?;
+    validate_agent_name_blocks(&agent_name_instructions, &agent_name_overrides.descriptions)?;
 
     let resolved_path = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
@@ -502,11 +516,13 @@ fn parse_agent_file(path: &Path, scope: AgentScope) -> Result<AgentDefinition, A
         description,
         model,
         reasoning_effort,
+        agent_name_models: agent_name_overrides.models,
+        agent_name_reasoning_efforts: agent_name_overrides.reasoning_efforts,
         color,
         tools,
         read_only,
         tool_denylist,
-        agent_name_descriptions,
+        agent_name_descriptions: agent_name_overrides.descriptions,
         agent_name_instructions,
         instructions,
         path: resolved_path,
@@ -607,13 +623,25 @@ fn split_agent_instructions(
     Ok((instructions, agent_name_instructions))
 }
 
+struct AgentNameOverrides {
+    descriptions: HashMap<String, String>,
+    models: HashMap<String, String>,
+    reasoning_efforts: HashMap<String, ReasoningEffort>,
+}
+
 fn normalize_agent_names(
     agent_names: Option<Vec<AgentNameEntry>>,
-) -> Result<HashMap<String, String>, AgentParseError> {
+) -> Result<AgentNameOverrides, AgentParseError> {
     let Some(agent_names) = agent_names else {
-        return Ok(HashMap::new());
+        return Ok(AgentNameOverrides {
+            descriptions: HashMap::new(),
+            models: HashMap::new(),
+            reasoning_efforts: HashMap::new(),
+        });
     };
     let mut entries = HashMap::new();
+    let mut models = HashMap::new();
+    let mut reasoning_efforts = HashMap::new();
     for entry in agent_names {
         let name = entry.name.trim();
         if name.is_empty() {
@@ -630,6 +658,19 @@ fn normalize_agent_names(
                 reason: format!("description is empty for agent_name \"{name}\""),
             });
         }
+        if let Some(model) = entry.model.as_deref() {
+            let model = model.trim();
+            if model.is_empty() {
+                return Err(AgentParseError::InvalidField {
+                    field: "agent_names",
+                    reason: format!("model is empty for agent_name \"{name}\""),
+                });
+            }
+            models.insert(name.to_string(), model.to_string());
+        }
+        if let Some(effort) = entry.reasoning_effort {
+            reasoning_efforts.insert(name.to_string(), effort);
+        }
         if entries
             .insert(name.to_string(), description.to_string())
             .is_some()
@@ -640,7 +681,11 @@ fn normalize_agent_names(
             });
         }
     }
-    Ok(entries)
+    Ok(AgentNameOverrides {
+        descriptions: entries,
+        models,
+        reasoning_efforts,
+    })
 }
 
 fn validate_agent_name_blocks(
@@ -925,6 +970,8 @@ mod tests {
                     description: "Use for execution.\nExtra line.".to_string(),
                     model: "gpt-5".to_string(),
                     reasoning_effort: None,
+                    agent_name_models: HashMap::new(),
+                    agent_name_reasoning_efforts: HashMap::new(),
                     color: AgentColor::Blue,
                     tools: None,
                     read_only: false,
@@ -940,6 +987,8 @@ mod tests {
                     description: "Use for exploration.".to_string(),
                     model: "gpt-5".to_string(),
                     reasoning_effort: None,
+                    agent_name_models: HashMap::new(),
+                    agent_name_reasoning_efforts: HashMap::new(),
                     color: AgentColor::Cyan,
                     tools: None,
                     read_only: false,
@@ -1013,6 +1062,8 @@ Instructions for the agent
             description: "Use for execution.".to_string(),
             model: "gpt-5".to_string(),
             reasoning_effort: None,
+            agent_name_models: HashMap::new(),
+            agent_name_reasoning_efforts: HashMap::new(),
             color: AgentColor::Blue,
             tools: None,
             read_only: false,
@@ -1032,6 +1083,56 @@ Instructions for the agent
             config.tool_denylist,
             Some(vec!["shell".to_string(), "apply_patch".to_string()])
         );
+    }
+
+    #[tokio::test]
+    async fn agent_name_overrides_model_and_effort() {
+        let codex_home = TempDir::new().expect("tempdir");
+        let mut config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .expect("load config");
+        config.model_reasoning_effort = Some(ReasoningEffort::Medium);
+
+        let agent = AgentDefinition {
+            name: "reviewer".to_string(),
+            description: "Default reviewer description".to_string(),
+            model: "gpt-5".to_string(),
+            reasoning_effort: None,
+            agent_name_models: HashMap::from([("strict".to_string(), "gpt-4.1".to_string())]),
+            agent_name_reasoning_efforts: HashMap::from([(
+                "strict".to_string(),
+                ReasoningEffort::High,
+            )]),
+            color: AgentColor::Red,
+            tools: None,
+            read_only: false,
+            tool_denylist: None,
+            agent_name_descriptions: HashMap::from([(
+                "strict".to_string(),
+                "Strict instructions".to_string(),
+            )]),
+            agent_name_instructions: HashMap::from([(
+                "strict".to_string(),
+                "Strict instructions".to_string(),
+            )]),
+            instructions: "Default instructions.".to_string(),
+            path: PathBuf::from("reviewer.md"),
+            scope: AgentScope::User,
+        };
+
+        agent
+            .apply_to_config(&mut config, None)
+            .expect("apply to config");
+        assert_eq!(config.model.as_deref(), Some("gpt-5"));
+        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Medium));
+
+        agent
+            .apply_to_config(&mut config, Some("strict"))
+            .expect("apply to config");
+        assert_eq!(config.model.as_deref(), Some("gpt-4.1"));
+        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
     }
 
     #[test]
