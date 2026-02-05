@@ -551,7 +551,6 @@ async fn handle_model_migration_prompt_if_needed(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CtrlTOverlayMode {
-    Transcript,
     AgentsSummary,
     AgentsDetails,
 }
@@ -645,10 +644,6 @@ impl App {
     pub(crate) async fn cycle_ctrl_t_overlay(&mut self, tui: &mut tui::Tui) {
         match self.ctrl_t_overlay_mode {
             None => {
-                self.open_transcript_overlay(tui);
-                self.ctrl_t_overlay_mode = Some(CtrlTOverlayMode::Transcript);
-            }
-            Some(CtrlTOverlayMode::Transcript) => {
                 self.backtrack.overlay_preview_active = false;
                 self.open_agents_summary_overlay(tui).await;
                 self.ctrl_t_overlay_mode = Some(CtrlTOverlayMode::AgentsSummary);

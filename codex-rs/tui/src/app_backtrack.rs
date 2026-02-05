@@ -10,14 +10,13 @@
 //!
 //! Backtrack operates as a small state machine:
 //! - The first `Esc` in the main view "primes" the feature and captures a base thread id.
-//! - A subsequent `Esc` opens the transcript overlay (`Ctrl+T`, or `Ctrl+N` when enabled) and
-//!   highlights a user message.
+//! - A subsequent `Esc` opens the transcript overlay (`Ctrl+T`) and highlights a user message.
 //! - `Enter` requests a rollback from core and records a `pending_rollback` guard.
 //! - Only after receiving `EventMsg::ThreadRolledBack` do we trim local transcript state and
 //!   schedule a one-time scrollback refresh.
 //!
-//! The transcript overlay (`Ctrl+T`, or `Ctrl+N` when enabled) renders committed transcript cells
-//! plus a render-only live tail derived from the current in-flight `ChatWidget.active_cell`.
+//! The transcript overlay (`Ctrl+T`) renders committed transcript cells plus a render-only live
+//! tail derived from the current in-flight `ChatWidget.active_cell`.
 //!
 //! That live tail is kept in sync during `TuiEvent::Draw` handling for `Overlay::Transcript` by
 //! asking `ChatWidget` for an active-cell cache key and transcript lines and by passing them into

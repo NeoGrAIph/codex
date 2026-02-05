@@ -654,6 +654,7 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
     let mut edit_previous = Line::from("");
     let mut quit = Line::from("");
     let mut show_transcript = Line::from("");
+    let mut show_agents = Line::from("");
     let mut change_mode = Line::from("");
 
     for descriptor in SHORTCUTS {
@@ -669,6 +670,7 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
                 ShortcutId::EditPrevious => edit_previous = text,
                 ShortcutId::Quit => quit = text,
                 ShortcutId::ShowTranscript => show_transcript = text,
+                ShortcutId::ShowAgents => show_agents = text,
                 ShortcutId::ChangeMode => change_mode = text,
             }
         }
@@ -690,6 +692,9 @@ fn shortcut_overlay_lines(state: ShortcutsState) -> Vec<Line<'static>> {
     }
     ordered.push(Line::from(""));
     ordered.push(show_transcript);
+    if show_agents.width() > 0 {
+        ordered.push(show_agents);
+    }
 
     build_columns(ordered)
 }
@@ -767,6 +772,7 @@ enum ShortcutId {
     EditPrevious,
     Quit,
     ShowTranscript,
+    ShowAgents,
     ChangeMode,
 }
 
@@ -828,13 +834,6 @@ impl ShortcutDescriptor {
                         key_hint::plain(KeyCode::Esc).into(),
                         " to edit previous message".into(),
                     ]);
-                }
-            }
-            ShortcutId::ShowTranscript => {
-                if state.collaboration_modes_enabled {
-                    line.push_span(" to view transcript / agents");
-                } else {
-                    line.push_span(self.label);
                 }
             }
             _ => line.push_span(self.label),
@@ -941,18 +940,21 @@ const SHORTCUTS: &[ShortcutDescriptor] = &[
     },
     ShortcutDescriptor {
         id: ShortcutId::ShowTranscript,
-        bindings: &[
-            ShortcutBinding {
-                key: key_hint::ctrl(KeyCode::Char('n')),
-                condition: DisplayCondition::WhenCollaborationModesEnabled,
-            },
-            ShortcutBinding {
-                key: key_hint::ctrl(KeyCode::Char('t')),
-                condition: DisplayCondition::Always,
-            },
-        ],
+        bindings: &[ShortcutBinding {
+            key: key_hint::ctrl(KeyCode::Char('t')),
+            condition: DisplayCondition::Always,
+        }],
         prefix: "",
         label: " to view transcript",
+    },
+    ShortcutDescriptor {
+        id: ShortcutId::ShowAgents,
+        bindings: &[ShortcutBinding {
+            key: key_hint::ctrl(KeyCode::Char('n')),
+            condition: DisplayCondition::WhenCollaborationModesEnabled,
+        }],
+        prefix: "",
+        label: " to view agents",
     },
     ShortcutDescriptor {
         id: ShortcutId::ChangeMode,
