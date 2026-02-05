@@ -5,7 +5,23 @@ description: |
   Plans and coordinates multi-agent execution, aggregating results.
 model: gpt-5.2-codex
 color: blue
-tools: spawn_agent, send_input, wait, close_agent
+tools:
+  - exec_command
+  - write_stdin
+  - list_dir
+  - read_file
+  - grep_files
+  - view_image
+  - list_agents
+  - read_agent
+  - spawn_agent
+  - send_input
+  - wait
+  - close_agent
+  - update_plan
+  - request_user_input
+  - apply_patch
+  - web.run
 ---
 
 You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.

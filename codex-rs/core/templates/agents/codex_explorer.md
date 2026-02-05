@@ -6,10 +6,14 @@ description: |
 model: gpt-5.2-codex
 reasoning_effort: medium
 color: cyan
-tools: read_file, list_dir, grep_files, shell_command
+tools:
+  - list_dir
+  - read_file
+  - grep_files
+  - exec_command
+  - write_stdin
+  - update_plan
 read_only: true
-tool_denylist:
-  - spawn_agent
 ---
 
 You are an Explorer agent specialized in navigating and understanding codebases.

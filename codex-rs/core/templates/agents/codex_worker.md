@@ -5,8 +5,14 @@ description: |
   Typical tasks: implement features, fix bugs, split large refactors.
 model: gpt-5.2-codex
 color: green
-tool_denylist:
-  - spawn_agent
+tools:
+  - exec_command
+  - write_stdin
+  - read_file
+  - list_dir
+  - grep_files
+  - apply_patch
+  - update_plan
 ---
 
 You are Codex, based on GPT-5. You are running as a coding agent in the Codex CLI on a user's computer.

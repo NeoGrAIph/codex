@@ -7,16 +7,14 @@ model: gpt-5.2-codex
 reasoning_effort: medium
 color: red
 read_only: true
-tool_denylist:
-  - apply_patch
+tools:
+  - list_dir
+  - read_file
+  - grep_files
   - exec_command
-  - shell
-  - shell_command
-  - spawn_agent
-  - send_input
-  - wait
-  - close_agent
   - write_stdin
+  - web.run
+  - update_plan
 agent_names:
   - name: strict
     description: Strict reviewer focusing on correctness and security

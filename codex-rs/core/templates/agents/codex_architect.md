@@ -7,16 +7,12 @@ model: gpt-5.2-codex
 reasoning_effort: high
 color: yellow
 read_only: true
-tool_denylist:
-  - apply_patch
-  - exec_command
-  - shell
-  - shell_command
-  - spawn_agent
-  - send_input
-  - wait
-  - close_agent
-  - write_stdin
+tools:
+  - list_dir
+  - read_file
+  - grep_files
+  - web.run
+  - update_plan
 ---
 
 You are an Architecture Planning agent.
