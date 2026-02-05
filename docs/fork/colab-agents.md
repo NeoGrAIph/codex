@@ -1,7 +1,7 @@
 # fork/colab-agents
 
 > Owner: <team/owner> | Scope: fork/colab-agents | Audience: devs
-> Status: active | Last reviewed: 2026-02-04 | Related: codex-rs/AGENTS.md
+> Status: active | Last reviewed: 2026-02-05 | Related: codex-rs/AGENTS.md
 
 ## Контекст
 
@@ -91,6 +91,16 @@
 - `codex-rs/tui/src/chatwidget.rs` + снапшоты
   - Префикс `FN` в отображаемой версии.
   - **Почему:** чёткое различение fork-бинаря.
+
+### TUI: хоткеи и overlay-поведение (multi-agent)
+- **Ctrl+T** — только transcript (upstream-канон). Нельзя переиспользовать под multi-agent.
+- **Ctrl+N** — только multi-agent overlays при включённом `fn_multi_agents`/`collaboration_modes`.
+  - Цикл начинается с `AgentsSummary` → `AgentsDetails` → close.
+- **Alt-screen дисциплина:** не вызывать повторный `enter_alt_screen()` при уже активном overlay.
+  - Иначе затирается сохранённый viewport и возврат из overlay ведёт себя некорректно
+    (терминал не восстанавливается как после transcript).
+- **Цель:** поведение возврата из Ctrl+N overlay должно быть каноничным (как у Ctrl+T),
+  при этом не смешивать режимы и не ломать upstream-горячие клавиши.
 
 ### Локальные сборки
 - `scripts/codex-fork-build.sh`
