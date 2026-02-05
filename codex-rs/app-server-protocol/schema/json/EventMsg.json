@@ -551,7 +551,7 @@
                   "$ref": "#/definitions/ModeKind"
                 }
               ],
-              "default": "default"
+              "default": "code"
             },
             "model_context_window": {
               "format": "int64",
@@ -2013,59 +2013,6 @@
           "type": "object"
         },
         {
-          "description": "List of remote skills available to the agent.",
-          "properties": {
-            "skills": {
-              "items": {
-                "$ref": "#/definitions/RemoteSkillSummary"
-              },
-              "type": "array"
-            },
-            "type": {
-              "enum": [
-                "list_remote_skills_response"
-              ],
-              "title": "ListRemoteSkillsResponseEventMsgType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "skills",
-            "type"
-          ],
-          "title": "ListRemoteSkillsResponseEventMsg",
-          "type": "object"
-        },
-        {
-          "description": "Remote skill downloaded to local cache.",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "name": {
-              "type": "string"
-            },
-            "path": {
-              "type": "string"
-            },
-            "type": {
-              "enum": [
-                "remote_skill_downloaded"
-              ],
-              "title": "RemoteSkillDownloadedEventMsgType",
-              "type": "string"
-            }
-          },
-          "required": [
-            "id",
-            "name",
-            "path",
-            "type"
-          ],
-          "title": "RemoteSkillDownloadedEventMsg",
-          "type": "object"
-        },
-        {
           "description": "Notification that skill data may have been updated and clients may want to reload.",
           "properties": {
             "type": {
@@ -2457,6 +2404,20 @@
         {
           "description": "Collab interaction: agent spawn end.",
           "properties": {
+            "agent_name": {
+              "description": "Optional agent name requested for the spawned agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agent_type": {
+              "description": "Optional agent type requested for the spawned agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "call_id": {
               "description": "Identifier for the collab tool call.",
               "type": "string"
@@ -3179,7 +3140,10 @@
       "description": "Initial collaboration mode to use when the TUI starts.",
       "enum": [
         "plan",
-        "default"
+        "code",
+        "pair_programming",
+        "execute",
+        "custom"
       ],
       "type": "string"
     },
@@ -3486,25 +3450,6 @@
         }
       ]
     },
-    "RemoteSkillSummary": {
-      "properties": {
-        "description": {
-          "type": "string"
-        },
-        "id": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "description",
-        "id",
-        "name"
-      ],
-      "type": "object"
-    },
     "RequestId": {
       "anyOf": [
         {
@@ -3762,7 +3707,7 @@
               ]
             },
             "id": {
-              "description": "Legacy id field retained for compatibility with older payloads.",
+              "description": "Set when using the chat completions API.",
               "type": [
                 "string",
                 "null"
@@ -5151,7 +5096,7 @@
               "$ref": "#/definitions/ModeKind"
             }
           ],
-          "default": "default"
+          "default": "code"
         },
         "model_context_window": {
           "format": "int64",
@@ -6613,59 +6558,6 @@
       "type": "object"
     },
     {
-      "description": "List of remote skills available to the agent.",
-      "properties": {
-        "skills": {
-          "items": {
-            "$ref": "#/definitions/RemoteSkillSummary"
-          },
-          "type": "array"
-        },
-        "type": {
-          "enum": [
-            "list_remote_skills_response"
-          ],
-          "title": "ListRemoteSkillsResponseEventMsgType",
-          "type": "string"
-        }
-      },
-      "required": [
-        "skills",
-        "type"
-      ],
-      "title": "ListRemoteSkillsResponseEventMsg",
-      "type": "object"
-    },
-    {
-      "description": "Remote skill downloaded to local cache.",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        },
-        "type": {
-          "enum": [
-            "remote_skill_downloaded"
-          ],
-          "title": "RemoteSkillDownloadedEventMsgType",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "path",
-        "type"
-      ],
-      "title": "RemoteSkillDownloadedEventMsg",
-      "type": "object"
-    },
-    {
       "description": "Notification that skill data may have been updated and clients may want to reload.",
       "properties": {
         "type": {
@@ -7057,6 +6949,20 @@
     {
       "description": "Collab interaction: agent spawn end.",
       "properties": {
+        "agent_name": {
+          "description": "Optional agent name requested for the spawned agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent_type": {
+          "description": "Optional agent type requested for the spawned agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "call_id": {
           "description": "Identifier for the collab tool call.",
           "type": "string"

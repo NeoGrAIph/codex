@@ -82,6 +82,8 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 63. d876f3b94 fix(tui): restore working shimmer after preamble output (#10701) — status: integrated (adapt; cherry-pick `777ae7313` + fork fix в `tui/src/chatwidget.rs`); notes: восстановление status indicator при idle, адаптация под текущий commit-tick код
 64. cd5f49a61 chore(core): Steer mode stable by default in config (#10691) — status: integrated (adopt; cherry-pick `d606a606a`); notes: steer default для новых конфигов
 65. a05aadfa1 chore(config) Default Personality Pragmatic (#10705) — status: integrated (adopt; cherry-pick `b599ce9e1`); notes: дефолтная personality = pragmatic + новые тесты
+66. 5ea107a08 feat(app-server, core): allow text + image content items for dynamic tool outputs (#10567) — status: integrated (adapt; cherry-pick `681348fc2` + fork fixes в `codex-api/src/requests/chat.rs`, `core/src/tools/handlers/agents.rs`); notes: FunctionCallOutputPayload.body + контент-айтемы, schema/fixtures перегенерированы
+67. 282f42c0c Add option to approve and remember MCP/Apps tool usage (#10584) — status: integrated (adopt; cherry-pick `5df704351`); notes: можно подтвердить и запомнить MCP/apps tool usage
 
 ## Likely conflict zones for fork/colab-agents
 

@@ -421,7 +421,7 @@
               ]
             },
             "id": {
-              "description": "Legacy id field retained for compatibility with older payloads.",
+              "description": "Set when using the chat completions API.",
               "type": [
                 "string",
                 "null"

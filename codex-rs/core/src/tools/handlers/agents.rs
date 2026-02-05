@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::openai_models::ReasoningEffort;
 use serde::Deserialize;
 use serde::Serialize;
@@ -114,8 +115,7 @@ impl ToolHandler for ListAgentsHandler {
         let registry = AgentRegistry::load_for_config(turn.client.config().as_ref());
         if registry.agents.is_empty() {
             return Ok(ToolOutput::Function {
-                content: "No agents found in the registry.".to_string(),
-                content_items: None,
+                body: FunctionCallOutputBody::Text("No agents found in the registry.".to_string()),
                 success: Some(false),
             });
         }
@@ -159,8 +159,7 @@ impl ToolHandler for ListAgentsHandler {
         })?;
 
         Ok(ToolOutput::Function {
-            content,
-            content_items: None,
+            body: FunctionCallOutputBody::Text(content),
             success: Some(true),
         })
     }
@@ -207,8 +206,7 @@ impl ToolHandler for ReadAgentHandler {
         })?;
 
         Ok(ToolOutput::Function {
-            content,
-            content_items: None,
+            body: FunctionCallOutputBody::Text(content),
             success: Some(true),
         })
     }
