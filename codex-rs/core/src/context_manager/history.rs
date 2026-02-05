@@ -9,6 +9,7 @@ use crate::truncate::approx_tokens_from_byte_count;
 use crate::truncate::truncate_function_output_items_with_policy;
 use crate::truncate::truncate_text;
 use crate::user_shell_command::is_user_shell_command_text;
+use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -85,12 +86,23 @@ impl ContextManager {
     // Estimate token usage using byte-based heuristics from the truncation helpers.
     // This is a coarse lower bound, not a tokenizer-accurate count.
     pub(crate) fn estimate_token_count(&self, turn_context: &TurnContext) -> Option<i64> {
+        // === FORK: TurnContext doesn't store model_info/config; use client instead.
         let model_info = turn_context.client.get_model_info();
         let personality = turn_context
             .personality
             .or(turn_context.client.config().personality);
-        let base_instructions = model_info.get_model_instructions(personality);
-        let base_tokens = i64::try_from(approx_token_count(&base_instructions)).unwrap_or(i64::MAX);
+        let base_instructions = BaseInstructions {
+            text: model_info.get_model_instructions(personality),
+        };
+        self.estimate_token_count_with_base_instructions(&base_instructions)
+    }
+
+    pub(crate) fn estimate_token_count_with_base_instructions(
+        &self,
+        base_instructions: &BaseInstructions,
+    ) -> Option<i64> {
+        let base_tokens =
+            i64::try_from(approx_token_count(&base_instructions.text)).unwrap_or(i64::MAX);
 
         let items_tokens = self.items.iter().fold(0i64, |acc, item| {
             acc.saturating_add(estimate_item_token_count(item))
