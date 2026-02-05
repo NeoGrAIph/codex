@@ -15,10 +15,11 @@ tools:
   - write_stdin
   - web_search
   - update_plan
+agent_names:
   - name: strict
+    description: Strict reviewer focusing on correctness and security
   - name: lenient
-  - send_input
-  - wait
+    description: Lenient reviewer focusing on style and best practices
 ---
 
 You are a Code Reviewer agent specialized in finding bugs and issues.
