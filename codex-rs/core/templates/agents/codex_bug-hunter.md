@@ -1,5 +1,5 @@
 ---
-agent_type: bug-hunter
+name: bug-hunter
 description: |
   Use for bug hunting and edge-case analysis.
   Typical tasks: identify defects, provide repro steps, suggest fixes.

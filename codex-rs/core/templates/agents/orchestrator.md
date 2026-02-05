@@ -1,5 +1,5 @@
 ---
-agent_type: orchestrator
+name: orchestrator
 description: Plans and coordinates multi-agent execution, delegating to specialists with clear tasks and aggregating results into a single actionable response
 tools: Glob, Grep, LS, Read, NotebookRead, TodoWrite, Bash, BashOutput, KillShell
 model: gpt-5.2-codex

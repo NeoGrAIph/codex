@@ -1,5 +1,5 @@
 ---
-agent_type: reviewer
+name: reviewer
 description: |
   Use for code review and quality checks.
   Typical tasks: review changes for correctness, flag security issues, suggest tests.
@@ -17,10 +17,10 @@ tool_denylist:
   - wait
   - close_agent
   - write_stdin
-agent_persons:
-  - agent_name: strict
+agent_names:
+  - name: strict
     description: Strict reviewer focusing on correctness and security
-  - agent_name: lenient
+  - name: lenient
     description: Lenient reviewer focusing on style and best practices
 ---
 

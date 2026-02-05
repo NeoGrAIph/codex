@@ -1,5 +1,5 @@
 ---
-agent_type: orchestrator
+name: orchestrator
 description: |
   Coordination-only agent that delegates to workers.
   Plans and coordinates multi-agent execution, aggregating results.

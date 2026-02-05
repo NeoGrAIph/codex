@@ -1,5 +1,5 @@
 ---
-agent_type: worker
+name: worker
 description: |
   Use for execution and production work.
   Typical tasks: implement features, fix bugs, split large refactors.

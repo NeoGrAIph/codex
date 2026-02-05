@@ -36,7 +36,7 @@ Each agent file is a Markdown file with YAML frontmatter and an instructions bod
 
 ```md
 ---
-agent_type: "code-architect"
+name: "code-architect"
 description: "Architecture guidance and review."
 model: "gpt-5.2-codex"
 reasoning_effort: "medium"
@@ -57,22 +57,22 @@ unchanged.
 
 ### Agent name variants
 
-You can declare `agent_persons` to provide named instruction variants (A/B) and optionally
+You can declare `agent_names` to provide named instruction variants (A/B) and optionally
 override model and reasoning effort per variant:
 
 ```md
 ---
-agent_type: "code-reviewer"
+name: "code-reviewer"
 description: "Review code with optional strictness."
 model: "gpt-5.2-codex"
 reasoning_effort: "medium"
 color: "cyan"
-agent_persons:
-  - agent_name: strict
+agent_names:
+  - name: strict
     description: "Strict review mode."
     model: "gpt-4.1"
     reasoning_effort: "high"
-  - agent_name: lenient
+  - name: lenient
     description: "Faster, higher-level review."
 ---
 
@@ -87,9 +87,6 @@ Lenient instructions...
 
 If `model` or `reasoning_effort` are specified under an `agent_name`, they take priority over
 the top-level values for that variant. Omitted fields inherit from the top-level values.
-
-Legacy fields `name` and `agent_names` are still accepted for compatibility, but must not be
-mixed with `agent_type` or `agent_persons` in the same file.
 
 ## JSON Schema
 
