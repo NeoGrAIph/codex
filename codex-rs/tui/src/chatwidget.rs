@@ -5457,13 +5457,10 @@ impl ChatWidget {
         if !self.collaboration_modes_enabled() {
             return None;
         }
-        match self.active_mode_kind() {
-            ModeKind::Plan => Some("Plan"),
-            ModeKind::Code => Some("Code"),
-            ModeKind::PairProgramming => Some("Pair Programming"),
-            ModeKind::Execute => Some("Execute"),
-            ModeKind::Custom => None,
-        }
+        let active_mode = self.active_mode_kind();
+        active_mode
+            .is_tui_visible()
+            .then_some(active_mode.display_name())
     }
 
     fn collaboration_mode_indicator(&self) -> Option<CollaborationModeIndicator> {

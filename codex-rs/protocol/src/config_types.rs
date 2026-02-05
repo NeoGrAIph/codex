@@ -173,10 +173,33 @@ pub enum AltScreenMode {
 pub enum ModeKind {
     Plan,
     #[default]
-    Code,
+    #[serde(alias = "code")]
+    Default,
     PairProgramming,
     Execute,
     Custom,
+}
+
+pub const TUI_VISIBLE_COLLABORATION_MODES: [ModeKind; 2] = [ModeKind::Default, ModeKind::Plan];
+
+impl ModeKind {
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Plan => "Plan",
+            Self::Default => "Default",
+            Self::PairProgramming => "Pair Programming",
+            Self::Execute => "Execute",
+            Self::Custom => "Custom",
+        }
+    }
+
+    pub const fn is_tui_visible(self) -> bool {
+        matches!(self, Self::Plan | Self::Default)
+    }
+
+    pub const fn allows_request_user_input(self) -> bool {
+        matches!(self, Self::Plan)
+    }
 }
 
 /// Collaboration mode for a Codex session.
@@ -276,7 +299,7 @@ mod tests {
     #[test]
     fn apply_mask_can_clear_optional_fields() {
         let mode = CollaborationMode {
-            mode: ModeKind::Code,
+            mode: ModeKind::Default,
             settings: Settings {
                 model: "gpt-5.2-codex".to_string(),
                 reasoning_effort: Some(ReasoningEffort::High),
@@ -292,7 +315,7 @@ mod tests {
         };
 
         let expected = CollaborationMode {
-            mode: ModeKind::Code,
+            mode: ModeKind::Default,
             settings: Settings {
                 model: "gpt-5.2-codex".to_string(),
                 reasoning_effort: None,
@@ -300,5 +323,25 @@ mod tests {
             },
         };
         assert_eq!(expected, mode.apply_mask(&mask));
+    }
+
+    #[test]
+    fn mode_kind_deserializes_code_alias_to_default() {
+        let mode: ModeKind = serde_json::from_str("\"code\"").expect("deserialize mode");
+        assert_eq!(ModeKind::Default, mode);
+    }
+
+    #[test]
+    fn tui_visible_collaboration_modes_match_mode_kind_visibility() {
+        let expected = [ModeKind::Default, ModeKind::Plan];
+        assert_eq!(expected, TUI_VISIBLE_COLLABORATION_MODES);
+
+        for mode in TUI_VISIBLE_COLLABORATION_MODES {
+            assert!(mode.is_tui_visible());
+        }
+
+        assert!(!ModeKind::PairProgramming.is_tui_visible());
+        assert!(!ModeKind::Execute.is_tui_visible());
+        assert!(!ModeKind::Custom.is_tui_visible());
     }
 }
