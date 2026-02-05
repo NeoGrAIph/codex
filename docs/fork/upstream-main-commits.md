@@ -76,6 +76,8 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 57. 73f32840c chore(core) personality migration tests (#10650) — status: integrated (adopt; cherry-pick `01f131e1c`); notes: расширены тесты миграции personality
 58. 224c9f768 chore(app-server): document experimental API opt-in (#10667) — status: integrated (adopt; cherry-pick `bf876dac5`); notes: документация про experimental opt‑in
 59. 82464689c ## New Features - Steer mode is now stable and enabled by default, so `Enter` sends immediately during running tasks while `Tab` explicitly queues follow-up input. (#10690) — status: integrated (adopt; cherry-pick `18171a255`); notes: bump версии workspace до 0.98.0
+60. cddfd1e67 feat(core): add configurable log_dir (#10678) — status: integrated (adapt; manual `022816ce2`); notes: log_dir + относительные пути в overrides, восстановлен doc
+61. d452bb3ae Add /debug-config slash command (#10642) — status: integrated (adopt; cherry-pick `959edc1a0`); notes: /debug-config в TUI, вывод слоёв конфигурации
 
 ## Likely conflict zones for fork/colab-agents
 
