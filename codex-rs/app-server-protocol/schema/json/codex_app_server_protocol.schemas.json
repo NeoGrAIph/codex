@@ -8599,6 +8599,18 @@
           "properties": {
             "thread_spawn": {
               "properties": {
+                "agent_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "agent_type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "depth": {
                   "format": "int32",
                   "type": "integer"
@@ -13451,6 +13463,18 @@
             "properties": {
               "thread_spawn": {
                 "properties": {
+                  "agent_name": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "agent_type": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "depth": {
                     "format": "int32",
                     "type": "integer"

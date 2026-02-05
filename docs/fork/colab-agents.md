@@ -98,6 +98,8 @@
 - **Ctrl+T** — только transcript (upstream-канон). Нельзя переиспользовать под multi-agent.
 - **Ctrl+N** — только multi-agent overlays при включённом `fn_multi_agents`/`collaboration_modes`.
   - Цикл начинается с `AgentsSummary` → `AgentsDetails` → close.
+- **Agents overlay** — при `spawn_agent` `agent_type`/`agent_name` прокидываются в источник сессии,
+  чтобы в списке агентов показывалась роль и иерархия дочерних потоков.
 - **Alt-screen дисциплина:** не вызывать повторный `enter_alt_screen()` при уже активном overlay.
   - Иначе затирается сохранённый viewport и возврат из overlay ведёт себя некорректно
     (терминал не восстанавливается как после transcript).

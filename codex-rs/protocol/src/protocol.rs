@@ -1582,6 +1582,10 @@ pub enum SubAgentSource {
     ThreadSpawn {
         parent_thread_id: ThreadId,
         depth: i32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_type: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_name: Option<String>,
     },
     Other(String),
 }
@@ -1607,6 +1611,7 @@ impl fmt::Display for SubAgentSource {
             SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,
+                ..
             } => {
                 write!(f, "thread_spawn_{parent_thread_id}_d{depth}")
             }

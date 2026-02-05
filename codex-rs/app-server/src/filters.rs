@@ -133,6 +133,8 @@ mod tests {
         let spawn = CoreSessionSource::SubAgent(CoreSubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth: 1,
+            agent_type: None,
+            agent_name: None,
         });
 
         assert!(source_kind_matches(

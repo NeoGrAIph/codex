@@ -888,24 +888,16 @@ impl App {
 
     async fn build_agents_summary_lines(&self) -> Vec<Line<'static>> {
         let now = Instant::now();
-        let mut thread_ids: Vec<_> = self
-            .collab_thread_sources
-            .iter()
-            .filter_map(|(id, source)| {
-                matches!(source, ProtocolSessionSource::SubAgent(_)).then_some(*id)
-            })
-            .collect();
-        thread_ids.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
-
-        if thread_ids.is_empty() {
+        let nodes = self.subagent_tree_nodes();
+        if nodes.is_empty() {
             return vec!["No active sub-agent threads.".italic().into()];
         }
 
-        let mut out: Vec<Line<'static>> = Vec::with_capacity(thread_ids.len() + 2);
+        let mut out: Vec<Line<'static>> = Vec::with_capacity(nodes.len() + 2);
         out.push("Sub-agents spawned in this session:".bold().into());
         out.push("".into());
 
-        for id in thread_ids {
+        for (id, depth) in nodes {
             let created_at = self
                 .collab_thread_created_at
                 .get(&id)
@@ -916,9 +908,12 @@ impl App {
             let label = status_span(&status);
             let elapsed_s = format_elapsed(elapsed);
             let identity = self.agent_identity(id).await;
+            let indent = "  ".repeat(depth);
+            let bullet = format!("{indent}• ");
+            let detail_indent = format!("{indent}  ");
             out.push(
                 vec![
-                    "• ".into(),
+                    bullet.into(),
                     id.to_string().dim(),
                     "  ".into(),
                     label,
@@ -927,7 +922,7 @@ impl App {
                 ]
                 .into(),
             );
-            out.push(self.agent_identity_summary_line(&identity));
+            out.push(self.agent_identity_summary_line(&identity, &detail_indent));
         }
 
         out
@@ -935,23 +930,19 @@ impl App {
 
     async fn build_agents_details_lines(&self) -> Vec<Line<'static>> {
         let now = Instant::now();
-        let mut thread_ids: Vec<_> = self
-            .collab_thread_sources
-            .iter()
-            .filter_map(|(id, source)| {
-                matches!(source, ProtocolSessionSource::SubAgent(_)).then_some(*id)
-            })
-            .collect();
-        thread_ids.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
-
-        if thread_ids.is_empty() {
+        let nodes = self.subagent_tree_nodes();
+        if nodes.is_empty() {
             return vec!["No active sub-agent threads.".italic().into()];
         }
 
         let mut out: Vec<Line<'static>> = Vec::new();
-        for (idx, id) in thread_ids.into_iter().enumerate() {
-            if idx > 0 {
+        let mut first_root = true;
+        for (id, depth) in nodes {
+            if depth == 0 && !first_root {
                 out.push("".into());
+            }
+            if depth == 0 {
+                first_root = false;
             }
             let created_at = self
                 .collab_thread_created_at
@@ -962,10 +953,13 @@ impl App {
             let status = self.latest_agent_status(id).await;
             let label = status_span(&status);
             let elapsed_s = format_elapsed(elapsed);
+            let indent = "  ".repeat(depth);
+            let bullet = format!("{indent}• ");
+            let detail_indent = format!("{indent}  ");
 
             out.push(
                 vec![
-                    "• ".into(),
+                    bullet.into(),
                     id.to_string().cyan().bold(),
                     "  ".into(),
                     label,
@@ -976,13 +970,20 @@ impl App {
             );
 
             let identity = self.agent_identity(id).await;
-            out.extend(self.agent_identity_detail_lines(&identity));
+            out.extend(self.agent_identity_detail_lines(&identity, &detail_indent));
 
             if let Some(prompt) = self.collab_thread_prompts.get(&id) {
-                out.push(vec!["  ".into(), "Task: ".dim(), prompt.clone().into()].into());
+                out.push(
+                    vec![
+                        detail_indent.clone().into(),
+                        "Task: ".dim(),
+                        prompt.clone().into(),
+                    ]
+                    .into(),
+                );
             }
 
-            let details = self.latest_agent_event_summary(id).await;
+            let details = self.latest_agent_event_summary(id, &detail_indent).await;
             out.extend(details);
         }
 
@@ -1022,6 +1023,10 @@ impl App {
             ProtocolSessionSource::SubAgent(sub_source) => match sub_source {
                 SubAgentSource::Review => Some("review".to_string()),
                 SubAgentSource::Compact => Some("compact".to_string()),
+                SubAgentSource::ThreadSpawn {
+                    agent_type: Some(agent_type),
+                    ..
+                } => Some(agent_type.clone()),
                 SubAgentSource::ThreadSpawn { .. } => Some("subagent".to_string()),
                 SubAgentSource::Other(other) => Some(other.clone()),
             },
@@ -1057,7 +1062,7 @@ impl App {
         }
     }
 
-    fn agent_identity_summary_line(&self, identity: &AgentIdentity) -> Line<'static> {
+    fn agent_identity_summary_line(&self, identity: &AgentIdentity, indent: &str) -> Line<'static> {
         let name = identity.name.clone().unwrap_or_else(|| "—".to_string());
         let model = identity.model.clone().unwrap_or_else(|| "—".to_string());
         let reasoning = identity
@@ -1065,7 +1070,7 @@ impl App {
             .clone()
             .unwrap_or_else(|| "—".to_string());
         vec![
-            "  ".into(),
+            indent.to_string().into(),
             "Role: ".dim(),
             identity.role.clone().into(),
             "  ".into(),
@@ -1081,7 +1086,11 @@ impl App {
         .into()
     }
 
-    fn agent_identity_detail_lines(&self, identity: &AgentIdentity) -> Vec<Line<'static>> {
+    fn agent_identity_detail_lines(
+        &self,
+        identity: &AgentIdentity,
+        indent: &str,
+    ) -> Vec<Line<'static>> {
         let name = identity.name.clone().unwrap_or_else(|| "—".to_string());
         let model = identity.model.clone().unwrap_or_else(|| "—".to_string());
         let reasoning = identity
@@ -1090,7 +1099,7 @@ impl App {
             .unwrap_or_else(|| "—".to_string());
         vec![
             vec![
-                "  ".into(),
+                indent.to_string().into(),
                 "Role: ".dim(),
                 identity.role.clone().into(),
                 "  ".into(),
@@ -1099,7 +1108,7 @@ impl App {
             ]
             .into(),
             vec![
-                "  ".into(),
+                indent.to_string().into(),
                 "Model: ".dim(),
                 model.into(),
                 "  ".into(),
@@ -1110,7 +1119,11 @@ impl App {
         ]
     }
 
-    async fn latest_agent_event_summary(&self, thread_id: ThreadId) -> Vec<Line<'static>> {
+    async fn latest_agent_event_summary(
+        &self,
+        thread_id: ThreadId,
+        indent: &str,
+    ) -> Vec<Line<'static>> {
         let Some(channel) = self.thread_event_channels.get(&thread_id) else {
             return Vec::new();
         };
@@ -1119,25 +1132,101 @@ impl App {
 
         let mut lines: Vec<Line<'static>> = Vec::new();
         if let Some(message) = summary.last_message {
-            lines.push(vec!["  ".into(), "Last message: ".dim(), message.into()].into());
+            lines.push(
+                vec![
+                    indent.to_string().into(),
+                    "Last message: ".dim(),
+                    message.into(),
+                ]
+                .into(),
+            );
         }
         if let Some(tool) = summary.last_tool {
-            lines.push(vec!["  ".into(), "Last tool: ".dim(), tool.dim().into()].into());
+            lines.push(
+                vec![
+                    indent.to_string().into(),
+                    "Last tool: ".dim(),
+                    tool.dim().into(),
+                ]
+                .into(),
+            );
         }
         if let Some(warning) = summary.last_warning {
-            lines.push(vec!["  ".into(), "Warning: ".yellow(), warning.into()].into());
+            lines.push(
+                vec![
+                    indent.to_string().into(),
+                    "Warning: ".yellow(),
+                    warning.into(),
+                ]
+                .into(),
+            );
         }
         if let Some(error) = summary.last_error {
-            lines.push(vec!["  ".into(), "Error: ".red(), error.into()].into());
+            lines.push(vec![indent.to_string().into(), "Error: ".red(), error.into()].into());
         }
         if !summary.recent.is_empty() {
-            lines.push(vec!["  ".into(), "Recent:".dim()].into());
+            lines.push(vec![indent.to_string().into(), "Recent:".dim()].into());
             for item in summary.recent {
-                lines.push(vec!["  • ".into(), item.dim().into()].into());
+                let bullet = format!("{indent}  • ");
+                lines.push(vec![bullet.into(), item.dim().into()].into());
             }
         }
 
         lines
+    }
+
+    fn subagent_tree_nodes(&self) -> Vec<(ThreadId, usize)> {
+        let mut parents: HashMap<ThreadId, Option<ThreadId>> = HashMap::new();
+        for (id, source) in &self.collab_thread_sources {
+            let ProtocolSessionSource::SubAgent(sub_source) = source else {
+                continue;
+            };
+            let parent = match sub_source {
+                SubAgentSource::ThreadSpawn {
+                    parent_thread_id, ..
+                } => Some(*parent_thread_id),
+                _ => None,
+            };
+            parents.insert(*id, parent);
+        }
+        if parents.is_empty() {
+            return Vec::new();
+        }
+        let subagent_ids: HashSet<ThreadId> = parents.keys().copied().collect();
+        let mut children: HashMap<ThreadId, Vec<ThreadId>> = HashMap::new();
+        let mut roots: Vec<ThreadId> = Vec::new();
+        for (id, parent) in parents {
+            if let Some(parent_id) = parent.filter(|p| subagent_ids.contains(p)) {
+                children.entry(parent_id).or_default().push(id);
+            } else {
+                roots.push(id);
+            }
+        }
+        let sort_ids = |ids: &mut Vec<ThreadId>| {
+            ids.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+        };
+        sort_ids(&mut roots);
+        for ids in children.values_mut() {
+            sort_ids(ids);
+        }
+        let mut out = Vec::new();
+        fn push_tree(
+            id: ThreadId,
+            depth: usize,
+            children: &HashMap<ThreadId, Vec<ThreadId>>,
+            out: &mut Vec<(ThreadId, usize)>,
+        ) {
+            out.push((id, depth));
+            if let Some(kids) = children.get(&id) {
+                for kid in kids {
+                    push_tree(*kid, depth + 1, children, out);
+                }
+            }
+        }
+        for root in roots {
+            push_tree(root, 0, &children, &mut out);
+        }
+        out
     }
 
     pub fn chatwidget_init_for_forked_or_resumed_thread(
@@ -3345,6 +3434,14 @@ mod tests {
         s
     }
 
+    fn line_to_plain_text(line: &Line<'_>) -> String {
+        let mut s = String::new();
+        for span in &line.spans {
+            s.push_str(&span.content);
+        }
+        s
+    }
+
     #[tokio::test]
     async fn model_migration_prompt_only_shows_for_deprecated_models() {
         let seen = BTreeMap::new();
@@ -3378,6 +3475,60 @@ mod tests {
             &seen,
             &all_model_presets()
         ));
+    }
+
+    #[tokio::test]
+    async fn agents_overlay_shows_role_and_hierarchy_from_spawned_sources() {
+        let mut app = make_test_app().await;
+        let parent_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001").unwrap();
+        let child_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002").unwrap();
+        let external_parent =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000099").unwrap();
+
+        app.collab_thread_sources.insert(
+            parent_id,
+            ProtocolSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: external_parent,
+                depth: 1,
+                agent_type: Some("orchestrator".to_string()),
+                agent_name: None,
+            }),
+        );
+        app.collab_thread_sources.insert(
+            child_id,
+            ProtocolSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent_id,
+                depth: 2,
+                agent_type: Some("worker".to_string()),
+                agent_name: None,
+            }),
+        );
+
+        let now = Instant::now();
+        app.collab_thread_created_at.insert(parent_id, now);
+        app.collab_thread_created_at.insert(child_id, now);
+
+        let lines = app.build_agents_details_lines().await;
+        let rendered: Vec<String> = lines.iter().map(line_to_plain_text).collect();
+        let role_lines: Vec<String> = rendered
+            .iter()
+            .filter(|line| line.contains("Role:"))
+            .cloned()
+            .collect();
+
+        assert_eq!(
+            role_lines,
+            vec![
+                "  Role: orchestrator  Name: —".to_string(),
+                "    Role: worker  Name: —".to_string(),
+            ]
+        );
+
+        let child_prefix = format!("  • {child_id}");
+        assert!(
+            rendered.iter().any(|line| line.starts_with(&child_prefix)),
+            "expected child bullet line to start with '{child_prefix}'"
+        );
     }
 
     #[tokio::test]

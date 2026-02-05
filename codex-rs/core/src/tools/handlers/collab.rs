@@ -189,6 +189,8 @@ mod spawn {
                 Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     parent_thread_id: session.conversation_id,
                     depth: child_depth,
+                    agent_type: args.agent_type.clone(),
+                    agent_name: args.agent_name.clone(),
                 })),
             )
             .await
@@ -1000,6 +1002,8 @@ mod tests {
         let session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id: session.conversation_id,
             depth: MAX_THREAD_SPAWN_DEPTH,
+            agent_type: None,
+            agent_name: None,
         });
         turn.client = ModelClient::new(
             turn.client.config(),
