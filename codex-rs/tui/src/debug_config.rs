@@ -48,11 +48,7 @@ fn render_debug_config_lines(stack: &ConfigLayerStack) -> Vec<Line<'static>> {
 
     if let Some(policies) = requirements_toml.allowed_approval_policies.as_ref() {
         let value = join_or_empty(policies.iter().map(ToString::to_string).collect::<Vec<_>>());
-        requirement_lines.push(requirement_line(
-            "allowed_approval_policies",
-            value,
-            requirements.approval_policy.source.as_ref(),
-        ));
+        requirement_lines.push(requirement_line("allowed_approval_policies", value, None));
     }
 
     if let Some(modes) = requirements_toml.allowed_sandbox_modes.as_ref() {
@@ -63,11 +59,7 @@ fn render_debug_config_lines(stack: &ConfigLayerStack) -> Vec<Line<'static>> {
                 .map(format_sandbox_mode_requirement)
                 .collect::<Vec<_>>(),
         );
-        requirement_lines.push(requirement_line(
-            "allowed_sandbox_modes",
-            value,
-            requirements.sandbox_policy.source.as_ref(),
-        ));
+        requirement_lines.push(requirement_line("allowed_sandbox_modes", value, None));
     }
 
     if let Some(servers) = requirements_toml.mcp_servers.as_ref() {
@@ -95,7 +87,7 @@ fn render_debug_config_lines(stack: &ConfigLayerStack) -> Vec<Line<'static>> {
         requirement_lines.push(requirement_line(
             "enforce_residency",
             format_residency_requirement(residency),
-            requirements.enforce_residency.source.as_ref(),
+            None,
         ));
     }
 
@@ -178,7 +170,6 @@ mod tests {
     use codex_core::config_loader::ConfigLayerStack;
     use codex_core::config_loader::ConfigRequirements;
     use codex_core::config_loader::ConfigRequirementsToml;
-    use codex_core::config_loader::ConstrainedWithSource;
     use codex_core::config_loader::McpServerIdentity;
     use codex_core::config_loader::McpServerRequirement;
     use codex_core::config_loader::RequirementSource;
@@ -256,22 +247,9 @@ mod tests {
 
     #[test]
     fn debug_config_output_lists_requirement_sources() {
-        let requirements_file = if cfg!(windows) {
-            absolute_path("C:\\etc\\codex\\requirements.toml")
-        } else {
-            absolute_path("/etc/codex/requirements.toml")
-        };
         let mut requirements = ConfigRequirements::default();
-        requirements.approval_policy = ConstrainedWithSource::new(
-            Constrained::allow_any(AskForApproval::OnRequest),
-            Some(RequirementSource::CloudRequirements),
-        );
-        requirements.sandbox_policy = ConstrainedWithSource::new(
-            Constrained::allow_any(SandboxPolicy::ReadOnly),
-            Some(RequirementSource::SystemRequirementsToml {
-                file: requirements_file.clone(),
-            }),
-        );
+        requirements.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+        requirements.sandbox_policy = Constrained::allow_any(SandboxPolicy::ReadOnly);
         requirements.mcp_servers = Some(Sourced::new(
             BTreeMap::from([(
                 "docs".to_string(),
@@ -283,10 +261,7 @@ mod tests {
             )]),
             RequirementSource::LegacyManagedConfigTomlFromMdm,
         ));
-        requirements.enforce_residency = ConstrainedWithSource::new(
-            Constrained::allow_any(Some(ResidencyRequirement::Us)),
-            Some(RequirementSource::CloudRequirements),
-        );
+        requirements.enforce_residency = Constrained::allow_any(Some(ResidencyRequirement::Us));
 
         let requirements_toml = ConfigRequirementsToml {
             allowed_approval_policies: Some(vec![AskForApproval::OnRequest]),
@@ -319,20 +294,10 @@ mod tests {
         .expect("config layer stack");
 
         let rendered = render_to_text(&render_debug_config_lines(&stack));
-        assert!(
-            rendered.contains("allowed_approval_policies: on-request (source: cloud requirements)")
-        );
-        assert!(
-            rendered.contains(
-                format!(
-                    "allowed_sandbox_modes: read-only (source: {})",
-                    requirements_file.as_path().display()
-                )
-                .as_str(),
-            )
-        );
+        assert!(rendered.contains("allowed_approval_policies: on-request (source: <unspecified>)"));
+        assert!(rendered.contains("allowed_sandbox_modes: read-only (source: <unspecified>)"));
         assert!(rendered.contains("mcp_servers: docs (source: MDM managed_config.toml (legacy))"));
-        assert!(rendered.contains("enforce_residency: us (source: cloud requirements)"));
+        assert!(rendered.contains("enforce_residency: us (source: <unspecified>)"));
         assert!(!rendered.contains("  - rules:"));
     }
 }

@@ -77,7 +77,11 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 58. 224c9f768 chore(app-server): document experimental API opt-in (#10667) — status: integrated (adopt; cherry-pick `bf876dac5`); notes: документация про experimental opt‑in
 59. 82464689c ## New Features - Steer mode is now stable and enabled by default, so `Enter` sends immediately during running tasks while `Tab` explicitly queues follow-up input. (#10690) — status: integrated (adopt; cherry-pick `18171a255`); notes: bump версии workspace до 0.98.0
 60. cddfd1e67 feat(core): add configurable log_dir (#10678) — status: integrated (adapt; manual `022816ce2`); notes: log_dir + относительные пути в overrides, восстановлен doc
-61. d452bb3ae Add /debug-config slash command (#10642) — status: integrated (adopt; cherry-pick `959edc1a0`); notes: /debug-config в TUI, вывод слоёв конфигурации
+61. d452bb3ae Add /debug-config slash command (#10642) — status: integrated (adapt; cherry-pick `959edc1a0` + fork fix в `tui/src/debug_config.rs`); notes: /debug-config в TUI, источники для constraint-полей показываются как `<unspecified>` в fork
+62. d589ee05b fix(tui): list selection view should maintain horizontal scroll offset on selection (#10693) — status: integrated (adopt; cherry-pick `d122907a8`); notes: фиксы scroll offset + снапшоты list selection
+63. d876f3b94 fix(tui): restore working shimmer after preamble output (#10701) — status: integrated (adapt; cherry-pick `777ae7313` + fork fix в `tui/src/chatwidget.rs`); notes: восстановление status indicator при idle, адаптация под текущий commit-tick код
+64. cd5f49a61 chore(core): Steer mode stable by default in config (#10691) — status: integrated (adopt; cherry-pick `d606a606a`); notes: steer default для новых конфигов
+65. a05aadfa1 chore(config) Default Personality Pragmatic (#10705) — status: integrated (adopt; cherry-pick `b599ce9e1`); notes: дефолтная personality = pragmatic + новые тесты
 
 ## Likely conflict zones for fork/colab-agents
 
