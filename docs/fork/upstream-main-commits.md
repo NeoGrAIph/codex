@@ -86,6 +86,8 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 67. 282f42c0c Add option to approve and remember MCP/Apps tool usage (#10584) — status: integrated (adopt; cherry-pick `5df704351`); notes: можно подтвердить и запомнить MCP/apps tool usage
 68. e9335374b feat: add phase 1 mem client (#10629) — status: integrated (adapt; cherry-pick `aadb57231` + fork fix в `codex-api/src/endpoint/memories.rs`); notes: mem client построен на provider+transport без EndpointSession
 69. 4922b3e57 feat: add phase 1 mem db (#10634) — status: integrated (adopt; cherry-pick `4bad02f1d`); notes: thread_memory таблица + runtime API + тесты
+70. 7f2035761 Stop client from being state carrier (#10595) — status: integrated (adapt; cherry-pick `5feb90704`); notes: TurnContext стал носителем turn-конфига/контекста вместо ModelClient; минимальные конфликт‑резолвы в core
+71. 0e8d359da Session-level model client (#10664) — status: integrated (adapt; cherry-pick `24ea26c00`); notes: session-level ModelClient + per-turn ModelClientSession, удалён transport_manager; fork-фиксы: восстановили поддержку WireApi::Chat и обновили handlers под TurnContext без client
 
 ## Likely conflict zones for fork/colab-agents
 

@@ -37,8 +37,8 @@ use crate::stream_events_utils::handle_non_tool_response_item;
 use crate::stream_events_utils::handle_output_item_done;
 use crate::stream_events_utils::last_assistant_message_from_item;
 use crate::terminal;
-use crate::turn_metadata::build_turn_metadata_header;
 use crate::truncate::TruncationPolicy;
+use crate::turn_metadata::build_turn_metadata_header;
 use crate::user_notification::UserNotifier;
 use crate::util::error_or_panic;
 use async_channel::Receiver;
@@ -1243,7 +1243,9 @@ impl Session {
                 }) {
                     let curr = turn_context.model_info.slug.as_str();
                     if prev != curr {
-                        warn!("resuming session with different model: previous={prev}, current={curr}");
+                        warn!(
+                            "resuming session with different model: previous={prev}, current={curr}"
+                        );
                         self.send_event(
                             &turn_context,
                             EventMsg::Warning(WarningEvent {
@@ -1530,8 +1532,7 @@ impl Session {
             return None;
         }
         let previous = previous?;
-        // === FORK: TurnContext doesn't store model_info; compare via client.
-        if next.client.get_model() != previous.client.get_model() {
+        if next.model_info.slug != previous.model_info.slug {
             return None;
         }
 
@@ -1578,19 +1579,15 @@ impl Session {
         resumed_model: Option<&str>,
         next: &TurnContext,
     ) -> Option<ResponseItem> {
-        // === FORK: TurnContext doesn't store model_info; compare via client.
         let previous_model = resumed_model
             .map(str::to_string)
-            .or_else(|| previous.map(|prev| prev.client.get_model()))?;
-        let current_model = next.client.get_model();
+            .or_else(|| previous.map(|prev| prev.model_info.slug.clone()))?;
+        let current_model = next.model_info.slug.as_str();
         if previous_model == current_model {
             return None;
         }
 
-        let model_instructions = next
-            .client
-            .get_model_info()
-            .get_model_instructions(next.personality);
+        let model_instructions = next.model_info.get_model_instructions(next.personality);
         if model_instructions.is_empty() {
             return None;
         }

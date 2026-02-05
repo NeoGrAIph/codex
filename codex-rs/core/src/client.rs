@@ -21,6 +21,7 @@ use crate::api_bridge::CoreAuthProvider;
 use crate::api_bridge::auth_provider_from_auth;
 use crate::api_bridge::map_api_error;
 use crate::auth::UnauthorizedRecovery;
+use codex_api::ChatClient as ApiChatClient;
 use codex_api::CompactClient as ApiCompactClient;
 use codex_api::CompactionInput as ApiCompactionInput;
 use codex_api::MemoriesClient as ApiMemoriesClient;
@@ -80,6 +81,7 @@ use crate::error::Result;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
+use crate::tools::spec::create_tools_json_for_chat_completions_api;
 use crate::tools::spec::create_tools_json_for_responses_api;
 
 pub const WEB_SEARCH_ELIGIBLE_HEADER: &str = "x-oai-web-search-eligible";
@@ -342,6 +344,12 @@ impl ModelClientSession {
         Ok(build_api_prompt(prompt, instructions, tools_json))
     }
 
+    fn build_chat_request(prompt: &Prompt) -> Result<ApiPrompt> {
+        let instructions = prompt.base_instructions.text.clone();
+        let tools_json: Vec<Value> = create_tools_json_for_chat_completions_api(&prompt.tools)?;
+        Ok(build_api_prompt(prompt, instructions, tools_json))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn build_responses_options(
         &self,
@@ -514,6 +522,73 @@ impl ModelClientSession {
             Compression::Zstd
         } else {
             Compression::None
+        }
+    }
+
+    /// Streams a turn via the OpenAI Chat Completions API.
+    ///
+    /// This path is only used when the provider is configured with `WireApi::Chat`; it does not
+    /// support `output_schema` today.
+    ///
+    /// === FORK: Upstream removed the legacy Chat Completions wire API. The fork keeps
+    /// `WireApi::Chat` for backwards-compatible provider configurations.
+    async fn stream_chat_completions_api(
+        &self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        otel_manager: &OtelManager,
+    ) -> Result<ResponseStream> {
+        if prompt.output_schema.is_some() {
+            return Err(CodexErr::UnsupportedOperation(
+                "output_schema is not supported for Chat Completions API".to_string(),
+            ));
+        }
+
+        let auth_manager = self.client.state.auth_manager.clone();
+        let api_prompt = Self::build_chat_request(prompt)?;
+        let conversation_id = self.client.state.conversation_id.to_string();
+        let session_source = self.client.state.session_source.clone();
+
+        let mut auth_recovery = auth_manager
+            .as_ref()
+            .map(super::auth::AuthManager::unauthorized_recovery);
+        loop {
+            let auth = match auth_manager.as_ref() {
+                Some(manager) => manager.auth().await,
+                None => None,
+            };
+            let api_provider = self
+                .client
+                .state
+                .provider
+                .to_api_provider(auth.as_ref().map(CodexAuth::internal_auth_mode))?;
+            let api_auth = auth_provider_from_auth(auth.clone(), &self.client.state.provider)?;
+            let transport = ReqwestTransport::new(build_reqwest_client());
+            let (request_telemetry, sse_telemetry) = Self::build_streaming_telemetry(otel_manager);
+            let client = ApiChatClient::new(transport, api_provider, api_auth)
+                .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+
+            let stream_result = client
+                .stream_prompt(
+                    &model_info.slug,
+                    &api_prompt,
+                    Some(conversation_id.clone()),
+                    Some(session_source.clone()),
+                )
+                .await;
+
+            match stream_result {
+                Ok(stream) => {
+                    return Ok(map_response_stream(stream, otel_manager.clone()));
+                }
+                Err(ApiError::Transport(
+                    unauthorized_transport @ TransportError::Http { status, .. },
+                )) if status == StatusCode::UNAUTHORIZED => {
+                    handle_unauthorized(unauthorized_transport, &mut auth_recovery).await?;
+                    continue;
+                }
+                Err(err) => return Err(map_api_error(err)),
+            }
         }
     }
 
@@ -729,6 +804,11 @@ impl ModelClientSession {
                     )
                     .await
                 }
+            }
+            WireApi::Chat => {
+                // === FORK: Keep legacy Chat Completions wire API for backwards compatibility.
+                self.stream_chat_completions_api(prompt, model_info, otel_manager)
+                    .await
             }
         }
     }

@@ -112,7 +112,7 @@ impl ToolHandler for ListAgentsHandler {
             }
         };
 
-        let registry = AgentRegistry::load_for_config(turn.client.config().as_ref());
+        let registry = AgentRegistry::load_for_config(turn.config.as_ref());
         if registry.agents.is_empty() {
             return Ok(ToolOutput::Function {
                 body: FunctionCallOutputBody::Text("No agents found in the registry.".to_string()),
@@ -183,7 +183,7 @@ impl ToolHandler for ReadAgentHandler {
         };
 
         let args: ReadAgentArgs = parse_arguments(&arguments)?;
-        let registry = AgentRegistry::load_for_config(turn.client.config().as_ref());
+        let registry = AgentRegistry::load_for_config(turn.config.as_ref());
         let Some(agent) = registry.find(&args.agent_name) else {
             return Err(FunctionCallError::RespondToModel(format!(
                 "agent \"{}\" not found",
