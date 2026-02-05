@@ -13,7 +13,7 @@ tools:
   - grep_files
   - exec_command
   - write_stdin
-  - web.run
+  - web_search
   - update_plan
 agent_names:
   - name: strict

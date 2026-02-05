@@ -11,7 +11,7 @@ tools:
   - list_dir
   - read_file
   - grep_files
-  - web.run
+  - web_search
   - update_plan
 ---
 

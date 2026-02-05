@@ -27,6 +27,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(any(test, feature = "test-support"))]
@@ -63,6 +64,7 @@ pub(crate) struct ThreadManagerState {
     models_manager: Arc<ModelsManager>,
     skills_manager: Arc<SkillsManager>,
     session_source: SessionSource,
+    spawn_children: Arc<RwLock<HashMap<ThreadId, HashSet<ThreadId>>>>,
     #[cfg(any(test, feature = "test-support"))]
     #[allow(dead_code)]
     // Captures submitted ops for testing purpose.
@@ -87,6 +89,7 @@ impl ThreadManager {
                 skills_manager: Arc::new(SkillsManager::new(codex_home)),
                 auth_manager,
                 session_source,
+                spawn_children: Arc::new(RwLock::new(HashMap::new())),
                 #[cfg(any(test, feature = "test-support"))]
                 ops_log: Arc::new(std::sync::Mutex::new(Vec::new())),
             }),
@@ -128,6 +131,7 @@ impl ThreadManager {
                 skills_manager: Arc::new(SkillsManager::new(codex_home)),
                 auth_manager,
                 session_source: SessionSource::Exec,
+                spawn_children: Arc::new(RwLock::new(HashMap::new())),
                 #[cfg(any(test, feature = "test-support"))]
                 ops_log: Arc::new(std::sync::Mutex::new(Vec::new())),
             }),
@@ -317,6 +321,26 @@ impl ThreadManagerState {
             }
         }
         thread.submit(op).await
+    }
+
+    pub(crate) async fn register_spawn_child(&self, parent: ThreadId, child: ThreadId) {
+        let mut map = self.spawn_children.write().await;
+        map.entry(parent).or_default().insert(child);
+    }
+
+    pub(crate) async fn children_of(&self, parent: ThreadId) -> Vec<ThreadId> {
+        let map = self.spawn_children.read().await;
+        map.get(&parent)
+            .map(|children| children.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) async fn drop_thread_links(&self, thread_id: ThreadId) {
+        let mut map = self.spawn_children.write().await;
+        map.remove(&thread_id);
+        for children in map.values_mut() {
+            children.remove(&thread_id);
+        }
     }
 
     /// Remove a thread from the manager by ID, returning it when present.
