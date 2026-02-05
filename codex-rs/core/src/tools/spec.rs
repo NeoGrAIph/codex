@@ -626,6 +626,38 @@ fn create_wait_tool() -> ToolSpec {
     })
 }
 
+fn create_agent_list_tool() -> ToolSpec {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "include_completed".to_string(),
+        JsonSchema::Boolean {
+            description: Some(
+                "When true, include agents that have completed/errored/shutdown. Default false."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
+        "include_self".to_string(),
+        JsonSchema::Boolean {
+            description: Some(
+                "When true, include the current session thread. Default false.".to_string(),
+            ),
+        },
+    );
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "agent_list".to_string(),
+        description: "List known agents and their current status.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
 fn create_request_user_input_tool() -> ToolSpec {
     let mut option_props = BTreeMap::new();
     option_props.insert(
@@ -1513,10 +1545,12 @@ pub(crate) fn build_specs(
         ));
         builder.push_spec(create_send_input_tool());
         builder.push_spec(create_wait_tool());
+        builder.push_spec(create_agent_list_tool());
         builder.push_spec(create_close_agent_tool());
         builder.register_handler("spawn_agent", collab_handler.clone());
         builder.register_handler("send_input", collab_handler.clone());
         builder.register_handler("wait", collab_handler.clone());
+        builder.register_handler("agent_list", collab_handler.clone());
         builder.register_handler("close_agent", collab_handler);
     }
 
@@ -1816,7 +1850,13 @@ mod tests {
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
         assert_contains_tool_names(
             &tools,
-            &["spawn_agent", "send_input", "wait", "close_agent"],
+            &[
+                "spawn_agent",
+                "send_input",
+                "wait",
+                "agent_list",
+                "close_agent",
+            ],
         );
     }
 

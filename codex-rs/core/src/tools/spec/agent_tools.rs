@@ -25,20 +25,14 @@ pub(super) fn register_agent_tools(builder: &mut ToolRegistryBuilder, config: &T
 }
 
 fn create_list_agents_tool() -> ToolSpec {
-    let properties = BTreeMap::from([(
-        "only_active".to_string(),
-        JsonSchema::Boolean {
-            description: Some(
-                "When true, returns only active agent sessions with status.".to_string(),
-            ),
-        },
-    )]);
     ToolSpec::Function(ResponsesApiTool {
         name: "list_agents".to_string(),
-        description: "List available agent profiles from the local registry. Set only_active=true to return only active agent sessions with status.".to_string(),
+        description:
+            "List available agent profiles from the local registry, including agent_name variants and their descriptions."
+                .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
-            properties,
+            properties: BTreeMap::new(),
             required: None,
             additional_properties: Some(false.into()),
         },
