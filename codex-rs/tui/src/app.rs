@@ -661,7 +661,9 @@ impl App {
     }
 
     async fn open_agents_summary_overlay(&mut self, tui: &mut tui::Tui) {
-        let _ = tui.enter_alt_screen();
+        if !tui.is_alt_screen_active() {
+            let _ = tui.enter_alt_screen();
+        }
         let lines = self.build_agents_summary_lines().await;
         self.overlay = Some(Overlay::new_static_with_lines(
             lines,
@@ -671,7 +673,9 @@ impl App {
     }
 
     async fn open_agents_details_overlay(&mut self, tui: &mut tui::Tui) {
-        let _ = tui.enter_alt_screen();
+        if !tui.is_alt_screen_active() {
+            let _ = tui.enter_alt_screen();
+        }
         let lines = self.build_agents_details_lines().await;
         self.overlay = Some(Overlay::new_static_with_lines(
             lines,
