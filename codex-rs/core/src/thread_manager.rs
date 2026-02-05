@@ -307,6 +307,10 @@ impl ThreadManagerState {
             .ok_or_else(|| CodexErr::ThreadNotFound(thread_id))
     }
 
+    pub(crate) async fn list_thread_ids(&self) -> Vec<ThreadId> {
+        self.threads.read().await.keys().copied().collect()
+    }
+
     /// Send an operation to a thread by ID.
     pub(crate) async fn send_op(&self, thread_id: ThreadId, op: Op) -> CodexResult<String> {
         let thread = self.get_thread(thread_id).await?;
