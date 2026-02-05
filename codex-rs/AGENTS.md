@@ -114,23 +114,27 @@ The agent registry replaces hard-coded `AgentRole` enum with dynamic YAML-based 
 
 ```yaml
 ---
-name: worker                    # Required: 3-64 chars, lowercase + hyphen
+agent_type: worker              # Required: 3-64 chars, lowercase + hyphen
 description: |                  # Required: shown in tool schema
   Use for execution and production work.
-model: gpt-5.2-codex           # Required: model slug
+model: gpt-5.2-codex            # Required: model slug
 reasoning_effort: medium        # Optional: low/medium/high/xhigh (inherits if omitted)
 color: green                    # Required: blue/cyan/green/yellow/magenta/red
-read_only: false               # Optional: sets SandboxPolicy::ReadOnly
-tools:                         # Optional: allowlist (omit for all tools)
+read_only: false                # Optional: sets SandboxPolicy::ReadOnly
+tools:                          # Optional: allowlist (omit for all tools)
   - Read
   - Grep
-tool_denylist:                 # Optional: denylist
+tool_denylist:                  # Optional: denylist
   - spawn_agent
-agent_names:                   # Optional: variants for A/B testing
-  - name: strict
+agent_persons:                  # Optional: variants for A/B testing
+  - agent_name: strict
     description: Strict variant
-  - name: lenient
+    model: gpt-5.2-codex
+    reasoning_effort: high
+  - agent_name: lenient
     description: Lenient variant
+    model: gpt-5.2-codex
+    reasoning_effort: medium
 ---
 
 System prompt content here.
@@ -160,6 +164,12 @@ Lenient variant instructions.
 
 ### Seeding
 On first run, `seed_builtin_agents()` copies `codex_*.md` templates to `~/.codex/agents/`. Seeding is skipped if any `codex_*.md` file already exists.
+
+### Override rules
+- If a spawn request specifies `model` and `reasoning_effort`, they take highest priority.
+- If `agent_persons.agent_name` specifies `model` or `reasoning_effort`, it must specify both.
+- If an `agent_name` omits `model`/`reasoning_effort`, it inherits from `agent_type` (unless spawn overrides exist).
+- Do not mix legacy keys (`name`, `agent_names`) with `agent_type` or `agent_persons` in the same file.
 
 ---
 
