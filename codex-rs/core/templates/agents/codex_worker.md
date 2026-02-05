@@ -4,7 +4,6 @@ description: |
   Use for execution and production work.
   Typical tasks: implement features, fix bugs, split large refactors.
 model: gpt-5.2-codex
-reasoning_effort: medium
 color: green
 tool_denylist:
   - spawn_agent

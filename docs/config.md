@@ -38,8 +38,8 @@ Each agent file is a Markdown file with YAML frontmatter and an instructions bod
 ---
 agent_type: "code-architect"
 description: "Architecture guidance and review."
-model: "gpt-5.2"
-reasoning_effort: "high"
+model: "gpt-5.2-codex"
+reasoning_effort: "medium"
 color: "cyan"
 tools: ["read_file", "apply_patch"]
 ---
@@ -64,18 +64,16 @@ override model and reasoning effort per variant:
 ---
 agent_type: "code-reviewer"
 description: "Review code with optional strictness."
-model: "gpt-5.2"
+model: "gpt-5.2-codex"
 reasoning_effort: "medium"
 color: "cyan"
 agent_persons:
   - agent_name: strict
     description: "Strict review mode."
-    model: "gpt-5.2"
+    model: "gpt-4.1"
     reasoning_effort: "high"
   - agent_name: lenient
     description: "Faster, higher-level review."
-    model: "gpt-5.2"
-    reasoning_effort: "medium"
 ---
 
 Default reviewer instructions...

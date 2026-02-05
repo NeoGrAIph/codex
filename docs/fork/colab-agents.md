@@ -24,7 +24,6 @@
 - Поддержка вариантов `agent_persons` (agent_name) для A/B-инструкций.
 - Приоритет загрузки: проект → пользователь → система.
 - Наследование `reasoning_effort` от базовой конфигурации, если не задано в агенте.
-- Приоритет параметров: `agent_name` overrides → `agent_type` значения.
 
 2) **Интеграция агентского реестра в collab-инструменты**
 - `spawn_agent` резолвит агентский профиль через реестр.
@@ -103,26 +102,7 @@
   - Иначе затирается сохранённый viewport и возврат из overlay ведёт себя некорректно
     (терминал не восстанавливается как после transcript).
 - **Цель:** поведение возврата из Ctrl+N overlay должно быть каноничным (как у Ctrl+T),
-   при этом не смешивать режимы и не ломать upstream-горячие клавиши.
-
-### Рекомендованный порядок агентов
-- `orchestrator` → `explorer` → `bug-hunter` → `reviewer: strict` → `architect` → `worker`.
-
-### Рекомендованные модели и reasoning_effort
-- `architect`: `model=gpt-5.2`, `reasoning_effort=high`
-- `bug-hunter`: `model=gpt-5.2`, `reasoning_effort=high`
-  - `agent_name: safe` → `gpt-5.2`, `high`
-  - `agent_name: risky` → `gpt-5.2`, `medium`
-- `reviewer`: `model=gpt-5.2`, `reasoning_effort=medium`
-  - `agent_name: strict` → `gpt-5.2`, `high`
-  - `agent_name: lenient` → `gpt-5.2`, `medium`
-- `explorer`: `model=gpt-5.2`, `reasoning_effort=medium`
-  - `agent_name: fast` → `gpt-5.2-codex`, `medium`
-  - `agent_name: deep` → `gpt-5.2`, `high`
-- `worker`: `model=gpt-5.2-codex`, `reasoning_effort=medium`
-- `orchestrator`: `model=gpt-5.2-codex`, `reasoning_effort=high`
-  - `agent_name: lean` → `gpt-5.2-codex`, `medium`
-  - `agent_name: thorough` → `gpt-5.2-codex`, `high`
+  при этом не смешивать режимы и не ломать upstream-горячие клавиши.
 
 ### Локальные сборки
 - `scripts/codex-fork-build.sh`

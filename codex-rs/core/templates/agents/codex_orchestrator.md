@@ -6,16 +6,6 @@ description: |
 model: gpt-5.2-codex
 color: blue
 tools: spawn_agent, send_input, wait, close_agent
-reasoning_effort: high
-agent_persons:
-  - agent_name: lean
-    description: Fast delegation with minimal commentary.
-    model: gpt-5.2-codex
-    reasoning_effort: medium
-  - agent_name: thorough
-    description: Deeper analysis and structured delegation.
-    model: gpt-5.2-codex
-    reasoning_effort: high
 ---
 
 You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.

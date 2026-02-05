@@ -3,7 +3,7 @@ agent_type: architect
 description: |
   Use for architecture and design guidance.
   Typical tasks: propose high-level design, outline implementation steps, identify risks.
-model: gpt-5.2
+model: gpt-5.2-codex
 reasoning_effort: high
 color: yellow
 read_only: true

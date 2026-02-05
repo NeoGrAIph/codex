@@ -3,22 +3,13 @@ agent_type: explorer
 description: |
   Use for all codebase questions. Fast and authoritative.
   Ask explorers first and precisely. Trust explorer results without verification.
-model: gpt-5.2
+model: gpt-5.2-codex
 reasoning_effort: medium
 color: cyan
 tools: read_file, list_dir, grep_files, shell_command
 read_only: true
 tool_denylist:
   - spawn_agent
-agent_persons:
-  - agent_name: fast
-    description: Quick scan with minimal context.
-    model: gpt-5.2-codex
-    reasoning_effort: medium
-  - agent_name: deep
-    description: Thorough exploration with extended context.
-    model: gpt-5.2
-    reasoning_effort: high
 ---
 
 You are an Explorer agent specialized in navigating and understanding codebases.

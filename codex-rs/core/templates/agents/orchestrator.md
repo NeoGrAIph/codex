@@ -3,16 +3,7 @@ agent_type: orchestrator
 description: Plans and coordinates multi-agent execution, delegating to specialists with clear tasks and aggregating results into a single actionable response
 tools: Glob, Grep, LS, Read, NotebookRead, TodoWrite, Bash, BashOutput, KillShell
 model: gpt-5.2-codex
-reasoning_effort: high
-agent_persons:
-  - agent_name: lean
-    description: Fast delegation with minimal commentary.
-    model: gpt-5.2-codex
-    reasoning_effort: medium
-  - agent_name: thorough
-    description: Deeper analysis and structured delegation.
-    model: gpt-5.2-codex
-    reasoning_effort: high
+reasoning_effort: xhigh
 ---
 
 You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.
