@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
-use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -277,19 +276,6 @@ fn append_system_footer(mut base_instructions: String, footer: &str) -> String {
     base_instructions
 }
 
-/// Seed the default system footer into ~/.codex/collab/ if no file exists.
-fn seed_system_footer(codex_home: &Path) -> io::Result<()> {
-    let footer_path = codex_home.join(COLLAB_DIR).join(SYSTEM_FOOTER_FILENAME);
-    if footer_path.is_file() {
-        return Ok(());
-    }
-    if let Some(parent) = footer_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&footer_path, SYSTEM_FOOTER_DEFAULT)?;
-    Ok(())
-}
-
 /// The high-level interface to the Codex system.
 /// It operates as a queue pair where you send submissions and receive events.
 pub struct Codex {
@@ -355,9 +341,6 @@ impl Codex {
         // Seed built-in agents if needed
         if let Err(e) = crate::agent::registry::seed_builtin_agents(&config.codex_home) {
             warn!("Failed to seed built-in agents: {e}");
-        }
-        if let Err(e) = seed_system_footer(&config.codex_home) {
-            warn!("Failed to seed system footer: {e}");
         }
 
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
@@ -4828,33 +4811,6 @@ mod tests {
         let base = "Base instructions".to_string();
         let next = append_system_footer(base.clone(), "   \n");
         assert_eq!(next, base);
-    }
-
-    #[test]
-    fn seed_system_footer_writes_default_when_missing() {
-        let codex_home = TempDir::new().expect("tempdir");
-        seed_system_footer(codex_home.path()).expect("seed footer");
-        let footer_path = codex_home
-            .path()
-            .join(COLLAB_DIR)
-            .join(SYSTEM_FOOTER_FILENAME);
-        let contents = std::fs::read_to_string(&footer_path).expect("read footer");
-        assert_eq!(contents, SYSTEM_FOOTER_DEFAULT);
-    }
-
-    #[test]
-    fn seed_system_footer_skips_when_present() {
-        let codex_home = TempDir::new().expect("tempdir");
-        let footer_path = codex_home
-            .path()
-            .join(COLLAB_DIR)
-            .join(SYSTEM_FOOTER_FILENAME);
-        std::fs::create_dir_all(footer_path.parent().expect("footer parent"))
-            .expect("create collab dir");
-        std::fs::write(&footer_path, "custom footer").expect("write footer");
-        seed_system_footer(codex_home.path()).expect("seed footer");
-        let contents = std::fs::read_to_string(&footer_path).expect("read footer");
-        assert_eq!(contents, "custom footer");
     }
 
     #[test]
