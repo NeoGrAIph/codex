@@ -22,7 +22,7 @@ pub(crate) struct Guards {
 }
 
 /// Initial agent is depth 0.
-pub(crate) const MAX_THREAD_SPAWN_DEPTH: i32 = 1;
+pub(crate) const MAX_THREAD_SPAWN_DEPTH: i32 = 2;
 
 fn session_depth(session_source: &SessionSource) -> i32 {
     match session_source {
