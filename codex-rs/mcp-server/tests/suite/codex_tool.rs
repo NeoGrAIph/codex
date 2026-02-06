@@ -25,7 +25,7 @@ use core_test_support::skip_if_no_network;
 use mcp_test_support::McpProcess;
 use mcp_test_support::create_apply_patch_sse_response;
 use mcp_test_support::create_final_assistant_message_sse_response;
-use mcp_test_support::create_mock_chat_completions_server;
+use mcp_test_support::create_mock_responses_server;
 use mcp_test_support::create_shell_command_sse_response;
 use mcp_test_support::format_with_current_shell;
 
@@ -349,10 +349,8 @@ async fn codex_tool_passes_base_instructions() -> anyhow::Result<()> {
     #![expect(clippy::expect_used, clippy::unwrap_used)]
 
     let server =
-        create_mock_chat_completions_server(vec![create_final_assistant_message_sse_response(
-            "Enjoy!",
-        )?])
-        .await;
+        create_mock_responses_server(vec![create_final_assistant_message_sse_response("Enjoy!")?])
+            .await;
 
     // Run `codex mcp` with a specific config.toml.
     let codex_home = TempDir::new()?;
@@ -400,28 +398,47 @@ async fn codex_tool_passes_base_instructions() -> anyhow::Result<()> {
 
     let requests = server.received_requests().await.unwrap();
     let request = requests[0].body_json::<serde_json::Value>()?;
-    let instructions = request["messages"][0]["content"].as_str().unwrap();
-    assert!(instructions.starts_with("You are a helpful assistant."));
+    let instructions = request["instructions"]
+        .as_str()
+        .expect("Responses request must include instructions");
+    assert!(
+        instructions.contains("You are a helpful assistant."),
+        "expected base instructions in request.instructions"
+    );
 
-    let developer_messages: Vec<&serde_json::Value> = request["messages"]
-        .as_array()
-        .unwrap()
+    let input_items = request
+        .get("input")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let developer_texts: Vec<String> = input_items
         .iter()
-        .filter(|msg| msg.get("role").and_then(|role| role.as_str()) == Some("developer"))
-        .collect();
-    let developer_contents: Vec<&str> = developer_messages
-        .iter()
-        .filter_map(|msg| msg.get("content").and_then(|value| value.as_str()))
+        .filter(|item| item.get("type").and_then(|ty| ty.as_str()) == Some("message"))
+        .filter(|item| item.get("role").and_then(|role| role.as_str()) == Some("developer"))
+        .filter_map(|item| {
+            item.get("content")
+                .and_then(|value| value.as_array())
+                .cloned()
+        })
+        .flatten()
+        .filter(|span| span.get("type").and_then(|ty| ty.as_str()) == Some("input_text"))
+        .filter_map(|span| {
+            span.get("text")
+                .and_then(|text| text.as_str())
+                .map(str::to_string)
+        })
         .collect();
     assert!(
-        developer_contents
+        developer_texts
             .iter()
             .any(|content| content.contains("`sandbox_mode`")),
-        "expected permissions developer message, got {developer_contents:?}"
+        "expected permissions developer message, got {developer_texts:?}"
     );
     assert!(
-        developer_contents.contains(&"Foreshadow upcoming tool calls."),
-        "expected developer instructions in developer messages, got {developer_contents:?}"
+        developer_texts
+            .iter()
+            .any(|content| content.contains("Foreshadow upcoming tool calls.")),
+        "expected developer instructions in developer messages, got {developer_texts:?}"
     );
 
     Ok(())
@@ -469,7 +486,7 @@ pub struct McpHandle {
 }
 
 async fn create_mcp_process(responses: Vec<String>) -> anyhow::Result<McpHandle> {
-    let server = create_mock_chat_completions_server(responses).await;
+    let server = create_mock_responses_server(responses).await;
     let codex_home = TempDir::new()?;
     create_config_toml(codex_home.path(), &server.uri())?;
     let mut mcp_process = McpProcess::new(codex_home.path()).await?;
@@ -499,7 +516,7 @@ model_provider = "mock_provider"
 [model_providers.mock_provider]
 name = "Mock provider for test"
 base_url = "{server_uri}/v1"
-wire_api = "chat"
+wire_api = "responses"
 request_max_retries = 0
 stream_max_retries = 0
 "#
