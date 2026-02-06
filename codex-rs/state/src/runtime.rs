@@ -23,9 +23,11 @@ use codex_protocol::protocol::RolloutItem;
 use log::LevelFilter;
 use serde_json::Value;
 use sqlx::ConnectOptions;
+use sqlx::Connection;
 use sqlx::QueryBuilder;
 use sqlx::Row;
 use sqlx::Sqlite;
+use sqlx::SqliteConnection;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::sqlite::SqliteJournalMode;
@@ -37,7 +39,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
 
-pub const STATE_DB_FILENAME: &str = "state.sqlite";
+pub const STATE_DB_FILENAME: &str = "state";
+pub const STATE_DB_VERSION: u32 = 1;
+pub const STATE_DB_VERSIONED_FILENAME: &str = "state_1.sqlite";
+pub const LEGACY_STATE_DB_FILENAME: &str = "state.sqlite";
+
+pub fn state_db_filename() -> &'static str {
+    STATE_DB_VERSIONED_FILENAME
+}
 
 const METRIC_DB_INIT: &str = "codex.db.init";
 
@@ -51,15 +60,23 @@ pub struct StateRuntime {
 impl StateRuntime {
     /// Initialize the state runtime using the provided Codex home and default provider.
     ///
-    /// This opens (and migrates) the SQLite database at `codex_home/state.sqlite`.
+    /// This opens (and migrates) the SQLite database at `codex_home/state_1.sqlite`.
     pub async fn init(
         codex_home: PathBuf,
         default_provider: String,
         otel: Option<OtelManager>,
     ) -> anyhow::Result<Arc<Self>> {
         tokio::fs::create_dir_all(&codex_home).await?;
-        let state_path = codex_home.join(STATE_DB_FILENAME);
+        let state_path = codex_home.join(state_db_filename());
         let existed = tokio::fs::try_exists(&state_path).await.unwrap_or(false);
+        if !existed {
+            if let Err(err) = migrate_legacy_state_db(&codex_home, &state_path).await {
+                warn!(
+                    "failed to migrate legacy state db into {}: {err}",
+                    state_path.display()
+                );
+            }
+        }
         let pool = match open_sqlite(&state_path).await {
             Ok(db) => Arc::new(db),
             Err(err) => {
@@ -637,6 +654,46 @@ ON CONFLICT(thread_id, position) DO NOTHING
     }
 }
 
+async fn migrate_legacy_state_db(codex_home: &Path, state_path: &Path) -> anyhow::Result<bool> {
+    if tokio::fs::try_exists(state_path).await.unwrap_or(false) {
+        return Ok(false);
+    }
+
+    let legacy_path = codex_home.join(LEGACY_STATE_DB_FILENAME);
+    if !tokio::fs::try_exists(&legacy_path).await.unwrap_or(false) {
+        return Ok(false);
+    }
+
+    // Prefer an SQLite-native copy for correctness with WAL mode.
+    let options = SqliteConnectOptions::new()
+        .filename(&legacy_path)
+        .create_if_missing(false)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_secs(5))
+        .log_statements(LevelFilter::Off);
+    let mut conn = SqliteConnection::connect_with(&options).await?;
+    let _ = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(&mut conn)
+        .await;
+
+    let escaped_dest = state_path.to_string_lossy().replace('\'', "''");
+    match sqlx::query(&format!("VACUUM INTO '{escaped_dest}'"))
+        .execute(&mut conn)
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(err) => {
+            warn!(
+                "VACUUM INTO failed when migrating legacy state db into {}: {err}; falling back to file copy",
+                state_path.display()
+            );
+            tokio::fs::copy(&legacy_path, state_path).await?;
+            Ok(true)
+        }
+    }
+}
+
 fn push_log_filters<'a>(builder: &mut QueryBuilder<'a, Sqlite>, query: &'a LogQuery) {
     if let Some(level_upper) = query.level_upper.as_ref() {
         builder
@@ -793,8 +850,7 @@ fn push_thread_order_and_limit(
 }
 #[cfg(test)]
 mod tests {
-    use super::STATE_DB_FILENAME;
-    use super::STATE_DB_VERSION;
+    use super::LEGACY_STATE_DB_FILENAME;
     use super::StateRuntime;
     use super::ThreadMetadata;
     use super::state_db_filename;
@@ -809,6 +865,7 @@ mod tests {
     use sqlx::Row;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::sync::Arc;
     use std::time::SystemTime;
     use std::time::UNIX_EPOCH;
     use uuid::Uuid;
@@ -821,74 +878,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn init_removes_legacy_state_db_files() {
+    async fn init_migrates_legacy_state_db_without_deleting() {
         let codex_home = unique_temp_dir();
         tokio::fs::create_dir_all(&codex_home)
             .await
             .expect("create codex_home");
 
-        let current_name = state_db_filename();
-        let previous_version = STATE_DB_VERSION.saturating_sub(1);
-        let unversioned_name = format!("{STATE_DB_FILENAME}.sqlite");
-        for suffix in ["", "-wal", "-shm", "-journal"] {
-            let path = codex_home.join(format!("{unversioned_name}{suffix}"));
-            tokio::fs::write(path, b"legacy")
+        let legacy_path = codex_home.join(LEGACY_STATE_DB_FILENAME);
+        assert_eq!(
+            tokio::fs::try_exists(&legacy_path)
                 .await
-                .expect("write legacy");
-            let old_version_path = codex_home.join(format!(
-                "{STATE_DB_FILENAME}_{previous_version}.sqlite{suffix}"
-            ));
-            tokio::fs::write(old_version_path, b"old_version")
-                .await
-                .expect("write old version");
-        }
-        let unrelated_path = codex_home.join("state.sqlite_backup");
-        tokio::fs::write(&unrelated_path, b"keep")
-            .await
-            .expect("write unrelated");
-        let numeric_path = codex_home.join("123");
-        tokio::fs::write(&numeric_path, b"keep")
-            .await
-            .expect("write numeric");
+                .expect("check legacy db path"),
+            false
+        );
 
-        let _runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+        let legacy_pool = super::open_sqlite(&legacy_path)
+            .await
+            .expect("open legacy db");
+        let legacy_runtime = StateRuntime {
+            codex_home: codex_home.clone(),
+            default_provider: "test-provider".to_string(),
+            pool: Arc::new(legacy_pool),
+        };
+        let thread_id = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread id");
+        legacy_runtime
+            .upsert_thread(&test_thread_metadata(
+                &codex_home,
+                thread_id,
+                codex_home.join("workspace"),
+            ))
+            .await
+            .expect("insert legacy thread");
+        drop(legacy_runtime);
+
+        let state_path = codex_home.join(state_db_filename());
+        assert_eq!(
+            tokio::fs::try_exists(&state_path)
+                .await
+                .expect("check canonical db path"),
+            false
+        );
+
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
             .await
             .expect("initialize runtime");
 
-        for suffix in ["", "-wal", "-shm", "-journal"] {
-            let legacy_path = codex_home.join(format!("{unversioned_name}{suffix}"));
-            assert_eq!(
-                tokio::fs::try_exists(&legacy_path)
-                    .await
-                    .expect("check legacy path"),
-                false
-            );
-            let old_version_path = codex_home.join(format!(
-                "{STATE_DB_FILENAME}_{previous_version}.sqlite{suffix}"
-            ));
-            assert_eq!(
-                tokio::fs::try_exists(&old_version_path)
-                    .await
-                    .expect("check old version path"),
-                false
-            );
-        }
         assert_eq!(
-            tokio::fs::try_exists(codex_home.join(current_name))
+            runtime
+                .get_thread(thread_id)
                 .await
-                .expect("check new db path"),
+                .expect("load migrated thread")
+                .is_some(),
             true
         );
         assert_eq!(
-            tokio::fs::try_exists(&unrelated_path)
+            tokio::fs::try_exists(&legacy_path)
                 .await
-                .expect("check unrelated path"),
+                .expect("check legacy db path after migration"),
             true
         );
         assert_eq!(
-            tokio::fs::try_exists(&numeric_path)
+            tokio::fs::try_exists(&state_path)
                 .await
-                .expect("check numeric path"),
+                .expect("check canonical db path after migration"),
             true
         );
 

@@ -6,14 +6,14 @@ use chrono::DateTime;
 use clap::Parser;
 use codex_state::LogQuery;
 use codex_state::LogRow;
-use codex_state::STATE_DB_FILENAME;
 use codex_state::StateRuntime;
+use codex_state::state_db_filename;
 use dirs::home_dir;
 use owo_colors::OwoColorize;
 
 #[derive(Debug, Parser)]
 #[command(name = "codex-state-logs")]
-#[command(about = "Tail Codex logs from state.sqlite with simple filters")]
+#[command(about = "Tail Codex logs from the state db with simple filters")]
 struct Args {
     /// Path to CODEX_HOME. Defaults to $CODEX_HOME or ~/.codex.
     #[arg(long, env = "CODEX_HOME")]
@@ -104,7 +104,7 @@ fn resolve_db_path(args: &Args) -> anyhow::Result<PathBuf> {
     }
 
     let codex_home = args.codex_home.clone().unwrap_or_else(default_codex_home);
-    Ok(codex_home.join(STATE_DB_FILENAME))
+    Ok(codex_home.join(state_db_filename()))
 }
 
 fn default_codex_home() -> PathBuf {
