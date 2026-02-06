@@ -177,6 +177,7 @@ pub enum ModeKind {
     Default,
     PairProgramming,
     Execute,
+    // === FORK: Preserve Custom collaboration mode (used by the fork to represent user-provided instructions).
     Custom,
 }
 

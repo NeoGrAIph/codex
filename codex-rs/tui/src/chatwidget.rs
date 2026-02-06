@@ -1114,8 +1114,8 @@ impl ChatWidget {
     }
 
     fn open_plan_implementation_prompt(&mut self) {
-        let code_mask = collaboration_modes::code_mask(self.models_manager.as_ref());
-        let (implement_actions, implement_disabled_reason) = match code_mask {
+        let default_mask = collaboration_modes::default_mode_mask(self.models_manager.as_ref());
+        let (implement_actions, implement_disabled_reason) = match default_mask {
             Some(mask) => {
                 let user_text = PLAN_IMPLEMENTATION_CODING_MESSAGE.to_string();
                 let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
@@ -1126,13 +1126,13 @@ impl ChatWidget {
                 })];
                 (actions, None)
             }
-            None => (Vec::new(), Some("Code mode unavailable".to_string())),
+            None => (Vec::new(), Some("Default mode unavailable".to_string())),
         };
 
         let items = vec![
             SelectionItem {
                 name: PLAN_IMPLEMENTATION_YES.to_string(),
-                description: Some("Switch to Code and start coding.".to_string()),
+                description: Some("Switch to Default and start coding.".to_string()),
                 selected_description: None,
                 is_current: false,
                 actions: implement_actions,
@@ -5469,7 +5469,7 @@ impl ChatWidget {
         }
         match self.active_mode_kind() {
             ModeKind::Plan => Some(CollaborationModeIndicator::Plan),
-            ModeKind::Code => None,
+            ModeKind::Default => None,
             ModeKind::PairProgramming => Some(CollaborationModeIndicator::PairProgramming),
             ModeKind::Execute => Some(CollaborationModeIndicator::Execute),
             ModeKind::Custom => None,
@@ -5495,7 +5495,7 @@ impl ChatWidget {
         }
     }
 
-    /// Cycle to the next collaboration mode variant (Plan -> Code -> Plan).
+    /// Cycle to the next collaboration mode variant (Plan -> Default -> Plan).
     fn cycle_collaboration_mode(&mut self) {
         if !self.collaboration_modes_enabled() {
             return;

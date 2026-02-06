@@ -91,6 +91,7 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 72. ae4de43cc feat(linux-sandbox): add bwrap support (#9938) — status: integrated (adapt; cherry-pick `1ccdbae25`); notes: bubblewrap-based pipeline (bwrap) + preflight `/proc` mount fallback; synced `codex-rs/linux-sandbox/src/lib.rs` with upstream module layout (drop legacy `mounts`)
 73. 7bcc55232 Added support for live updates to skills (#10478) — status: integrated (adopt; cherry-pick `5eeb5848e`); notes: file watcher + SkillsUpdateAvailable event; updates skill manager + thread_manager
 74. 7a253076f Persist pending input user events (#10656) — status: integrated (adopt; cherry-pick `037e5643f`); notes: pending input events are persisted as user events so history/UI can reflect queued user messages
+75. 41b4962b0 Sync collaboration mode naming across Default prompt, tools, and TUI (#10666) — status: integrated (adapt; cherry-pick `1a16490f7`); notes: added `ModeKind::Default` (alias `code`) while preserving fork `ModeKind::Custom`; updated builtin presets + request_user_input messaging + TUI labels
 
 ## Likely conflict zones for fork/colab-agents
 

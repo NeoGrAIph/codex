@@ -1255,7 +1255,7 @@ async fn plan_implementation_popup_yes_emits_submit_message_event() {
         panic!("expected SubmitUserMessageWithMode, got {event:?}");
     };
     assert_eq!(text, PLAN_IMPLEMENTATION_CODING_MESSAGE);
-    assert_eq!(collaboration_mode.mode, Some(ModeKind::Code));
+    assert_eq!(collaboration_mode.mode, Some(ModeKind::Default));
 }
 
 #[tokio::test]
@@ -1264,22 +1264,22 @@ async fn submit_user_message_with_mode_sets_coding_collaboration_mode() {
     chat.thread_id = Some(ThreadId::new());
     chat.set_feature_enabled(Feature::CollaborationModes, true);
 
-    let code_mode = collaboration_modes::code_mask(chat.models_manager.as_ref())
-        .expect("expected code collaboration mode");
-    chat.submit_user_message_with_mode("Implement the plan.".to_string(), code_mode);
+    let default_mode = collaboration_modes::default_mode_mask(chat.models_manager.as_ref())
+        .expect("expected default collaboration mode");
+    chat.submit_user_message_with_mode("Implement the plan.".to_string(), default_mode);
 
     match next_submit_op(&mut op_rx) {
         Op::UserTurn {
             collaboration_mode:
                 Some(CollaborationMode {
-                    mode: ModeKind::Code,
+                    mode: ModeKind::Default,
                     ..
                 }),
             personality: None,
             ..
         } => {}
         other => {
-            panic!("expected Op::UserTurn with code collab mode, got {other:?}")
+            panic!("expected Op::UserTurn with default collab mode, got {other:?}")
         }
     }
 }
@@ -2418,7 +2418,7 @@ async fn collab_mode_shift_tab_cycles_only_when_enabled_and_idle() {
     assert_eq!(chat.current_collaboration_mode(), &initial);
 
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
     assert_eq!(chat.current_collaboration_mode(), &initial);
 
     chat.on_task_started();
@@ -2454,14 +2454,14 @@ async fn collab_slash_command_opens_picker_and_updates_mode() {
         Op::UserTurn {
             collaboration_mode:
                 Some(CollaborationMode {
-                    mode: ModeKind::Code,
+                    mode: ModeKind::Default,
                     ..
                 }),
             personality: None,
             ..
         } => {}
         other => {
-            panic!("expected Op::UserTurn with code collab mode, got {other:?}")
+            panic!("expected Op::UserTurn with default collab mode, got {other:?}")
         }
     }
 
@@ -2472,14 +2472,14 @@ async fn collab_slash_command_opens_picker_and_updates_mode() {
         Op::UserTurn {
             collaboration_mode:
                 Some(CollaborationMode {
-                    mode: ModeKind::Code,
+                    mode: ModeKind::Default,
                     ..
                 }),
             personality: None,
             ..
         } => {}
         other => {
-            panic!("expected Op::UserTurn with code collab mode, got {other:?}")
+            panic!("expected Op::UserTurn with default collab mode, got {other:?}")
         }
     }
 }
@@ -2542,7 +2542,7 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
 }
 
 #[tokio::test]
-async fn collaboration_modes_defaults_to_code_on_startup() {
+async fn collaboration_modes_defaults_to_default_on_startup() {
     let codex_home = tempdir().expect("tempdir");
     let cfg = ConfigBuilder::default()
         .codex_home(codex_home.path().to_path_buf())
@@ -2576,7 +2576,7 @@ async fn collaboration_modes_defaults_to_code_on_startup() {
     };
 
     let chat = ChatWidget::new(init, thread_manager);
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
     assert_eq!(chat.current_model(), resolved_model);
 }
 

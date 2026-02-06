@@ -440,7 +440,7 @@ async fn collaboration_mode_update_emits_new_instruction_message_when_mode_chang
             effort: None,
             summary: None,
             collaboration_mode: Some(collab_mode_with_mode_and_instructions(
-                ModeKind::Code,
+                ModeKind::Default,
                 Some(code_text),
             )),
             personality: None,
@@ -517,7 +517,7 @@ async fn collaboration_mode_update_noop_does_not_append_when_mode_is_unchanged()
             effort: None,
             summary: None,
             collaboration_mode: Some(collab_mode_with_mode_and_instructions(
-                ModeKind::Code,
+                ModeKind::Default,
                 Some(collab_text),
             )),
             personality: None,
@@ -545,7 +545,7 @@ async fn collaboration_mode_update_noop_does_not_append_when_mode_is_unchanged()
             effort: None,
             summary: None,
             collaboration_mode: Some(collab_mode_with_mode_and_instructions(
-                ModeKind::Code,
+                ModeKind::Default,
                 Some(collab_text),
             )),
             personality: None,
