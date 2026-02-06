@@ -139,6 +139,60 @@
   большому diff/регрессиям), допускается узкий hybrid (Option B) как временная совместимость.
 - Требуется отдельное расследование, чтобы сделать выбор A/B корректно.
 
+### D3 (результат расследования)
+
+Источник: `explorer` `019c31c9-62b9-7f81-81c3-68e17a8e11a1` (read-only анализ кода).
+
+**Где вычисляется effective toolset (agents -> config -> tools runtime)**
+
+- Seeding builtin agents: `codex-rs/core/src/codex.rs:312-315` -> `codex-rs/core/src/agent/registry.rs:892-915`
+- Roots `.codex/agents` vs `~/.codex/agents`: `codex-rs/core/src/agent/registry.rs:320-357` + discovery/override logic
+- Agent YAML применяет allow/deny через `AgentDefinition::apply_to_config()`:
+  - `codex-rs/core/src/agent/registry.rs:121-159`
+  - allowlist/denylist merge/intersect: `codex-rs/core/src/agent/registry.rs:858-884`
+- Реальная фильтрация зарегистрированных tools:
+  - `codex-rs/core/src/tools/spec.rs:1557-1574` (`build_specs()` + `tool_allowed()`)
+
+**Как это входит в pipeline requirements/exec-policy**
+
+- Requirements enforcement применяется через `Constrained::set(...)` (approval_policy/sandbox_policy):
+  - `codex-rs/core/src/config/mod.rs:1555-1571`
+- Exec-policy грузится отдельно и включает requirements rules:
+  - `codex-rs/core/src/codex.rs:339-341`
+  - `codex-rs/core/src/exec_policy.rs:246-295`
+- Agent tool overrides не являются частью `requirements.toml` (они напрямую мутируют `Config.tool_allowlist/tool_denylist`).
+
+**Критичный риск: bypass tool-policy при `spawn_agent` (почему D3=A “не проходит” сейчас)**
+
+- `codex-rs/core/src/tools/handlers/collab.rs:814-854`: `build_agent_spawn_config()` делает:
+  - `config.tool_allowlist = config.tool_allowlist_policy.clone();`
+  - `config.tool_denylist = config.tool_denylist_policy.clone();`
+- При этом `tool_allowlist_policy/tool_denylist_policy` по текущему коду не инициализируются в обычном пути (часто `None`),
+  из-за чего при `agent_type=None` (а значит без применения agent профиля) ребёнок получает `tool_allowlist=None` и фактически
+  “все tools”.
+- Provenance по effective tool policy не фиксируется: есть `AgentDefinition.path/scope`, но нет объяснения “как получился итоговый
+  toolset”.
+
+**Можно ли сделать D3=A совместимым с агентскими overrides без ослабления requirements? Да**
+
+Предложенная схема (минимальный смысловой diff):
+
+1. Ввести/инициализировать “tool policy ceiling” через `tool_allowlist_policy/tool_denylist_policy` (глобальный максимум).
+2. Сделать agent tool overrides “narrowing only” относительно ceiling:
+   - allowlist = intersect(ceiling_allow, agent_allow)
+   - denylist = union(ceiling_deny, agent_deny)
+3. Запретить “расширение до полного toolset” при `spawn_agent` без `agent_type`:
+   - либо не сбрасывать allow/deny в `None`,
+   - либо требовать `agent_type` (строже, но поведенчески заметнее).
+4. Добавить provenance минимально достаточного уровня (например в turn metadata/tracing): какой ceiling и какой agent профиль
+   применились.
+
+**Итог**
+
+- В текущем состоянии: D3=A (upstream-first enforcement + provenance) несовместим с текущей семантикой спавна (есть bypass).
+- После минимальных правок выше: D3=A становится совместимым (requirements не ослабляем; agent overrides оформляем отдельным
+  narrowing-layer поверх policy ceiling + provenance).
+
 ## D4 (зафиксированное решение): defer, upstream-first target
 
 **Контекст**
@@ -165,4 +219,3 @@
 
 - `cargo test -p codex-tui` + снапшоты (`cargo insta pending-snapshots -p codex-tui`)
 - ручной прогон: длинный стрим с бурстами + открыть/закрыть Agents overlay во время стрима + переключение summary/details.
-
