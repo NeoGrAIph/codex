@@ -81,10 +81,10 @@ Generated artifacts verification (do not review line-by-line):
   ✅ DONE (`2107dc485`).
 - **NF-TUI-003**: удалён upstream streaming chunking/commit_tick orchestration. Риск заметной деградации UX на длинных стримах.
 - **NF-PROTO-001**: удалены remote skills RPC/events. Breaking для клиентов.
-- **NF-PROTO-003**: TS schema optional/nullable правила. Потенциальный compile-time break для TS-клиентов.
+- **NF-PROTO-003**: TS schema optional/nullable правила. ✅ DONE (`89c00611c`).
 - **NF-PROTO-004**: on-wire `ModeKind::Custom`. Риск несовместимости с внешними клиентами/персистентностью.
   ✅ DONE (`e692cb2e9`).
-- **NF-PROTO-007**: `.agents` убран из sandbox read-only subpaths. Потенциальная security-регрессия.
+- **NF-PROTO-007**: `.agents` убран из sandbox read-only subpaths. ✅ DONE (`f731f3db0`).
 - **NF-META-005**: удаление `codex-rs/vendor/bubblewrap/**` без доказанного замещения (см. также NF-LS-003).
 - **NF-APP-SERVER-001/002/003/004**: несколько breaking изменений JSON-RPC контрактов (compact/start, remote skills,
   model/list upgrade, on-wire `ModeKind::Custom`). ✅ DONE (`e692cb2e9`).
@@ -135,10 +135,10 @@ Generated artifacts verification (do not review line-by-line):
 5. **Протокол: зафиксировать breaking изменения и совместимость.**
    - Target: определить стратегию миграции клиентов для remote skills; не сериализовать `ModeKind::Custom` наружу;
      стабилизировать TS nullable/optional правило.
-   - Cards: NF-PROTO-001/003/004.
+   - Cards: NF-PROTO-001/004, NF-PROTO-003 ✅ DONE (`89c00611c`).
 6. **Sandbox read-only subpaths:** решить судьбу `.agents`.
    - Target: либо вернуть `.agents` в read-only, либо перенести форк-артефакты под `.codex/`.
-   - Cards: NF-PROTO-007.
+   - Cards: NF-PROTO-007 ✅ DONE (`f731f3db0`).
 7. **Bubblewrap supply chain:** подтвердить замещение vendored bubblewrap или вернуть vendoring.
    - Target: bwrap path должен быть либо полностью работоспособным, либо явно недоступным/удалённым без “падающих” путей.
    - Cards: NF-META-005, NF-LS-003.
