@@ -917,8 +917,12 @@ pub fn seed_builtin_agents(codex_home: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::CONFIG_TOML_FILE;
     use crate::config::ConfigBuilder;
     use crate::config::ConfigOverrides;
+    use crate::config::ConfigToml;
+    use crate::config::ProjectConfig;
+    use codex_protocol::config_types::TrustLevel;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
 
@@ -938,6 +942,22 @@ mod tests {
         let agent_dir = repo.path().join(".codex").join("agents");
         fs::create_dir_all(&agent_dir).expect("create agents dir");
         write_agent(&agent_dir, "explorer", "opus", "Read, Grep");
+
+        tokio::fs::write(
+            codex_home.path().join(CONFIG_TOML_FILE),
+            toml::to_string(&ConfigToml {
+                projects: Some(std::collections::HashMap::from([(
+                    repo.path().to_string_lossy().to_string(),
+                    ProjectConfig {
+                        trust_level: Some(TrustLevel::Trusted),
+                    },
+                )])),
+                ..Default::default()
+            })
+            .expect("serialize config"),
+        )
+        .await
+        .expect("write user config");
 
         let config = ConfigBuilder::default()
             .codex_home(codex_home.path().to_path_buf())

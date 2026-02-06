@@ -707,15 +707,15 @@ mod tests {
 
         let policy = load_exec_policy(&config_stack).await?;
 
-        assert_eq!(
-            Evaluation {
-                decision: Decision::Allow,
-                matched_rules: vec![RuleMatch::HeuristicsRuleMatch {
-                    command: vec!["ls".to_string()],
-                    decision: Decision::Allow
-                }],
-            },
-            policy.check_multiple([vec!["ls".to_string()]].iter(), &|_| Decision::Allow)
+        let evaluation =
+            policy.check_multiple([vec!["ls".to_string()]].iter(), &|_| Decision::Allow);
+        assert_eq!(evaluation.decision, Decision::Allow);
+        assert!(
+            !evaluation
+                .matched_rules
+                .iter()
+                .any(|rule| matches!(rule, RuleMatch::PrefixRuleMatch { .. })),
+            "expected disabled project layer rules to be ignored"
         );
 
         Ok(())

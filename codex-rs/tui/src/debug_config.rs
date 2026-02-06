@@ -248,8 +248,8 @@ mod tests {
     #[test]
     fn debug_config_output_lists_requirement_sources() {
         let mut requirements = ConfigRequirements::default();
-        requirements.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
-        requirements.sandbox_policy = Constrained::allow_any(SandboxPolicy::ReadOnly);
+        requirements.approval_policy.value = Constrained::allow_any(AskForApproval::OnRequest);
+        requirements.sandbox_policy.value = Constrained::allow_any(SandboxPolicy::ReadOnly);
         requirements.mcp_servers = Some(Sourced::new(
             BTreeMap::from([(
                 "docs".to_string(),
@@ -261,7 +261,8 @@ mod tests {
             )]),
             RequirementSource::LegacyManagedConfigTomlFromMdm,
         ));
-        requirements.enforce_residency = Constrained::allow_any(Some(ResidencyRequirement::Us));
+        requirements.enforce_residency.value =
+            Constrained::allow_any(Some(ResidencyRequirement::Us));
 
         let requirements_toml = ConfigRequirementsToml {
             allowed_approval_policies: Some(vec![AskForApproval::OnRequest]),

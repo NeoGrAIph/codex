@@ -15,6 +15,8 @@ use crate::config_loader::config_requirements::ConfigRequirementsWithSources;
 use crate::config_loader::config_requirements::RequirementSource;
 use crate::config_loader::fingerprint::version_for_toml;
 use crate::config_loader::load_requirements_toml;
+use codex_execpolicy::Decision;
+use codex_execpolicy::RuleMatch;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::protocol::AskForApproval;
 #[cfg(target_os = "macos")]
@@ -1032,6 +1034,63 @@ async fn project_layers_disabled_when_untrusted_or_unknown() -> std::io::Result<
     assert_eq!(
         layers_unknown.effective_config().get("foo"),
         Some(&TomlValue::String("user".to_string()))
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn exec_policy_ignores_rules_from_disabled_project_layer_without_config_toml()
+-> std::io::Result<()> {
+    let tmp = tempdir()?;
+    let codex_home = tmp.path().join("home");
+    tokio::fs::create_dir_all(&codex_home).await?;
+
+    let project_root = tmp.path().join("project");
+    let rules_dir = project_root.join(".codex").join("rules");
+    tokio::fs::create_dir_all(&rules_dir).await?;
+    tokio::fs::write(
+        rules_dir.join("deny.rules"),
+        r#"prefix_rule(pattern=["ls"], decision="forbidden")"#,
+    )
+    .await?;
+    make_config_for_test(&codex_home, &project_root, TrustLevel::Untrusted, None).await?;
+
+    let cwd = AbsolutePathBuf::from_absolute_path(&project_root)?;
+    let stack = load_config_layers_state(
+        &codex_home,
+        Some(cwd),
+        &[] as &[(String, TomlValue)],
+        LoaderOverrides::default(),
+        CloudRequirementsLoader::default(),
+    )
+    .await?;
+
+    let project_layers: Vec<_> = stack
+        .get_layers(
+            super::ConfigLayerStackOrdering::HighestPrecedenceFirst,
+            true,
+        )
+        .into_iter()
+        .filter(|layer| matches!(layer.name, super::ConfigLayerSource::Project { .. }))
+        .collect();
+    assert_eq!(project_layers.len(), 1);
+    assert!(
+        project_layers[0].disabled_reason.is_some(),
+        "expected project layer to be disabled without requiring config.toml"
+    );
+
+    let policy = crate::exec_policy::load_exec_policy(&stack)
+        .await
+        .expect("load exec policy");
+    let evaluation = policy.check_multiple([vec!["ls".to_string()]].iter(), &|_| Decision::Allow);
+    assert_eq!(evaluation.decision, Decision::Allow);
+    assert!(
+        !evaluation
+            .matched_rules
+            .iter()
+            .any(|rule| matches!(rule, RuleMatch::PrefixRuleMatch { .. })),
+        "expected disabled project layer rules to be ignored"
     );
 
     Ok(())
