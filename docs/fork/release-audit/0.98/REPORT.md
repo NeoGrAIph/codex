@@ -89,9 +89,9 @@ Generated artifacts verification (do not review line-by-line):
 - **NF-APP-SERVER-001/002/003/004**: несколько breaking изменений JSON-RPC контрактов (compact/start, remote skills,
   model/list upgrade, on-wire `ModeKind::Custom`). ✅ DONE (`e692cb2e9`).
 - **NF-WIN-SB-001/002**: существенные изменения security boundary/токенов в Windows sandbox.
-- **NF-STATE-001/002**: миграционные/контрактные риски state DB (фиксированное имя `state.sqlite`, семантика dynamic tools).
+- **NF-STATE-001/002**: миграционные/контрактные риски state DB (фиксированное имя `state.sqlite`, семантика dynamic tools). ✅ DONE (`460937ae6`, `e2f0db924`).
 - **NF-EXEC-001 / NF-MCP-001**: семантика `TurnAborted` и тестовый wire API (Responses vs Chat) в смежных подсистемах.
-  NF-MCP-001 ✅ DONE (`901e3488c`); NF-EXEC-001 pending.
+  NF-MCP-001 ✅ DONE (`901e3488c`); NF-EXEC-001 ✅ DONE (`e06cb5a8c`, `09907881d`).
 
 ### P1 (should-do)
 
