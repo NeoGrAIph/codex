@@ -519,15 +519,6 @@ LIMIT ?
         }
         let mut tx = self.pool.begin().await?;
         let thread_id = thread_id.to_string();
-        let existing: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM thread_dynamic_tools WHERE thread_id = ? LIMIT 1")
-                .bind(thread_id.as_str())
-                .fetch_optional(&mut *tx)
-                .await?;
-        if existing.is_some() {
-            tx.commit().await?;
-            return Ok(());
-        }
         for (idx, tool) in tools.iter().enumerate() {
             let position = i64::try_from(idx).unwrap_or(i64::MAX);
             let input_schema = serde_json::to_string(&tool.input_schema)?;
@@ -540,6 +531,7 @@ INSERT INTO thread_dynamic_tools (
     description,
     input_schema
 ) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(thread_id, position) DO NOTHING
                 "#,
             )
             .bind(thread_id.as_str())
@@ -809,9 +801,11 @@ mod tests {
     use chrono::DateTime;
     use chrono::Utc;
     use codex_protocol::ThreadId;
+    use codex_protocol::dynamic_tools::DynamicToolSpec;
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::SandboxPolicy;
     use pretty_assertions::assert_eq;
+    use serde_json::json;
     use sqlx::Row;
     use std::path::Path;
     use std::path::PathBuf;
@@ -942,6 +936,53 @@ mod tests {
             updated.updated_at >= inserted.updated_at,
             "updated_at should not move backward"
         );
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn persist_dynamic_tools_is_idempotent() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("initialize runtime");
+
+        let thread_id = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread id");
+        let cwd = codex_home.join("workspace");
+        runtime
+            .upsert_thread(&test_thread_metadata(&codex_home, thread_id, cwd))
+            .await
+            .expect("upsert thread");
+
+        let tools = vec![
+            DynamicToolSpec {
+                name: "a".to_string(),
+                description: "tool a".to_string(),
+                input_schema: json!({"type":"object","properties":{"a":{"type":"string"}}}),
+            },
+            DynamicToolSpec {
+                name: "b".to_string(),
+                description: "tool b".to_string(),
+                input_schema: json!({"type":"object","properties":{"b":{"type":"string"}}}),
+            },
+        ];
+
+        runtime
+            .persist_dynamic_tools(thread_id, Some(&tools))
+            .await
+            .expect("persist dynamic tools (first)");
+        runtime
+            .persist_dynamic_tools(thread_id, Some(&tools))
+            .await
+            .expect("persist dynamic tools (second)");
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM thread_dynamic_tools WHERE thread_id = ?")
+                .bind(thread_id.to_string())
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("count tools");
+        assert_eq!(count, tools.len() as i64);
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }
