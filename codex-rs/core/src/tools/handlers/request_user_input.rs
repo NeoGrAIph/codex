@@ -9,23 +9,7 @@ use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
 use codex_protocol::config_types::ModeKind;
-use codex_protocol::config_types::TUI_VISIBLE_COLLABORATION_MODES;
 use codex_protocol::request_user_input::RequestUserInputArgs;
-
-fn format_allowed_modes() -> String {
-    let mode_names: Vec<&str> = TUI_VISIBLE_COLLABORATION_MODES
-        .into_iter()
-        .filter(|mode| mode.allows_request_user_input())
-        .map(ModeKind::display_name)
-        .collect();
-
-    match mode_names.as_slice() {
-        [] => "no modes".to_string(),
-        [mode] => format!("{mode} mode"),
-        [first, second] => format!("{first} or {second} mode"),
-        [..] => format!("modes: {}", mode_names.join(",")),
-    }
-}
 
 pub(crate) fn request_user_input_unavailable_message(mode: ModeKind) -> Option<String> {
     if mode.allows_request_user_input() {
@@ -36,13 +20,6 @@ pub(crate) fn request_user_input_unavailable_message(mode: ModeKind) -> Option<S
             "request_user_input is unavailable in {mode_name} mode"
         ))
     }
-}
-
-pub(crate) fn request_user_input_tool_description() -> String {
-    let allowed_modes = format_allowed_modes();
-    format!(
-        "Request user input for one to three short questions and wait for the response. This tool is only available in {allowed_modes}."
-    )
 }
 
 pub struct RequestUserInputHandler;
@@ -138,14 +115,6 @@ mod tests {
         assert_eq!(
             request_user_input_unavailable_message(ModeKind::PairProgramming),
             Some("request_user_input is unavailable in Pair Programming mode".to_string())
-        );
-    }
-
-    #[test]
-    fn request_user_input_tool_description_mentions_plan_only() {
-        assert_eq!(
-            request_user_input_tool_description(),
-            "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.".to_string()
         );
     }
 }

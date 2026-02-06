@@ -94,7 +94,6 @@ use tracing::field;
 use tracing::info;
 use tracing::info_span;
 use tracing::instrument;
-use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
 
@@ -585,15 +584,6 @@ impl TurnContext {
                 self.turn_metadata_header.get().cloned().flatten()
             }
         }
-    }
-
-    pub fn spawn_turn_metadata_header_task(self: &Arc<Self>) {
-        let context = Arc::clone(self);
-        tokio::spawn(async move {
-            trace!("Spawning turn metadata calculation task");
-            context.build_turn_metadata_header().await;
-            trace!("Turn metadata calculation task completed");
-        });
     }
 }
 
@@ -1318,21 +1308,6 @@ impl Session {
                 // Flush after seeding history and any persisted rollout copy.
                 self.flush_rollout().await;
             }
-        }
-    }
-
-    fn last_model_name<'a>(rollout_items: &'a [RolloutItem], current: &str) -> Option<&'a str> {
-        let previous = rollout_items.iter().rev().find_map(|it| {
-            if let RolloutItem::TurnContext(ctx) = it {
-                Some(ctx.model.as_str())
-            } else {
-                None
-            }
-        })?;
-        if previous == current {
-            None
-        } else {
-            Some(previous)
         }
     }
 
