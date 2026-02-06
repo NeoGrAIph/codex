@@ -85,10 +85,10 @@ Generated artifacts verification (do not review line-by-line):
 - **NF-PROTO-004**: on-wire `ModeKind::Custom`. Риск несовместимости с внешними клиентами/персистентностью.
   ✅ DONE (`e692cb2e9`).
 - **NF-PROTO-007**: `.agents` убран из sandbox read-only subpaths. ✅ DONE (`f731f3db0`).
-- **NF-META-005**: удаление `codex-rs/vendor/bubblewrap/**` без доказанного замещения (см. также NF-LS-003).
+- **NF-META-005**: удаление `codex-rs/vendor/bubblewrap/**` без доказанного замещения (см. также NF-LS-003). ✅ DONE (`8ab8391c1`).
 - **NF-APP-SERVER-001/002/003/004**: несколько breaking изменений JSON-RPC контрактов (compact/start, remote skills,
   model/list upgrade, on-wire `ModeKind::Custom`). ✅ DONE (`e692cb2e9`).
-- **NF-WIN-SB-001/002**: существенные изменения security boundary/токенов в Windows sandbox.
+- **NF-WIN-SB-001/002**: существенные изменения security boundary/токенов в Windows sandbox. ✅ DONE (`a78d317de`, `08a27d651`).
 - **NF-STATE-001/002**: миграционные/контрактные риски state DB (фиксированное имя `state.sqlite`, семантика dynamic tools). ✅ DONE (`460937ae6`, `e2f0db924`).
 - **NF-EXEC-001 / NF-MCP-001**: семантика `TurnAborted` и тестовый wire API (Responses vs Chat) в смежных подсистемах.
   NF-MCP-001 ✅ DONE (`901e3488c`); NF-EXEC-001 ✅ DONE (`e06cb5a8c`, `09907881d`).
@@ -103,7 +103,7 @@ Generated artifacts verification (do not review line-by-line):
 - **NF-TUI-001**: multi-agent overlays (Ctrl+N) — fork-ключевая фича, риск регрессий alt-screen/хоткеев.
 - **NF-TUI-002**: collaboration modes default (инертный `Custom` vs upstream default). Нужна продуктовая фиксация.
 - **NF-TUI-006**: OSS provider “ollama-chat” UX — fork-only, проверить корректность deprecation notice.
-- **NF-LS-003**: bwrap FFI pipeline/фича `use_bwrap_sandbox` после удаления vendoring — риск “footgun”.
+- **NF-LS-003**: bwrap FFI pipeline/фича `use_bwrap_sandbox` после удаления vendoring — риск “footgun”. ✅ DONE (`8ab8391c1`).
 - **NF-PROTO-002/005/006**: протокольные изменения средней важности (compact/start, personality none, agent info).
 
 ### P2 (nice-to-have)
@@ -141,7 +141,7 @@ Generated artifacts verification (do not review line-by-line):
    - Cards: NF-PROTO-007 ✅ DONE (`f731f3db0`).
 7. **Bubblewrap supply chain:** подтвердить замещение vendored bubblewrap или вернуть vendoring.
    - Target: bwrap path должен быть либо полностью работоспособным, либо явно недоступным/удалённым без “падающих” путей.
-   - Cards: NF-META-005, NF-LS-003.
+   - Cards: NF-META-005, NF-LS-003 ✅ DONE (`8ab8391c1`).
 
 ### P1 plan
 
@@ -150,7 +150,7 @@ Generated artifacts verification (do not review line-by-line):
 - Решить “инертный Custom” для collaboration modes и синхронизировать это с протоколом (избегать on-wire `custom`).
   - Cards: NF-TUI-002, NF-PROTO-004.
 - Подтвердить статус bwrap/landlock: какой путь реально поддерживаем на Linux и как он тестируется в CI/ручном прогоне.
-  - Cards: NF-LS-003, NF-META-005.
+  - Cards: NF-LS-003, NF-META-005 ✅ DONE (`8ab8391c1`).
 
 ### P2 plan
 
