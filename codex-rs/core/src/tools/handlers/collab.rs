@@ -818,10 +818,6 @@ fn build_agent_spawn_config(
 ) -> Result<Config, FunctionCallError> {
     let base_config = turn.config.clone();
     let mut config = (*base_config).clone();
-    // Reset runtime allow/deny to the global policy so spawned agents
-    // don't inherit a parent's narrowed tool list.
-    config.tool_allowlist = config.tool_allowlist_policy.clone();
-    config.tool_denylist = config.tool_denylist_policy.clone();
     config.base_instructions = Some(base_instructions.text.clone());
     config.model = Some(turn.model_info.slug.clone());
     config.model_provider = turn.provider.clone();
@@ -859,6 +855,9 @@ mod tests {
     use crate::CodexAuth;
     use crate::ThreadManager;
     use crate::agent::MAX_THREAD_SPAWN_DEPTH;
+    use crate::agent::registry::AgentColor;
+    use crate::agent::registry::AgentDefinition;
+    use crate::agent::registry::AgentScope;
     use crate::built_in_model_providers;
     use crate::codex::make_session_and_context;
     use crate::codex::make_session_and_context_with_rx;
@@ -914,7 +913,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_agent_spawn_config_resets_tool_policy() {
+    async fn build_agent_spawn_config_inherits_tool_policy() {
         let (_session, mut turn) = make_session_and_context().await;
         let mut base_config = (*turn.config).clone();
         base_config.tool_allowlist_policy =
@@ -927,12 +926,63 @@ mod tests {
         let base_instructions = BaseInstructions::default();
         let config = build_agent_spawn_config(&base_instructions, &turn, 0).expect("spawn config");
         assert_eq!(
-            config.tool_allowlist, base_config.tool_allowlist_policy,
-            "spawned agents should use policy allowlist"
+            config.tool_allowlist, base_config.tool_allowlist,
+            "spawned agents should inherit a parent's runtime allowlist"
         );
         assert_eq!(
-            config.tool_denylist, base_config.tool_denylist_policy,
-            "spawned agents should use policy denylist"
+            config.tool_denylist, base_config.tool_denylist,
+            "spawned agents should inherit a parent's runtime denylist"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_profiles_cannot_expand_tool_allowlist_relative_to_parent() {
+        let (_session, mut turn) = make_session_and_context().await;
+        let mut base_config = (*turn.config).clone();
+        base_config.tool_allowlist = Some(vec!["spawn_agent".to_string()]);
+        turn.config = Arc::new(base_config.clone());
+
+        let base_instructions = BaseInstructions::default();
+        let mut config = build_agent_spawn_config(&base_instructions, &turn, 0).expect("spawn");
+
+        let agent = AgentDefinition {
+            name: "test".to_string(),
+            description: "test".to_string(),
+            model: "gpt-test".to_string(),
+            reasoning_effort: None,
+            agent_name_models: HashMap::new(),
+            agent_name_reasoning_efforts: HashMap::new(),
+            color: AgentColor::Blue,
+            tools: Some(vec!["*".to_string()]),
+            read_only: false,
+            tool_denylist: None,
+            agent_name_descriptions: HashMap::new(),
+            agent_name_instructions: HashMap::new(),
+            instructions: "test".to_string(),
+            path: PathBuf::from("test.md"),
+            scope: AgentScope::Repo,
+        };
+
+        agent
+            .apply_to_config(&mut config, None)
+            .expect("apply to config");
+        assert_eq!(
+            config.tool_allowlist,
+            Some(vec!["spawn_agent".to_string()]),
+            "agent overrides cannot clear a parent's allowlist"
+        );
+
+        let agent = AgentDefinition {
+            tools: Some(vec!["spawn_agent".to_string(), "shell".to_string()]),
+            ..agent
+        };
+        agent
+            .apply_to_config(&mut config, None)
+            .expect("apply to config");
+        assert_eq!(
+            config.tool_allowlist,
+            Some(vec!["spawn_agent".to_string()]),
+            "agent overrides cannot expand tools beyond the parent's allowlist"
         );
     }
 

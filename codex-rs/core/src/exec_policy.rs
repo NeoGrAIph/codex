@@ -248,9 +248,7 @@ pub async fn load_exec_policy(config_stack: &ConfigLayerStack) -> Result<Policy,
     // from each layer, so that higher-precedence layers can override
     // rules defined in lower-precedence ones.
     let mut policy_paths = Vec::new();
-    // Include disabled project layers so .codex/rules still applies when
-    // project config.toml is trust-disabled.
-    for layer in config_stack.get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, true) {
+    for layer in config_stack.get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, false) {
         if let Some(config_folder) = layer.config_folder() {
             #[expect(clippy::expect_used)]
             let policy_dir = config_folder.join(RULES_DIR_NAME).expect("safe join");
@@ -684,7 +682,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loads_rules_from_disabled_project_layers() -> anyhow::Result<()> {
+    async fn ignores_rules_from_disabled_project_layers() -> anyhow::Result<()> {
         let project_dir = tempdir()?;
         let policy_dir = project_dir.path().join(RULES_DIR_NAME);
         fs::create_dir_all(&policy_dir)?;
@@ -711,11 +709,10 @@ mod tests {
 
         assert_eq!(
             Evaluation {
-                decision: Decision::Forbidden,
-                matched_rules: vec![RuleMatch::PrefixRuleMatch {
-                    matched_prefix: vec!["ls".to_string()],
-                    decision: Decision::Forbidden,
-                    justification: None,
+                decision: Decision::Allow,
+                matched_rules: vec![RuleMatch::HeuristicsRuleMatch {
+                    command: vec!["ls".to_string()],
+                    decision: Decision::Allow
                 }],
             },
             policy.check_multiple([vec!["ls".to_string()]].iter(), &|_| Decision::Allow)
