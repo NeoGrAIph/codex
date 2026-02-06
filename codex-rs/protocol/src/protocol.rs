@@ -596,6 +596,13 @@ impl SandboxPolicy {
                         if top_level_codex.as_path().is_dir() {
                             subpaths.push(top_level_codex);
                         }
+                        #[allow(clippy::expect_used)]
+                        let top_level_agents = writable_root
+                            .join(".agents")
+                            .expect(".agents is a valid relative path");
+                        if top_level_agents.as_path().is_dir() {
+                            subpaths.push(top_level_agents);
+                        }
                         WritableRoot {
                             root: writable_root,
                             read_only_subpaths: subpaths,
@@ -2457,6 +2464,7 @@ mod tests {
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use tempfile::NamedTempFile;
+    use tempfile::tempdir;
 
     #[test]
     fn external_sandbox_reports_full_access_flags() {
@@ -2471,6 +2479,34 @@ mod tests {
         };
         assert!(enabled.has_full_disk_write_access());
         assert!(enabled.has_full_network_access());
+    }
+
+    #[test]
+    fn workspace_write_policy_makes_agents_and_codex_agents_read_only() -> Result<()> {
+        let workspace = tempdir()?;
+        let workspace_root = workspace.path();
+
+        std::fs::create_dir(workspace_root.join(".git"))?;
+        std::fs::create_dir_all(workspace_root.join(".codex/agents"))?;
+        std::fs::create_dir(workspace_root.join(".agents"))?;
+
+        let policy = SandboxPolicy::new_workspace_write_policy();
+        let writable_roots = policy.get_writable_roots_with_cwd(workspace_root);
+        #[allow(clippy::expect_used)]
+        let writable_root = writable_roots
+            .iter()
+            .find(|root| root.root.as_path() == workspace_root)
+            .expect("expected cwd to be a writable root");
+
+        assert!(!writable_root.is_path_writable(&workspace_root.join(".agents")));
+        assert!(!writable_root.is_path_writable(&workspace_root.join(".agents/profile.toml")));
+        assert!(!writable_root.is_path_writable(&workspace_root.join(".codex/agents")));
+        assert!(
+            !writable_root.is_path_writable(&workspace_root.join(".codex/agents/profile.toml"))
+        );
+
+        assert!(writable_root.is_path_writable(&workspace_root.join("scratch.txt")));
+        Ok(())
     }
 
     #[test]
