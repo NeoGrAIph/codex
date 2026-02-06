@@ -1,0 +1,48 @@
+diff --git a/codex-rs/tui/src/app_backtrack.rs b/codex-rs/tui/src/app_backtrack.rs
+index 256355dd0..3dbf7b773 100644
+--- a/codex-rs/tui/src/app_backtrack.rs
++++ b/codex-rs/tui/src/app_backtrack.rs
+@@ -33,6 +33,7 @@ use crate::history_cell::UserHistoryCell;
+ use crate::pager_overlay::Overlay;
+ use crate::tui;
+ use crate::tui::TuiEvent;
++use codex_core::features::Feature;
+ use codex_core::protocol::CodexErrorInfo;
+ use codex_core::protocol::ErrorEvent;
+ use codex_core::protocol::EventMsg;
+@@ -43,6 +44,7 @@ use color_eyre::eyre::Result;
+ use crossterm::event::KeyCode;
+ use crossterm::event::KeyEvent;
+ use crossterm::event::KeyEventKind;
++use crossterm::event::KeyModifiers;
+ 
+ /// Aggregates all backtrack-related state used by the App.
+ #[derive(Default)]
+@@ -107,6 +109,19 @@ impl App {
+         tui: &mut tui::Tui,
+         event: TuiEvent,
+     ) -> Result<bool> {
++        if let TuiEvent::Key(KeyEvent {
++            code: KeyCode::Char('n'),
++            modifiers: KeyModifiers::CONTROL,
++            kind: KeyEventKind::Press,
++            ..
++        }) = event
++        {
++            if self.config.features.enabled(Feature::CollaborationModes) {
++                self.cycle_ctrl_t_overlay(tui).await;
++                return Ok(true);
++            }
++        }
++
+         if self.backtrack.overlay_preview_active {
+             match event {
+                 TuiEvent::Key(KeyEvent {
+@@ -233,6 +248,7 @@ impl App {
+             tui.insert_history_lines(lines);
+         }
+         self.overlay = None;
++        self.clear_ctrl_t_overlay_mode();
+         self.backtrack.overlay_preview_active = false;
+         if was_backtrack {
+             // Ensure backtrack state is fully reset when overlay closes (e.g. via 'q').

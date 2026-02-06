@@ -1,0 +1,30 @@
+diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
+index 50a1f8538..1fd3558bf 100644
+--- a/codex-rs/core/src/lib.rs
++++ b/codex-rs/core/src/lib.rs
+@@ -58,14 +58,16 @@ mod stream_events_utils;
+ mod tagged_block_parser;
+ mod text_encoding;
+ pub mod token_data;
++mod tool_allowlist;
+ mod truncate;
+ mod unified_exec;
+ pub mod windows_sandbox;
+-pub use client::X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER;
++pub use model_provider_info::CHAT_WIRE_API_DEPRECATION_SUMMARY;
+ pub use model_provider_info::DEFAULT_LMSTUDIO_PORT;
+ pub use model_provider_info::DEFAULT_OLLAMA_PORT;
+ pub use model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
+ pub use model_provider_info::ModelProviderInfo;
++pub use model_provider_info::OLLAMA_CHAT_PROVIDER_ID;
+ pub use model_provider_info::OLLAMA_OSS_PROVIDER_ID;
+ pub use model_provider_info::WireApi;
+ pub use model_provider_info::built_in_model_providers;
+@@ -139,7 +141,6 @@ pub use exec_policy::load_exec_policy;
+ pub use file_watcher::FileWatcherEvent;
+ pub use safety::get_platform_sandbox;
+ pub use tools::spec::parse_tool_input_schema;
+-pub use turn_metadata::build_turn_metadata_header;
+ // Re-export the protocol types from the standalone `codex-protocol` crate so existing
+ // `codex_core::protocol::...` references continue to work across the workspace.
+ pub use codex_protocol::protocol;

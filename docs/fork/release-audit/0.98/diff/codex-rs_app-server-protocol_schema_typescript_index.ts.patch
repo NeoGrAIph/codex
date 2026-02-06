@@ -1,0 +1,21 @@
+diff --git a/codex-rs/app-server-protocol/schema/typescript/index.ts b/codex-rs/app-server-protocol/schema/typescript/index.ts
+index a6ff6fbaf..0ea9d28e0 100644
+--- a/codex-rs/app-server-protocol/schema/typescript/index.ts
++++ b/codex-rs/app-server-protocol/schema/typescript/index.ts
+@@ -99,7 +99,6 @@ export type { ItemStartedEvent } from "./ItemStartedEvent";
+ export type { ListConversationsParams } from "./ListConversationsParams";
+ export type { ListConversationsResponse } from "./ListConversationsResponse";
+ export type { ListCustomPromptsResponseEvent } from "./ListCustomPromptsResponseEvent";
+-export type { ListRemoteSkillsResponseEvent } from "./ListRemoteSkillsResponseEvent";
+ export type { ListSkillsResponseEvent } from "./ListSkillsResponseEvent";
+ export type { LocalShellAction } from "./LocalShellAction";
+ export type { LocalShellExecAction } from "./LocalShellExecAction";
+@@ -142,8 +141,6 @@ export type { ReasoningItemContent } from "./ReasoningItemContent";
+ export type { ReasoningItemReasoningSummary } from "./ReasoningItemReasoningSummary";
+ export type { ReasoningRawContentDeltaEvent } from "./ReasoningRawContentDeltaEvent";
+ export type { ReasoningSummary } from "./ReasoningSummary";
+-export type { RemoteSkillDownloadedEvent } from "./RemoteSkillDownloadedEvent";
+-export type { RemoteSkillSummary } from "./RemoteSkillSummary";
+ export type { RemoveConversationListenerParams } from "./RemoveConversationListenerParams";
+ export type { RemoveConversationSubscriptionResponse } from "./RemoveConversationSubscriptionResponse";
+ export type { RequestId } from "./RequestId";

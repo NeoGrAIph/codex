@@ -1,0 +1,12 @@
+diff --git a/codex-rs/exec/src/event_processor_with_jsonl_output.rs b/codex-rs/exec/src/event_processor_with_jsonl_output.rs
+index 9675651ef..823fa7b81 100644
+--- a/codex-rs/exec/src/event_processor_with_jsonl_output.rs
++++ b/codex-rs/exec/src/event_processor_with_jsonl_output.rs
+@@ -871,7 +871,6 @@ impl EventProcessor for EventProcessorWithJsonOutput {
+                 }
+                 CodexStatus::InitiateShutdown
+             }
+-            protocol::EventMsg::TurnAborted(_) => CodexStatus::InitiateShutdown,
+             protocol::EventMsg::ShutdownComplete => CodexStatus::Shutdown,
+             _ => CodexStatus::Running,
+         }

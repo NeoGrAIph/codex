@@ -1,0 +1,84 @@
+diff --git a/codex-rs/windows-sandbox-rs/src/command_runner_win.rs b/codex-rs/windows-sandbox-rs/src/command_runner_win.rs
+index 9ff61de93..a016c00c7 100644
+--- a/codex-rs/windows-sandbox-rs/src/command_runner_win.rs
++++ b/codex-rs/windows-sandbox-rs/src/command_runner_win.rs
+@@ -5,8 +5,8 @@ use anyhow::Result;
+ use codex_windows_sandbox::allow_null_device;
+ use codex_windows_sandbox::convert_string_sid_to_sid;
+ use codex_windows_sandbox::create_process_as_user;
+-use codex_windows_sandbox::create_readonly_token_with_caps_from;
+-use codex_windows_sandbox::create_workspace_write_token_with_caps_from;
++use codex_windows_sandbox::create_readonly_token_with_cap_from;
++use codex_windows_sandbox::create_workspace_write_token_with_cap_from;
+ use codex_windows_sandbox::get_current_token_for_restriction;
+ use codex_windows_sandbox::hide_current_user_profile_dir;
+ use codex_windows_sandbox::log_note;
+@@ -20,9 +20,7 @@ use std::path::Path;
+ use std::path::PathBuf;
+ use windows_sys::Win32::Foundation::CloseHandle;
+ use windows_sys::Win32::Foundation::GetLastError;
+-use windows_sys::Win32::Foundation::LocalFree;
+ use windows_sys::Win32::Foundation::HANDLE;
+-use windows_sys::Win32::Foundation::HLOCAL;
+ use windows_sys::Win32::Storage::FileSystem::CreateFileW;
+ use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
+ use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
+@@ -50,7 +48,7 @@ struct RunnerRequest {
+     codex_home: PathBuf,
+     // Real user's CODEX_HOME for shared data (caps, config).
+     real_codex_home: PathBuf,
+-    cap_sids: Vec<String>,
++    cap_sid: String,
+     command: Vec<String>,
+     cwd: PathBuf,
+     env_map: HashMap<String, String>,
+@@ -114,43 +112,27 @@ pub fn main() -> Result<()> {
+     );
+ 
+     let policy = parse_policy(&req.policy_json_or_preset).context("parse policy_json_or_preset")?;
+-    let mut cap_psids: Vec<*mut c_void> = Vec::new();
+-    for sid in &req.cap_sids {
+-        let Some(psid) = (unsafe { convert_string_sid_to_sid(sid) }) else {
+-            anyhow::bail!("ConvertStringSidToSidW failed for capability SID");
+-        };
+-        cap_psids.push(psid);
+-    }
+-    if cap_psids.is_empty() {
+-        anyhow::bail!("runner: empty capability SID list");
+-    }
++    let psid_cap: *mut c_void = unsafe { convert_string_sid_to_sid(&req.cap_sid).unwrap() };
+ 
+     // Create restricted token from current process token.
+     let base = unsafe { get_current_token_for_restriction()? };
+-    let token_res: Result<HANDLE> = unsafe {
++    let token_res: Result<(HANDLE, *mut c_void)> = unsafe {
+         match &policy {
+-            SandboxPolicy::ReadOnly => create_readonly_token_with_caps_from(base, &cap_psids),
++            SandboxPolicy::ReadOnly => create_readonly_token_with_cap_from(base, psid_cap),
+             SandboxPolicy::WorkspaceWrite { .. } => {
+-                create_workspace_write_token_with_caps_from(base, &cap_psids)
++                create_workspace_write_token_with_cap_from(base, psid_cap)
+             }
+             SandboxPolicy::DangerFullAccess | SandboxPolicy::ExternalSandbox { .. } => {
+                 unreachable!()
+             }
+         }
+     };
+-    let h_token = token_res?;
++    let (h_token, psid_to_use) = token_res?;
+     unsafe {
+         CloseHandle(base);
+     }
+     unsafe {
+-        for psid in &cap_psids {
+-            allow_null_device(*psid);
+-        }
+-        for psid in cap_psids {
+-            if !psid.is_null() {
+-                LocalFree(psid as HLOCAL);
+-            }
+-        }
++        allow_null_device(psid_to_use);
+     }
+ 
+     // Open named pipes for stdio.

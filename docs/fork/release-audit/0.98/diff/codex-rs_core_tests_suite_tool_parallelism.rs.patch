@@ -1,0 +1,52 @@
+diff --git a/codex-rs/core/tests/suite/tool_parallelism.rs b/codex-rs/core/tests/suite/tool_parallelism.rs
+index 0df8f8cbc..e10c4d6fc 100644
+--- a/codex-rs/core/tests/suite/tool_parallelism.rs
++++ b/codex-rs/core/tests/suite/tool_parallelism.rs
+@@ -77,6 +77,13 @@ fn assert_parallel_duration(actual: Duration) {
+     );
+ }
+ 
++fn assert_serial_duration(actual: Duration) {
++    assert!(
++        actual >= Duration::from_millis(500),
++        "expected serial execution to take longer, got {actual:?}"
++    );
++}
++
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+ async fn read_file_tools_run_in_parallel() -> anyhow::Result<()> {
+     skip_if_no_network!(Ok(()));
+@@ -140,7 +147,7 @@ async fn read_file_tools_run_in_parallel() -> anyhow::Result<()> {
+ }
+ 
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+-async fn shell_tools_run_in_parallel() -> anyhow::Result<()> {
++async fn non_parallel_tools_run_serially() -> anyhow::Result<()> {
+     skip_if_no_network!(Ok(()));
+ 
+     let server = start_mock_server().await;
+@@ -169,13 +176,13 @@ async fn shell_tools_run_in_parallel() -> anyhow::Result<()> {
+     mount_sse_sequence(&server, vec![first_response, second_response]).await;
+ 
+     let duration = run_turn_and_measure(&test, "run shell_command twice").await?;
+-    assert_parallel_duration(duration);
++    assert_serial_duration(duration);
+ 
+     Ok(())
+ }
+ 
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+-async fn mixed_parallel_tools_run_in_parallel() -> anyhow::Result<()> {
++async fn mixed_tools_fall_back_to_serial() -> anyhow::Result<()> {
+     skip_if_no_network!(Ok(()));
+ 
+     let server = start_mock_server().await;
+@@ -203,7 +210,7 @@ async fn mixed_parallel_tools_run_in_parallel() -> anyhow::Result<()> {
+     mount_sse_sequence(&server, vec![first_response, second_response]).await;
+ 
+     let duration = run_turn_and_measure(&test, "mix tools").await?;
+-    assert_parallel_duration(duration);
++    assert_serial_duration(duration);
+ 
+     Ok(())
+ }

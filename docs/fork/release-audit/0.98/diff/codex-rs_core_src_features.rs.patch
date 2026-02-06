@@ -1,0 +1,72 @@
+diff --git a/codex-rs/core/src/features.rs b/codex-rs/core/src/features.rs
+index e14373f85..363fb25e7 100644
+--- a/codex-rs/core/src/features.rs
++++ b/codex-rs/core/src/features.rs
+@@ -113,8 +113,8 @@ pub enum Feature {
+     PowershellUtf8,
+     /// Compress request bodies (zstd) when sending streaming requests to codex-backend.
+     EnableRequestCompression,
+-    /// Enable collab tools.
+-    Collab,
++    /// Enable fork multi-agent tools and registry.
++    FnMultiAgents,
+     /// Enable apps.
+     Apps,
+     /// Allow prompting and installing missing MCP dependencies.
+@@ -123,7 +123,7 @@ pub enum Feature {
+     SkillEnvVarDependencyPrompt,
+     /// Steer feature flag - when enabled, Enter submits immediately instead of queuing.
+     Steer,
+-    /// Enable collaboration modes (Plan, Default).
++    /// Enable collaboration modes (Plan, Code, Pair Programming, Execute).
+     CollaborationModes,
+     /// Enable personality selection in the TUI.
+     Personality,
+@@ -408,12 +408,6 @@ pub const FEATURES: &[FeatureSpec] = &[
+         stage: Stage::Stable,
+         default_enabled: true,
+     },
+-    FeatureSpec {
+-        id: Feature::UnifiedExec,
+-        key: "unified_exec",
+-        stage: Stage::Stable,
+-        default_enabled: !cfg!(windows),
+-    },
+     FeatureSpec {
+         id: Feature::WebSearchRequest,
+         key: "web_search_request",
+@@ -427,6 +421,16 @@ pub const FEATURES: &[FeatureSpec] = &[
+         default_enabled: false,
+     },
+     // Experimental program. Rendered in the `/experimental` menu for users.
++    FeatureSpec {
++        id: Feature::UnifiedExec,
++        key: "unified_exec",
++        stage: Stage::Experimental {
++            name: "Background terminal",
++            menu_description: "Run long-running terminal commands in the background.",
++            announcement: "NEW! Try Background terminals for long-running commands. Enable in /experimental!",
++        },
++        default_enabled: false,
++    },
+     FeatureSpec {
+         id: Feature::ShellSnapshot,
+         key: "shell_snapshot",
+@@ -522,12 +526,12 @@ pub const FEATURES: &[FeatureSpec] = &[
+         default_enabled: true,
+     },
+     FeatureSpec {
+-        id: Feature::Collab,
+-        key: "collab",
++        id: Feature::FnMultiAgents,
++        key: "fn_multi_agents",
+         stage: Stage::Experimental {
+-            name: "Sub-agents",
+-            menu_description: "Ask Codex to spawn multiple agents to parallelize the work and win in efficiency.",
+-            announcement: "NEW: Sub-agents can now be spawned by Codex. Enable in /experimental and restart Codex!",
++            name: "Multi-agents (fork)",
++            menu_description: "Enable fork multi-agent registry and tools.",
++            announcement: "NEW: Fork multi-agents are available. Enable in /experimental and restart Codex!",
+         },
+         default_enabled: false,
+     },

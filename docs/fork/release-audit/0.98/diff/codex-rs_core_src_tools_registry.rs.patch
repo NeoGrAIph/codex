@@ -1,0 +1,44 @@
+diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/registry.rs
+index f67db6394..49c80663a 100644
+--- a/codex-rs/core/src/tools/registry.rs
++++ b/codex-rs/core/src/tools/registry.rs
+@@ -1,4 +1,5 @@
+ use std::collections::HashMap;
++use std::collections::HashSet;
+ use std::sync::Arc;
+ use std::time::Duration;
+ 
+@@ -201,6 +202,13 @@ impl ToolRegistryBuilder {
+         }
+     }
+ 
++    pub fn spec_names(&self) -> Vec<String> {
++        self.specs
++            .iter()
++            .map(|spec| spec.spec.name().to_string())
++            .collect()
++    }
++
+     // TODO(jif) for dynamic tools.
+     // pub fn register_many<I>(&mut self, names: I, handler: Arc<dyn ToolHandler>)
+     // where
+@@ -219,6 +227,19 @@ impl ToolRegistryBuilder {
+     //     }
+     // }
+ 
++    pub fn retain_tools<F>(&mut self, mut allow: F)
++    where
++        F: FnMut(&str) -> bool,
++    {
++        self.specs.retain(|spec| allow(spec.spec.name()));
++        let allowed: HashSet<String> = self
++            .specs
++            .iter()
++            .map(|spec| spec.spec.name().to_string())
++            .collect();
++        self.handlers.retain(|name, _| allowed.contains(name));
++    }
++
+     pub fn build(self) -> (Vec<ConfiguredToolSpec>, ToolRegistry) {
+         let registry = ToolRegistry::new(self.handlers);
+         (self.specs, registry)

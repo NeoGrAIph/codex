@@ -1,0 +1,17 @@
+diff --git a/codex-rs/core/src/models_manager/model_info.rs b/codex-rs/core/src/models_manager/model_info.rs
+index 5cccefdd2..129cca17b 100644
+--- a/codex-rs/core/src/models_manager/model_info.rs
++++ b/codex-rs/core/src/models_manager/model_info.rs
+@@ -217,6 +217,12 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
+             truncation_policy: TruncationPolicyConfig::tokens(10_000),
+             context_window: Some(CONTEXT_WINDOW_272K),
+             supported_reasoning_levels: supported_reasoning_level_low_medium_high_xhigh(),
++            // === FORK: Read-only file navigation tools for explorer-style agents.
++            experimental_supported_tools: vec![
++                "grep_files".to_string(),
++                "list_dir".to_string(),
++                "read_file".to_string(),
++            ],
+             base_instructions: GPT_5_2_CODEX_INSTRUCTIONS.to_string(),
+             model_messages: Some(ModelMessages {
+                 instructions_template: Some(GPT_5_2_CODEX_INSTRUCTIONS_TEMPLATE.to_string()),

@@ -1,0 +1,15 @@
+diff --git a/codex-rs/core/tests/common/responses.rs b/codex-rs/core/tests/common/responses.rs
+index 7d3b07708..86a332874 100644
+--- a/codex-rs/core/tests/common/responses.rs
++++ b/codex-rs/core/tests/common/responses.rs
+@@ -375,10 +375,6 @@ pub fn sse(events: Vec<Value>) -> String {
+     out
+ }
+ 
+-pub fn sse_completed(id: &str) -> String {
+-    sse(vec![ev_response_created(id), ev_completed(id)])
+-}
+-
+ /// Convenience: SSE event for a completed response with a specific id.
+ pub fn ev_completed(id: &str) -> Value {
+     serde_json::json!({

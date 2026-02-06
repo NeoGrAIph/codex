@@ -1,0 +1,17 @@
+diff --git a/codex-rs/app-server-protocol/schema/json/v2/ModelListResponse.json b/codex-rs/app-server-protocol/schema/json/v2/ModelListResponse.json
+index a1b3f7114..8c8126bb6 100644
+--- a/codex-rs/app-server-protocol/schema/json/v2/ModelListResponse.json
++++ b/codex-rs/app-server-protocol/schema/json/v2/ModelListResponse.json
+@@ -59,12 +59,6 @@
+         "supportsPersonality": {
+           "default": false,
+           "type": "boolean"
+-        },
+-        "upgrade": {
+-          "type": [
+-            "string",
+-            "null"
+-          ]
+         }
+       },
+       "required": [

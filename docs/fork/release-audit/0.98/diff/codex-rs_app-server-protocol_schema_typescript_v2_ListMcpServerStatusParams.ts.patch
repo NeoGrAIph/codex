@@ -1,0 +1,15 @@
+diff --git a/codex-rs/app-server-protocol/schema/typescript/v2/ListMcpServerStatusParams.ts b/codex-rs/app-server-protocol/schema/typescript/v2/ListMcpServerStatusParams.ts
+index 05c02c19f..8027087fd 100644
+--- a/codex-rs/app-server-protocol/schema/typescript/v2/ListMcpServerStatusParams.ts
++++ b/codex-rs/app-server-protocol/schema/typescript/v2/ListMcpServerStatusParams.ts
+@@ -6,8 +6,8 @@ export type ListMcpServerStatusParams = {
+ /**
+  * Opaque pagination cursor returned by a previous call.
+  */
+-cursor?: string | null, 
++cursor: string | null, 
+ /**
+  * Optional page size; defaults to a server-defined value.
+  */
+-limit?: number | null, };
++limit: number | null, };

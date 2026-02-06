@@ -1,0 +1,12 @@
+diff --git a/codex-rs/core/tests/suite/compact_remote.rs b/codex-rs/core/tests/suite/compact_remote.rs
+index 435aa8900..0eadbe763 100644
+--- a/codex-rs/core/tests/suite/compact_remote.rs
++++ b/codex-rs/core/tests/suite/compact_remote.rs
+@@ -237,7 +237,6 @@ async fn remote_compact_runs_automatically() -> Result<()> {
+     Ok(())
+ }
+ 
+-#[cfg_attr(target_os = "windows", ignore)]
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+ async fn remote_compact_trims_function_call_history_to_fit_context_window() -> Result<()> {
+     skip_if_no_network!(Ok(()));

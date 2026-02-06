@@ -1,0 +1,20 @@
+diff --git a/codex-rs/app-server-protocol/schema/json/v2/ThreadCompactStartParams.json b/codex-rs/app-server-protocol/schema/json/v2/ThreadCompactStartParams.json
+deleted file mode 100644
+index a174ff95d..000000000
+--- a/codex-rs/app-server-protocol/schema/json/v2/ThreadCompactStartParams.json
++++ /dev/null
+@@ -1,13 +0,0 @@
+-{
+-  "$schema": "http://json-schema.org/draft-07/schema#",
+-  "properties": {
+-    "threadId": {
+-      "type": "string"
+-    }
+-  },
+-  "required": [
+-    "threadId"
+-  ],
+-  "title": "ThreadCompactStartParams",
+-  "type": "object"
+-}
+\ No newline at end of file

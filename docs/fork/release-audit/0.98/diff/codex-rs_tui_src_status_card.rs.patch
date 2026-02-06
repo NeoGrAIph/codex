@@ -1,0 +1,40 @@
+diff --git a/codex-rs/tui/src/status/card.rs b/codex-rs/tui/src/status/card.rs
+index 23005274d..df7276ba6 100644
+--- a/codex-rs/tui/src/status/card.rs
++++ b/codex-rs/tui/src/status/card.rs
+@@ -29,6 +29,7 @@ use super::format::truncate_line_to_width;
+ use super::helpers::compose_account_display;
+ use super::helpers::compose_agents_summary;
+ use super::helpers::compose_model_display;
++use super::helpers::context_left_label_spans;
+ use super::helpers::format_directory_display;
+ use super::helpers::format_tokens_compact;
+ use super::rate_limits::RateLimitSnapshotDisplay;
+@@ -233,14 +234,15 @@ impl StatusHistoryCell {
+         let used_fmt = format_tokens_compact(context.tokens_in_context);
+         let window_fmt = format_tokens_compact(context.window);
+ 
+-        Some(vec![
+-            Span::from(format!("{percent}% left")),
++        let mut spans = context_left_label_spans(percent, " left", false, false);
++        spans.extend([
+             Span::from(" (").dim(),
+             Span::from(used_fmt).dim(),
+             Span::from(" used / ").dim(),
+             Span::from(window_fmt).dim(),
+             Span::from(")").dim(),
+-        ])
++        ]);
++        Some(spans)
+     }
+ 
+     fn rate_limit_lines(
+@@ -355,7 +357,7 @@ impl HistoryCell for StatusHistoryCell {
+             Span::from(format!("{}>_ ", FieldFormatter::INDENT)).dim(),
+             Span::from("OpenAI Codex").bold(),
+             Span::from(" ").dim(),
+-            Span::from(format!("(v{CODEX_CLI_VERSION})")).dim(),
++            Span::from(format!("(vFN{CODEX_CLI_VERSION})")).dim(),
+         ]));
+         lines.push(Line::from(Vec::<Span<'static>>::new()));
+ 

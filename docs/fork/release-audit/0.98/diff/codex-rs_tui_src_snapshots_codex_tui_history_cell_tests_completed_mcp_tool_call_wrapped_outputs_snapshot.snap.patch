@@ -1,0 +1,11 @@
+diff --git a/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__completed_mcp_tool_call_wrapped_outputs_snapshot.snap b/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__completed_mcp_tool_call_wrapped_outputs_snapshot.snap
+index 7d9c16132..ed2e0c236 100644
+--- a/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__completed_mcp_tool_call_wrapped_outputs_snapshot.snap
++++ b/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__completed_mcp_tool_call_wrapped_outputs_snapshot.snap
+@@ -1,6 +1,5 @@
+ ---
+ source: tui/src/history_cell.rs
+-assertion_line: 1891
+ expression: rendered
+ ---
+ • Called

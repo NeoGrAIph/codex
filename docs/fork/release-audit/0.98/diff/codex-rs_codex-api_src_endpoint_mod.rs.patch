@@ -1,0 +1,14 @@
+diff --git a/codex-rs/codex-api/src/endpoint/mod.rs b/codex-rs/codex-api/src/endpoint/mod.rs
+index 0dede138e..a5022329c 100644
+--- a/codex-rs/codex-api/src/endpoint/mod.rs
++++ b/codex-rs/codex-api/src/endpoint/mod.rs
+@@ -1,7 +1,7 @@
+-pub mod aggregate;
++pub mod chat;
+ pub mod compact;
+ pub mod memories;
+ pub mod models;
+ pub mod responses;
+ pub mod responses_websocket;
+-mod session;
++mod streaming;

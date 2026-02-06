@@ -1,0 +1,21 @@
+diff --git a/codex-rs/app-server-protocol/schema/json/v2/ThreadResumeParams.json b/codex-rs/app-server-protocol/schema/json/v2/ThreadResumeParams.json
+index ed1d5274e..2f2c90636 100644
+--- a/codex-rs/app-server-protocol/schema/json/v2/ThreadResumeParams.json
++++ b/codex-rs/app-server-protocol/schema/json/v2/ThreadResumeParams.json
+@@ -255,7 +255,6 @@
+     },
+     "Personality": {
+       "enum": [
+-        "none",
+         "friendly",
+         "pragmatic"
+       ],
+@@ -438,7 +437,7 @@
+               ]
+             },
+             "id": {
+-              "description": "Legacy id field retained for compatibility with older payloads.",
++              "description": "Set when using the chat completions API.",
+               "type": [
+                 "string",
+                 "null"

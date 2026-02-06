@@ -1,0 +1,12 @@
+diff --git a/codex-rs/cli/Cargo.toml b/codex-rs/cli/Cargo.toml
+index 77344df47..cfcfce88f 100644
+--- a/codex-rs/cli/Cargo.toml
++++ b/codex-rs/cli/Cargo.toml
+@@ -21,7 +21,6 @@ clap = { workspace = true, features = ["derive"] }
+ clap_complete = { workspace = true }
+ codex-app-server = { workspace = true }
+ codex-app-server-protocol = { workspace = true }
+-codex-app-server-test-client = { workspace = true }
+ codex-arg0 = { workspace = true }
+ codex-chatgpt = { workspace = true }
+ codex-cloud-tasks = { path = "../cloud-tasks" }

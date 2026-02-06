@@ -1,0 +1,13 @@
+diff --git a/codex-rs/vendor/bubblewrap/completions/zsh/meson.build b/codex-rs/vendor/bubblewrap/completions/zsh/meson.build
+deleted file mode 100644
+index 7bda727c7..000000000
+--- a/codex-rs/vendor/bubblewrap/completions/zsh/meson.build
++++ /dev/null
+@@ -1,7 +0,0 @@
+-zsh_completion_dir = get_option('zsh_completion_dir')
+-
+-if zsh_completion_dir == ''
+-  zsh_completion_dir = get_option('datadir') / 'zsh' / 'site-functions'
+-endif
+-
+-install_data('_bwrap', install_dir : zsh_completion_dir)

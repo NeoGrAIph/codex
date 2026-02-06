@@ -1,0 +1,23 @@
+diff --git a/codex-rs/app-server-protocol/schema/json/v2/ThreadRollbackResponse.json b/codex-rs/app-server-protocol/schema/json/v2/ThreadRollbackResponse.json
+index 148bbe7d7..acfe715f9 100644
+--- a/codex-rs/app-server-protocol/schema/json/v2/ThreadRollbackResponse.json
++++ b/codex-rs/app-server-protocol/schema/json/v2/ThreadRollbackResponse.json
+@@ -508,6 +508,18 @@
+           "properties": {
+             "thread_spawn": {
+               "properties": {
++                "agent_name": {
++                  "type": [
++                    "string",
++                    "null"
++                  ]
++                },
++                "agent_type": {
++                  "type": [
++                    "string",
++                    "null"
++                  ]
++                },
+                 "depth": {
+                   "format": "int32",
+                   "type": "integer"

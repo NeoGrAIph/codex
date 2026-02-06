@@ -1,0 +1,13 @@
+diff --git a/codex-rs/core/tests/suite/override_updates.rs b/codex-rs/core/tests/suite/override_updates.rs
+index 0dbfbac15..897bb665d 100644
+--- a/codex-rs/core/tests/suite/override_updates.rs
++++ b/codex-rs/core/tests/suite/override_updates.rs
+@@ -24,7 +24,7 @@ use tempfile::TempDir;
+ 
+ fn collab_mode_with_instructions(instructions: Option<&str>) -> CollaborationMode {
+     CollaborationMode {
+-        mode: ModeKind::Default,
++        mode: ModeKind::Custom,
+         settings: Settings {
+             model: "gpt-5.1".to_string(),
+             reasoning_effort: None,

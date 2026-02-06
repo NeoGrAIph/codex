@@ -1,0 +1,13 @@
+diff --git a/codex-rs/app-server/tests/suite/v2/thread_resume.rs b/codex-rs/app-server/tests/suite/v2/thread_resume.rs
+index 28b604001..ec798afed 100644
+--- a/codex-rs/app-server/tests/suite/v2/thread_resume.rs
++++ b/codex-rs/app-server/tests/suite/v2/thread_resume.rs
+@@ -123,7 +123,7 @@ async fn thread_resume_returns_rollout_history() -> Result<()> {
+     assert_eq!(thread.model_provider, "mock_provider");
+     assert!(thread.path.as_ref().expect("thread path").is_absolute());
+     assert_eq!(thread.cwd, PathBuf::from("/"));
+-    assert_eq!(thread.cli_version, "0.0.0");
++    assert_eq!(thread.cli_version, env!("CARGO_PKG_VERSION"));
+     assert_eq!(thread.source, SessionSource::Cli);
+     assert_eq!(thread.git_info, None);
+ 

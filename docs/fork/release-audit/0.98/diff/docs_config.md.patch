@@ -1,0 +1,75 @@
+diff --git a/docs/config.md b/docs/config.md
+index 9d53538ca..e6719df71 100644
+--- a/docs/config.md
++++ b/docs/config.md
+@@ -24,6 +24,70 @@ Codex can run a notification hook when the agent finishes a turn. See the config
+ 
+ - https://developers.openai.com/codex/config-reference
+ 
++## Agents registry (YAML)
++
++When the `fn_multi_agents` feature flag is enabled, Codex can discover agent definitions from `agents/` folders alongside each config layer:
++
++- Project: `.codex/agents` (next to `.codex/config.toml`)
++- User: `~/.codex/agents`
++- System: the folder containing the system config file
++
++Each agent file is a Markdown file with YAML frontmatter and an instructions body:
++
++```md
++---
++name: "code-architect"
++description: "Architecture guidance and review."
++model: "gpt-5.2-codex"
++reasoning_effort: "medium"
++color: "cyan"
++tools: ["read_file", "apply_patch"]
++---
++
++You are a senior architect...
++```
++
++`model` must be a valid model slug (no alias mapping is applied). `reasoning_effort` is optional and should be one of: `minimal`, `low`, `medium`, `high`, `xhigh`.
++
++`tools` can be a list or a comma-separated string. If present, it acts as an allowlist
++that is intersected with any existing tool allowlist (it never expands beyond the
++current allowlist), and denylist rules still apply. Agent `tool_denylist` entries
++are merged with any existing denylist rather than replacing it. Use `*` to leave tool access
++unchanged.
++
++### Agent name variants
++
++You can declare `agent_names` to provide named instruction variants (A/B) and optionally
++override model and reasoning effort per variant:
++
++```md
++---
++name: "code-reviewer"
++description: "Review code with optional strictness."
++model: "gpt-5.2-codex"
++reasoning_effort: "medium"
++color: "cyan"
++agent_names:
++  - name: strict
++    description: "Strict review mode."
++    model: "gpt-4.1"
++    reasoning_effort: "high"
++  - name: lenient
++    description: "Faster, higher-level review."
++---
++
++Default reviewer instructions...
++
++<!-- agent_name: strict -->
++Strict instructions...
++
++<!-- agent_name: lenient -->
++Lenient instructions...
++```
++
++If `model` or `reasoning_effort` are specified under an `agent_name`, they take priority over
++the top-level values for that variant. Omitted fields inherit from the top-level values.
++
+ ## JSON Schema
+ 
+ The generated JSON Schema for `config.toml` lives at `codex-rs/core/config.schema.json`.

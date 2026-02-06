@@ -1,0 +1,36 @@
+diff --git a/codex-rs/app-server/tests/suite/v2/model_list.rs b/codex-rs/app-server/tests/suite/v2/model_list.rs
+index c2431d24d..c3b4ec708 100644
+--- a/codex-rs/app-server/tests/suite/v2/model_list.rs
++++ b/codex-rs/app-server/tests/suite/v2/model_list.rs
+@@ -51,7 +51,6 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
+         Model {
+             id: "gpt-5.2-codex".to_string(),
+             model: "gpt-5.2-codex".to_string(),
+-            upgrade: None,
+             display_name: "gpt-5.2-codex".to_string(),
+             description: "Latest frontier agentic coding model.".to_string(),
+             supported_reasoning_efforts: vec![
+@@ -81,7 +80,6 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
+         Model {
+             id: "gpt-5.1-codex-max".to_string(),
+             model: "gpt-5.1-codex-max".to_string(),
+-            upgrade: Some("gpt-5.2-codex".to_string()),
+             display_name: "gpt-5.1-codex-max".to_string(),
+             description: "Codex-optimized flagship for deep and fast reasoning.".to_string(),
+             supported_reasoning_efforts: vec![
+@@ -111,7 +109,6 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
+         Model {
+             id: "gpt-5.1-codex-mini".to_string(),
+             model: "gpt-5.1-codex-mini".to_string(),
+-            upgrade: Some("gpt-5.2-codex".to_string()),
+             display_name: "gpt-5.1-codex-mini".to_string(),
+             description: "Optimized for codex. Cheaper, faster, but less capable.".to_string(),
+             supported_reasoning_efforts: vec![
+@@ -133,7 +130,6 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
+         Model {
+             id: "gpt-5.2".to_string(),
+             model: "gpt-5.2".to_string(),
+-            upgrade: Some("gpt-5.2-codex".to_string()),
+             display_name: "gpt-5.2".to_string(),
+             description:
+                 "Latest frontier model with improvements across knowledge, reasoning and coding"

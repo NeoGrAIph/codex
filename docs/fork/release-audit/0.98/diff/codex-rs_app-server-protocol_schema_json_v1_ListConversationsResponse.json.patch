@@ -1,0 +1,23 @@
+diff --git a/codex-rs/app-server-protocol/schema/json/v1/ListConversationsResponse.json b/codex-rs/app-server-protocol/schema/json/v1/ListConversationsResponse.json
+index b7e3b8f8f..e91c81de9 100644
+--- a/codex-rs/app-server-protocol/schema/json/v1/ListConversationsResponse.json
++++ b/codex-rs/app-server-protocol/schema/json/v1/ListConversationsResponse.json
+@@ -122,6 +122,18 @@
+           "properties": {
+             "thread_spawn": {
+               "properties": {
++                "agent_name": {
++                  "type": [
++                    "string",
++                    "null"
++                  ]
++                },
++                "agent_type": {
++                  "type": [
++                    "string",
++                    "null"
++                  ]
++                },
+                 "depth": {
+                   "format": "int32",
+                   "type": "integer"

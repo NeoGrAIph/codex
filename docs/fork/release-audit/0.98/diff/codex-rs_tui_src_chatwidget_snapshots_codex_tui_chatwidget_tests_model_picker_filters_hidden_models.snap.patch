@@ -1,0 +1,11 @@
+diff --git a/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__model_picker_filters_hidden_models.snap b/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__model_picker_filters_hidden_models.snap
+index 56dff7b5f..3deb2f965 100644
+--- a/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__model_picker_filters_hidden_models.snap
++++ b/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__model_picker_filters_hidden_models.snap
+@@ -1,6 +1,5 @@
+ ---
+ source: tui/src/chatwidget/tests.rs
+-assertion_line: 1989
+ expression: popup
+ ---
+   Select Model and Effort

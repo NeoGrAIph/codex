@@ -1,0 +1,11 @@
+diff --git a/codex-rs/tui/src/snapshots/codex_tui__resume_picker__tests__resume_picker_thread_names.snap b/codex-rs/tui/src/snapshots/codex_tui__resume_picker__tests__resume_picker_thread_names.snap
+index e9bca47d4..3be95cf2f 100644
+--- a/codex-rs/tui/src/snapshots/codex_tui__resume_picker__tests__resume_picker_thread_names.snap
++++ b/codex-rs/tui/src/snapshots/codex_tui__resume_picker__tests__resume_picker_thread_names.snap
+@@ -1,6 +1,5 @@
+ ---
+ source: tui/src/resume_picker.rs
+-assertion_line: 1683
+ expression: snapshot
+ ---
+   Updated     Branch  CWD  Conversation

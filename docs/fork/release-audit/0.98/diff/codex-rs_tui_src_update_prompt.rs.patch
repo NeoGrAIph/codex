@@ -1,0 +1,13 @@
+diff --git a/codex-rs/tui/src/update_prompt.rs b/codex-rs/tui/src/update_prompt.rs
+index 43ee0dbd4..8c2d5571f 100644
+--- a/codex-rs/tui/src/update_prompt.rs
++++ b/codex-rs/tui/src/update_prompt.rs
+@@ -108,7 +108,7 @@ impl UpdatePromptScreen {
+         Self {
+             request_frame,
+             latest_version,
+-            current_version: env!("CARGO_PKG_VERSION").to_string(),
++            current_version: format!("{} FN", env!("CARGO_PKG_VERSION")),
+             update_action,
+             highlighted: UpdateSelection::UpdateNow,
+             selection: None,

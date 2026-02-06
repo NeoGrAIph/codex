@@ -1,0 +1,1081 @@
+diff --git a/codex-rs/tui/src/app.rs b/codex-rs/tui/src/app.rs
+index 99164efa6..a4b935e69 100644
+--- a/codex-rs/tui/src/app.rs
++++ b/codex-rs/tui/src/app.rs
+@@ -29,6 +29,7 @@ use crate::pager_overlay::Overlay;
+ use crate::render::highlight::highlight_bash_to_lines;
+ use crate::render::renderable::Renderable;
+ use crate::resume_picker::SessionSelection;
++use crate::status::context_left_label_spans;
+ use crate::tui;
+ use crate::tui::TuiEvent;
+ use crate::update_action::UpdateAction;
+@@ -47,15 +48,19 @@ use codex_core::features::Feature;
+ use codex_core::models_manager::manager::RefreshStrategy;
+ use codex_core::models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
+ use codex_core::models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
++use codex_core::protocol::AgentStatus;
+ use codex_core::protocol::AskForApproval;
++use codex_core::protocol::DeprecationNoticeEvent;
+ use codex_core::protocol::Event;
+ use codex_core::protocol::EventMsg;
+ use codex_core::protocol::FinalOutput;
+ use codex_core::protocol::ListSkillsResponseEvent;
+ use codex_core::protocol::Op;
+ use codex_core::protocol::SandboxPolicy;
++use codex_core::protocol::SessionSource as ProtocolSessionSource;
+ use codex_core::protocol::SessionSource;
+ use codex_core::protocol::SkillErrorInfo;
++use codex_core::protocol::SubAgentSource;
+ use codex_core::protocol::TokenUsage;
+ #[cfg(target_os = "windows")]
+ use codex_core::windows_sandbox::WindowsSandboxLevelExt;
+@@ -77,6 +82,7 @@ use crossterm::event::KeyEvent;
+ use crossterm::event::KeyEventKind;
+ use ratatui::style::Stylize;
+ use ratatui::text::Line;
++use ratatui::text::Span;
+ use ratatui::widgets::Paragraph;
+ use ratatui::widgets::Wrap;
+ use std::collections::BTreeMap;
+@@ -102,11 +108,246 @@ use toml::Value as TomlValue;
+ 
+ const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue.";
+ const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
+-/// Baseline cadence for periodic stream commit animation ticks.
+-///
+-/// Smooth-mode streaming drains one line per tick, so this interval controls
+-/// perceived typing speed for non-backlogged output.
+-const COMMIT_ANIMATION_TICK: Duration = tui::TARGET_FRAME_INTERVAL;
++
++fn agent_status_from_event_msg(msg: &EventMsg) -> Option<AgentStatus> {
++    match msg {
++        EventMsg::TurnStarted(_) => Some(AgentStatus::Running),
++        EventMsg::TurnComplete(ev) => Some(AgentStatus::Completed(ev.last_agent_message.clone())),
++        EventMsg::TurnAborted(ev) => Some(AgentStatus::Errored(format!("{:?}", ev.reason))),
++        EventMsg::Error(ev) => Some(AgentStatus::Errored(ev.message.clone())),
++        EventMsg::ShutdownComplete => Some(AgentStatus::Shutdown),
++        _ => None,
++    }
++}
++
++fn status_span(status: &AgentStatus) -> Span<'static> {
++    match status {
++        AgentStatus::PendingInit => "pending init".dim(),
++        AgentStatus::Running => "running".cyan(),
++        AgentStatus::Completed(_) => "completed".green(),
++        AgentStatus::Errored(_) => "errored".red(),
++        AgentStatus::Shutdown => "shutdown".dim(),
++        AgentStatus::NotFound => "not found".red(),
++    }
++}
++
++fn format_elapsed(elapsed: Duration) -> String {
++    let secs = elapsed.as_secs();
++    if secs < 60 {
++        format!("{secs}s")
++    } else {
++        let mins = secs / 60;
++        let rem = secs % 60;
++        format!("{mins}m{rem:02}s")
++    }
++}
++
++fn context_left_display_spans(percent: Option<i64>) -> Vec<Span<'static>> {
++    match percent {
++        Some(percent) => context_left_label_spans(percent, " left", false, true),
++        None => vec![Span::from("—").dim()],
++    }
++}
++
++#[derive(Default)]
++struct AgentEventSummary {
++    last_message: Option<String>,
++    last_tool: Option<String>,
++    last_error: Option<String>,
++    last_warning: Option<String>,
++    recent: Vec<String>,
++}
++
++fn compress_whitespace(input: &str) -> String {
++    input.split_whitespace().collect::<Vec<_>>().join(" ")
++}
++
++fn truncate_preview(input: &str, max_chars: usize) -> String {
++    let mut chars = input.chars();
++    let mut out = String::new();
++    for _ in 0..max_chars {
++        if let Some(ch) = chars.next() {
++            out.push(ch);
++        } else {
++            return out;
++        }
++    }
++    out.push('…');
++    out
++}
++
++fn format_agent_message_preview(message: &str, max_chars: usize) -> String {
++    let compressed = compress_whitespace(message);
++    if compressed.chars().count() <= max_chars {
++        compressed
++    } else {
++        truncate_preview(&compressed, max_chars)
++    }
++}
++
++fn format_command_preview(command: &[String], max_chars: usize) -> String {
++    if command.is_empty() {
++        return "unknown".to_string();
++    }
++    let joined = command.join(" ");
++    if joined.chars().count() <= max_chars {
++        joined
++    } else {
++        truncate_preview(&joined, max_chars)
++    }
++}
++
++fn summarize_agent_events(snapshot: &ThreadEventSnapshot) -> AgentEventSummary {
++    let mut summary = AgentEventSummary::default();
++
++    for event in snapshot.events.iter().rev() {
++        match &event.msg {
++            EventMsg::AgentMessage(ev) => {
++                if summary.last_message.is_none() {
++                    summary.last_message = Some(format_agent_message_preview(&ev.message, 200));
++                }
++                if summary.recent.len() < 3 {
++                    summary.recent.push("message".to_string());
++                }
++            }
++            EventMsg::TurnComplete(ev) => {
++                if summary.last_message.is_none()
++                    && let Some(message) = ev.last_agent_message.as_ref()
++                {
++                    summary.last_message = Some(format_agent_message_preview(message, 200));
++                }
++                if summary.recent.len() < 3 {
++                    summary.recent.push("turn complete".to_string());
++                }
++            }
++            EventMsg::ExecCommandEnd(ev) => {
++                if summary.last_tool.is_none() {
++                    let cmd = format_command_preview(&ev.command, 120);
++                    let elapsed = format_elapsed(ev.duration);
++                    summary.last_tool =
++                        Some(format!("exec: {cmd} (exit {}, {elapsed})", ev.exit_code));
++                }
++                if summary.recent.len() < 3 {
++                    summary.recent.push("exec finished".to_string());
++                }
++            }
++            EventMsg::ExecCommandBegin(ev) => {
++                if summary.last_tool.is_none() {
++                    let cmd = format_command_preview(&ev.command, 120);
++                    summary.last_tool = Some(format!("exec: {cmd}"));
++                }
++                if summary.recent.len() < 3 {
++                    summary.recent.push("exec started".to_string());
++                }
++            }
++            EventMsg::McpToolCallEnd(ev) => {
++                if summary.last_tool.is_none() {
++                    let status = if ev.is_success() { "ok" } else { "error" };
++                    let elapsed = format_elapsed(ev.duration);
++                    summary.last_tool =
++                        Some(format!("mcp: {} ({status}, {elapsed})", ev.invocation.tool));
++                }
++                if summary.recent.len() < 3 {
++                    summary.recent.push("mcp tool finished".to_string());
++                }
++            }
++            EventMsg::McpToolCallBegin(ev) => {
++                if summary.last_tool.is_none() {
++                    summary.last_tool = Some(format!("mcp: {}", ev.invocation.tool));
++                }
++                if summary.recent.len() < 3 {
++                    summary.recent.push("mcp tool started".to_string());
++                }
++            }
++            EventMsg::WebSearchEnd(ev) => {
++                if summary.last_tool.is_none() {
++                    let query = format_agent_message_preview(&ev.query, 120);
++                    summary.last_tool = Some(format!("web search: {query}"));
++                }
++                if summary.recent.len() < 3 {
++                    summary.recent.push("web search finished".to_string());
++                }
++            }
++            EventMsg::WebSearchBegin(_) => {
++                if summary.last_tool.is_none() {
++                    summary.last_tool = Some("web search started".to_string());
++                }
++                if summary.recent.len() < 3 {
++                    summary.recent.push("web search started".to_string());
++                }
++            }
++            EventMsg::PatchApplyEnd(ev) => {
++                if summary.last_tool.is_none() {
++                    let status = if ev.success { "ok" } else { "error" };
++                    let files = ev.changes.len();
++                    summary.last_tool = Some(format!("apply patch: {status} ({files} files)"));
++                }
++                if summary.recent.len() < 3 {
++                    summary.recent.push("patch applied".to_string());
++                }
++            }
++            EventMsg::PatchApplyBegin(ev) => {
++                if summary.last_tool.is_none() {
++                    let files = ev.changes.len();
++                    summary.last_tool = Some(format!("apply patch: {files} files"));
++                }
++                if summary.recent.len() < 3 {
++                    summary.recent.push("patch started".to_string());
++                }
++            }
++            EventMsg::Error(ev) => {
++                if summary.last_error.is_none() {
++                    summary.last_error = Some(format_agent_message_preview(&ev.message, 200));
++                }
++                if summary.recent.len() < 3 {
++                    summary.recent.push("error".to_string());
++                }
++            }
++            EventMsg::Warning(ev) => {
++                if summary.last_warning.is_none() {
++                    summary.last_warning = Some(format_agent_message_preview(&ev.message, 200));
++                }
++                if summary.recent.len() < 3 {
++                    summary.recent.push("warning".to_string());
++                }
++            }
++            EventMsg::BackgroundEvent(ev) => {
++                if summary.recent.len() < 3 {
++                    summary.recent.push(format!(
++                        "note: {}",
++                        format_agent_message_preview(&ev.message, 120)
++                    ));
++                }
++            }
++            _ => {}
++        }
++
++        if summary.last_message.is_some()
++            && summary.last_tool.is_some()
++            && summary.last_error.is_some()
++            && summary.recent.len() >= 3
++        {
++            break;
++        }
++    }
++
++    summary
++}
++
++fn context_left_from_snapshot(snapshot: &ThreadEventSnapshot) -> Option<i64> {
++    let info = snapshot.events.iter().rev().find_map(|event| {
++        if let EventMsg::TokenCount(token) = &event.msg {
++            token.info.as_ref()
++        } else {
++            None
++        }
++    })?;
++    let window = info.model_context_window?;
++    Some(
++        info.last_token_usage
++            .percent_of_context_window_remaining(window),
++    )
++}
+ 
+ #[derive(Debug, Clone)]
+ pub struct AppExitInfo {
+@@ -188,6 +429,15 @@ fn emit_skill_load_warnings(app_event_tx: &AppEventSender, errors: &[SkillErrorI
+     }
+ }
+ 
++fn emit_deprecation_notice(app_event_tx: &AppEventSender, notice: Option<DeprecationNoticeEvent>) {
++    let Some(DeprecationNoticeEvent { summary, details }) = notice else {
++        return;
++    };
++    app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
++        crate::history_cell::new_deprecation_notice(summary, details),
++    )));
++}
++
+ fn emit_project_config_warnings(app_event_tx: &AppEventSender, config: &Config) {
+     let mut disabled_folders = Vec::new();
+ 
+@@ -508,6 +758,26 @@ async fn handle_model_migration_prompt_if_needed(
+     None
+ }
+ 
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum CtrlTOverlayMode {
++    AgentsSummary,
++    AgentsDetails,
++}
++
++#[derive(Debug, Clone)]
++struct AgentDescriptor {
++    agent_type: Option<String>,
++    agent_name: Option<String>,
++}
++
++#[derive(Debug, Clone)]
++struct AgentIdentity {
++    role: String,
++    name: Option<String>,
++    model: Option<String>,
++    reasoning: Option<String>,
++}
++
+ pub(crate) struct App {
+     pub(crate) server: Arc<ThreadManager>,
+     pub(crate) otel_manager: OtelManager,
+@@ -528,6 +798,7 @@ pub(crate) struct App {
+ 
+     // Pager overlay state (Transcript or Static like Diff)
+     pub(crate) overlay: Option<Overlay>,
++    ctrl_t_overlay_mode: Option<CtrlTOverlayMode>,
+     pub(crate) deferred_history_lines: Vec<Line<'static>>,
+     has_emitted_history_lines: bool,
+ 
+@@ -560,6 +831,10 @@ pub(crate) struct App {
+     primary_thread_id: Option<ThreadId>,
+     primary_session_configured: Option<SessionConfiguredEvent>,
+     pending_primary_events: VecDeque<Event>,
++    collab_thread_created_at: HashMap<ThreadId, Instant>,
++    collab_thread_sources: HashMap<ThreadId, ProtocolSessionSource>,
++    collab_thread_prompts: HashMap<ThreadId, String>,
++    collab_thread_agents: HashMap<ThreadId, AgentDescriptor>,
+ }
+ 
+ #[derive(Default)]
+@@ -587,6 +862,406 @@ fn normalize_harness_overrides_for_cwd(
+ }
+ 
+ impl App {
++    pub(crate) fn clear_ctrl_t_overlay_mode(&mut self) {
++        self.ctrl_t_overlay_mode = None;
++    }
++
++    pub(crate) async fn cycle_ctrl_t_overlay(&mut self, tui: &mut tui::Tui) {
++        match self.ctrl_t_overlay_mode {
++            None => {
++                self.backtrack.overlay_preview_active = false;
++                self.open_agents_summary_overlay(tui).await;
++                self.ctrl_t_overlay_mode = Some(CtrlTOverlayMode::AgentsSummary);
++            }
++            Some(CtrlTOverlayMode::AgentsSummary) => {
++                self.open_agents_details_overlay(tui).await;
++                self.ctrl_t_overlay_mode = Some(CtrlTOverlayMode::AgentsDetails);
++            }
++            Some(CtrlTOverlayMode::AgentsDetails) => {
++                self.clear_ctrl_t_overlay_mode();
++                self.close_transcript_overlay(tui);
++                tui.frame_requester().schedule_frame();
++            }
++        }
++    }
++
++    async fn open_agents_summary_overlay(&mut self, tui: &mut tui::Tui) {
++        if !tui.is_alt_screen_active() {
++            let _ = tui.enter_alt_screen();
++        }
++        let lines = self.build_agents_summary_lines().await;
++        self.overlay = Some(Overlay::new_static_with_lines(
++            lines,
++            "A G E N T S".to_string(),
++        ));
++        tui.frame_requester().schedule_frame();
++    }
++
++    async fn open_agents_details_overlay(&mut self, tui: &mut tui::Tui) {
++        if !tui.is_alt_screen_active() {
++            let _ = tui.enter_alt_screen();
++        }
++        let lines = self.build_agents_details_lines().await;
++        self.overlay = Some(Overlay::new_static_with_lines(
++            lines,
++            "A G E N T S   (details)".to_string(),
++        ));
++        tui.frame_requester().schedule_frame();
++    }
++
++    async fn build_agents_summary_lines(&self) -> Vec<Line<'static>> {
++        let now = Instant::now();
++        let nodes = self.subagent_tree_nodes();
++        if nodes.is_empty() {
++            return vec!["No active sub-agent threads.".italic().into()];
++        }
++
++        let mut out: Vec<Line<'static>> = Vec::with_capacity(nodes.len() + 2);
++        out.push("Sub-agents spawned in this session:".bold().into());
++        out.push("".into());
++
++        for (id, depth) in nodes {
++            let created_at = self
++                .collab_thread_created_at
++                .get(&id)
++                .copied()
++                .unwrap_or(now);
++            let elapsed = now.saturating_duration_since(created_at);
++            let status = self.latest_agent_status(id).await;
++            let label = status_span(&status);
++            let elapsed_s = format_elapsed(elapsed);
++            let context_left = self.latest_agent_context_left(id).await;
++            let identity = self.agent_identity(id).await;
++            let indent = "  ".repeat(depth);
++            let bullet = format!("{indent}• ");
++            let detail_indent = format!("{indent}  ");
++            let mut spans = vec![
++                bullet.into(),
++                id.to_string().dim(),
++                "  ".into(),
++                label,
++                "  ".into(),
++                elapsed_s.dim(),
++                "  ".into(),
++            ];
++            spans.extend(context_left_display_spans(context_left));
++            out.push(spans.into());
++            out.push(self.agent_identity_summary_line(&identity, &detail_indent));
++        }
++
++        out
++    }
++
++    async fn build_agents_details_lines(&self) -> Vec<Line<'static>> {
++        let now = Instant::now();
++        let nodes = self.subagent_tree_nodes();
++        if nodes.is_empty() {
++            return vec!["No active sub-agent threads.".italic().into()];
++        }
++
++        let mut out: Vec<Line<'static>> = Vec::new();
++        let mut first_root = true;
++        for (id, depth) in nodes {
++            if depth == 0 && !first_root {
++                out.push("".into());
++            }
++            if depth == 0 {
++                first_root = false;
++            }
++            let created_at = self
++                .collab_thread_created_at
++                .get(&id)
++                .copied()
++                .unwrap_or(now);
++            let elapsed = now.saturating_duration_since(created_at);
++            let status = self.latest_agent_status(id).await;
++            let label = status_span(&status);
++            let elapsed_s = format_elapsed(elapsed);
++            let context_left = self.latest_agent_context_left(id).await;
++            let indent = "  ".repeat(depth);
++            let bullet = format!("{indent}• ");
++            let detail_indent = format!("{indent}  ");
++
++            let mut spans = vec![
++                bullet.into(),
++                id.to_string().cyan().bold(),
++                "  ".into(),
++                label,
++                "  ".into(),
++                elapsed_s.dim(),
++                "  ".into(),
++            ];
++            spans.extend(context_left_display_spans(context_left));
++            out.push(spans.into());
++
++            let identity = self.agent_identity(id).await;
++            out.extend(self.agent_identity_detail_lines(&identity, &detail_indent));
++
++            if let Some(prompt) = self.collab_thread_prompts.get(&id) {
++                out.push(
++                    vec![
++                        detail_indent.clone().into(),
++                        "Task: ".dim(),
++                        prompt.clone().into(),
++                    ]
++                    .into(),
++                );
++            }
++
++            let details = self.latest_agent_event_summary(id, &detail_indent).await;
++            out.extend(details);
++        }
++
++        out
++    }
++
++    async fn latest_agent_status(&self, thread_id: ThreadId) -> codex_core::protocol::AgentStatus {
++        let Some(channel) = self.thread_event_channels.get(&thread_id) else {
++            return codex_core::protocol::AgentStatus::PendingInit;
++        };
++        let snapshot = channel.store.lock().await.snapshot();
++        let mut status = codex_core::protocol::AgentStatus::PendingInit;
++        for event in snapshot.events {
++            if let Some(next) = agent_status_from_event_msg(&event.msg) {
++                status = next;
++            }
++        }
++        status
++    }
++
++    async fn latest_agent_context_left(&self, thread_id: ThreadId) -> Option<i64> {
++        let Some(channel) = self.thread_event_channels.get(&thread_id) else {
++            return None;
++        };
++        let snapshot = channel.store.lock().await.snapshot();
++        context_left_from_snapshot(&snapshot)
++    }
++
++    async fn latest_agent_session_config(
++        &self,
++        thread_id: ThreadId,
++    ) -> Option<SessionConfiguredEvent> {
++        let channel = self.thread_event_channels.get(&thread_id)?;
++        let snapshot = channel.store.lock().await.snapshot();
++        let event = snapshot.session_configured?;
++        match event.msg {
++            EventMsg::SessionConfigured(configured) => Some(configured),
++            _ => None,
++        }
++    }
++
++    fn agent_role_from_source(&self, thread_id: ThreadId) -> Option<String> {
++        let source = self.collab_thread_sources.get(&thread_id)?;
++        match source {
++            ProtocolSessionSource::SubAgent(sub_source) => match sub_source {
++                SubAgentSource::Review => Some("review".to_string()),
++                SubAgentSource::Compact => Some("compact".to_string()),
++                SubAgentSource::ThreadSpawn {
++                    agent_type: Some(agent_type),
++                    ..
++                } => Some(agent_type.clone()),
++                SubAgentSource::ThreadSpawn { .. } => Some("subagent".to_string()),
++                SubAgentSource::Other(other) => Some(other.clone()),
++            },
++            _ => None,
++        }
++    }
++
++    async fn agent_identity(&self, thread_id: ThreadId) -> AgentIdentity {
++        let mut role = None;
++        let mut name = None;
++        if let Some(meta) = self.collab_thread_agents.get(&thread_id) {
++            role = meta.agent_type.clone();
++            name = meta.agent_name.clone();
++        }
++        if role.is_none() {
++            role = self.agent_role_from_source(thread_id);
++        }
++        let role = role.unwrap_or_else(|| "default".to_string());
++
++        let mut model = None;
++        let mut reasoning = None;
++        if let Some(configured) = self.latest_agent_session_config(thread_id).await {
++            let label = Self::reasoning_label(configured.reasoning_effort);
++            model = Some(configured.model);
++            reasoning = Some(label.to_string());
++        }
++
++        AgentIdentity {
++            role,
++            name,
++            model,
++            reasoning,
++        }
++    }
++
++    fn agent_identity_summary_line(&self, identity: &AgentIdentity, indent: &str) -> Line<'static> {
++        let name = identity.name.clone().unwrap_or_else(|| "—".to_string());
++        let model = identity.model.clone().unwrap_or_else(|| "—".to_string());
++        let reasoning = identity
++            .reasoning
++            .clone()
++            .unwrap_or_else(|| "—".to_string());
++        vec![
++            indent.to_string().into(),
++            "Role: ".dim(),
++            identity.role.clone().into(),
++            "  ".into(),
++            "Name: ".dim(),
++            name.into(),
++            "  ".into(),
++            "Model: ".dim(),
++            model.dim(),
++            "  ".into(),
++            "Reasoning: ".dim(),
++            reasoning.dim(),
++        ]
++        .into()
++    }
++
++    fn agent_identity_detail_lines(
++        &self,
++        identity: &AgentIdentity,
++        indent: &str,
++    ) -> Vec<Line<'static>> {
++        let name = identity.name.clone().unwrap_or_else(|| "—".to_string());
++        let model = identity.model.clone().unwrap_or_else(|| "—".to_string());
++        let reasoning = identity
++            .reasoning
++            .clone()
++            .unwrap_or_else(|| "—".to_string());
++        vec![
++            vec![
++                indent.to_string().into(),
++                "Role: ".dim(),
++                identity.role.clone().into(),
++                "  ".into(),
++                "Name: ".dim(),
++                name.into(),
++            ]
++            .into(),
++            vec![
++                indent.to_string().into(),
++                "Model: ".dim(),
++                model.into(),
++                "  ".into(),
++                "Reasoning: ".dim(),
++                reasoning.into(),
++            ]
++            .into(),
++        ]
++    }
++
++    async fn latest_agent_event_summary(
++        &self,
++        thread_id: ThreadId,
++        indent: &str,
++    ) -> Vec<Line<'static>> {
++        let Some(channel) = self.thread_event_channels.get(&thread_id) else {
++            return Vec::new();
++        };
++        let snapshot = channel.store.lock().await.snapshot();
++        let summary = summarize_agent_events(&snapshot);
++
++        let mut lines: Vec<Line<'static>> = Vec::new();
++        if let Some(message) = summary.last_message {
++            lines.push(
++                vec![
++                    indent.to_string().into(),
++                    "Last message: ".dim(),
++                    message.into(),
++                ]
++                .into(),
++            );
++        }
++        if let Some(tool) = summary.last_tool {
++            lines.push(
++                vec![
++                    indent.to_string().into(),
++                    "Last tool: ".dim(),
++                    tool.dim().into(),
++                ]
++                .into(),
++            );
++        }
++        if let Some(warning) = summary.last_warning {
++            lines.push(
++                vec![
++                    indent.to_string().into(),
++                    "Warning: ".yellow(),
++                    warning.into(),
++                ]
++                .into(),
++            );
++        }
++        if let Some(error) = summary.last_error {
++            lines.push(vec![indent.to_string().into(), "Error: ".red(), error.into()].into());
++        }
++        if !summary.recent.is_empty() {
++            lines.push(vec![indent.to_string().into(), "Recent:".dim()].into());
++            for item in summary.recent {
++                let bullet = format!("{indent}  • ");
++                lines.push(vec![bullet.into(), item.dim().into()].into());
++            }
++        }
++
++        lines
++    }
++
++    fn subagent_tree_nodes(&self) -> Vec<(ThreadId, usize)> {
++        let mut parents: HashMap<ThreadId, Option<ThreadId>> = HashMap::new();
++        for (id, source) in &self.collab_thread_sources {
++            let ProtocolSessionSource::SubAgent(sub_source) = source else {
++                continue;
++            };
++            let parent = match sub_source {
++                SubAgentSource::ThreadSpawn {
++                    parent_thread_id, ..
++                } => Some(*parent_thread_id),
++                _ => None,
++            };
++            parents.insert(*id, parent);
++        }
++        if parents.is_empty() {
++            return Vec::new();
++        }
++        let subagent_ids: HashSet<ThreadId> = parents.keys().copied().collect();
++        let mut children: HashMap<ThreadId, Vec<ThreadId>> = HashMap::new();
++        let mut roots: Vec<ThreadId> = Vec::new();
++        for (id, parent) in parents {
++            if let Some(parent_id) = parent.filter(|p| subagent_ids.contains(p)) {
++                children.entry(parent_id).or_default().push(id);
++            } else {
++                roots.push(id);
++            }
++        }
++        let sort_ids = |ids: &mut Vec<ThreadId>| {
++            ids.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
++        };
++        sort_ids(&mut roots);
++        for ids in children.values_mut() {
++            sort_ids(ids);
++        }
++        let mut out = Vec::new();
++        fn push_tree(
++            id: ThreadId,
++            depth: usize,
++            children: &HashMap<ThreadId, Vec<ThreadId>>,
++            out: &mut Vec<(ThreadId, usize)>,
++        ) {
++            out.push((id, depth));
++            if let Some(kids) = children.get(&id) {
++                for kid in kids {
++                    push_tree(*kid, depth + 1, children, out);
++                }
++            }
++        }
++        for root in roots {
++            push_tree(root, 0, &children, &mut out);
++        }
++        out
++    }
++
+     pub fn chatwidget_init_for_forked_or_resumed_thread(
+         &self,
+         tui: &mut tui::Tui,
+@@ -852,6 +1527,7 @@ impl App {
+ 
+     fn reset_for_thread_switch(&mut self, tui: &mut tui::Tui) -> Result<()> {
+         self.overlay = None;
++        self.ctrl_t_overlay_mode = None;
+         self.transcript_cells.clear();
+         self.deferred_history_lines.clear();
+         self.has_emitted_history_lines = false;
+@@ -868,6 +1544,10 @@ impl App {
+         self.active_thread_rx = None;
+         self.primary_thread_id = None;
+         self.pending_primary_events.clear();
++        self.collab_thread_created_at.clear();
++        self.collab_thread_sources.clear();
++        self.collab_thread_prompts.clear();
++        self.collab_thread_agents.clear();
+     }
+ 
+     async fn drain_active_thread_events(&mut self, tui: &mut tui::Tui) -> Result<()> {
+@@ -921,10 +1601,12 @@ impl App {
+         session_selection: SessionSelection,
+         feedback: codex_feedback::CodexFeedback,
+         is_first_run: bool,
++        ollama_chat_support_notice: Option<DeprecationNoticeEvent>,
+     ) -> Result<AppExitInfo> {
+         use tokio_stream::StreamExt;
+         let (app_event_tx, mut app_event_rx) = unbounded_channel();
+         let app_event_tx = AppEventSender::new(app_event_tx);
++        emit_deprecation_notice(&app_event_tx, ollama_chat_support_notice);
+         emit_project_config_warnings(&app_event_tx, &config);
+         tui.set_notification_method(config.tui_notification_method);
+ 
+@@ -1089,6 +1771,7 @@ impl App {
+             enhanced_keys_supported,
+             transcript_cells: Vec::new(),
+             overlay: None,
++            ctrl_t_overlay_mode: None,
+             deferred_history_lines: Vec::new(),
+             has_emitted_history_lines: false,
+             commit_anim_running: Arc::new(AtomicBool::new(false)),
+@@ -1105,6 +1788,10 @@ impl App {
+             primary_thread_id: None,
+             primary_session_configured: None,
+             pending_primary_events: VecDeque::new(),
++            collab_thread_created_at: HashMap::new(),
++            collab_thread_sources: HashMap::new(),
++            collab_thread_prompts: HashMap::new(),
++            collab_thread_agents: HashMap::new(),
+         };
+ 
+         // On startup, if Agent mode (workspace-write) or ReadOnly is active, warn about world-writable dirs on Windows.
+@@ -1490,7 +2177,7 @@ impl App {
+                     let running = self.commit_anim_running.clone();
+                     thread::spawn(move || {
+                         while running.load(Ordering::Relaxed) {
+-                            thread::sleep(COMMIT_ANIMATION_TICK);
++                            thread::sleep(Duration::from_millis(50));
+                             tx.send(AppEvent::CommitTick);
+                         }
+                     });
+@@ -2216,6 +2903,23 @@ impl App {
+             emit_skill_load_warnings(&self.app_event_tx, &errors);
+         }
+         self.handle_backtrack_event(&event.msg);
++        if let EventMsg::CollabAgentSpawnEnd(ev) = &event.msg
++            && let Some(thread_id) = ev.new_thread_id
++        {
++            let prompt = format_agent_message_preview(&ev.prompt, 200);
++            if !prompt.is_empty() {
++                self.collab_thread_prompts.insert(thread_id, prompt);
++            }
++            if ev.agent_type.is_some() || ev.agent_name.is_some() {
++                self.collab_thread_agents.insert(
++                    thread_id,
++                    AgentDescriptor {
++                        agent_type: ev.agent_type.clone(),
++                        agent_name: ev.agent_name.clone(),
++                    },
++                );
++            }
++        }
+         self.chat_widget.handle_codex_event(event);
+     }
+ 
+@@ -2244,6 +2948,10 @@ impl App {
+             }
+         };
+         let config_snapshot = thread.config_snapshot().await;
++        self.collab_thread_created_at
++            .insert(thread_id, Instant::now());
++        self.collab_thread_sources
++            .insert(thread_id, config_snapshot.session_source.clone());
+         let event = Event {
+             id: String::new(),
+             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
+@@ -2326,7 +3034,6 @@ impl App {
+ 
+     fn personality_label(personality: Personality) -> &'static str {
+         match personality {
+-            Personality::None => "None",
+             Personality::Friendly => "Friendly",
+             Personality::Pragmatic => "Pragmatic",
+         }
+@@ -2397,16 +3104,27 @@ impl App {
+ 
+     async fn handle_key_event(&mut self, tui: &mut tui::Tui, key_event: KeyEvent) {
+         match key_event {
++            KeyEvent {
++                code: KeyCode::Char('n'),
++                modifiers: crossterm::event::KeyModifiers::CONTROL,
++                kind: KeyEventKind::Press,
++                ..
++            } => {
++                if self.config.features.enabled(Feature::CollaborationModes) {
++                    self.cycle_ctrl_t_overlay(tui).await;
++                }
++            }
+             KeyEvent {
+                 code: KeyCode::Char('t'),
+                 modifiers: crossterm::event::KeyModifiers::CONTROL,
+                 kind: KeyEventKind::Press,
+                 ..
+             } => {
+-                // Enter alternate screen and set viewport to full size.
+-                let _ = tui.enter_alt_screen();
+-                self.overlay = Some(Overlay::new_transcript(self.transcript_cells.clone()));
+-                tui.frame_requester().schedule_frame();
++                // Native transcript pager shortcut (upstream): do not conflate this with the
++                // multi-agent overlay cycle which is bound to Ctrl+N.
++                if self.overlay.is_none() {
++                    self.open_transcript_overlay(tui);
++                }
+             }
+             KeyEvent {
+                 code: KeyCode::Char('g'),
+@@ -2523,6 +3241,9 @@ mod tests {
+     use codex_core::protocol::SandboxPolicy;
+     use codex_core::protocol::SessionConfiguredEvent;
+     use codex_core::protocol::SessionSource;
++    use codex_core::protocol::TokenCountEvent;
++    use codex_core::protocol::TokenUsage;
++    use codex_core::protocol::TokenUsageInfo;
+     use codex_otel::OtelManager;
+     use codex_protocol::ThreadId;
+     use codex_protocol::user_input::TextElement;
+@@ -2623,6 +3344,7 @@ mod tests {
+             file_search,
+             transcript_cells: Vec::new(),
+             overlay: None,
++            ctrl_t_overlay_mode: None,
+             deferred_history_lines: Vec::new(),
+             has_emitted_history_lines: false,
+             enhanced_keys_supported: false,
+@@ -2640,6 +3362,10 @@ mod tests {
+             primary_thread_id: None,
+             primary_session_configured: None,
+             pending_primary_events: VecDeque::new(),
++            collab_thread_created_at: HashMap::new(),
++            collab_thread_sources: HashMap::new(),
++            collab_thread_prompts: HashMap::new(),
++            collab_thread_agents: HashMap::new(),
+         }
+     }
+ 
+@@ -2676,6 +3402,7 @@ mod tests {
+                 file_search,
+                 transcript_cells: Vec::new(),
+                 overlay: None,
++                ctrl_t_overlay_mode: None,
+                 deferred_history_lines: Vec::new(),
+                 has_emitted_history_lines: false,
+                 enhanced_keys_supported: false,
+@@ -2693,6 +3420,10 @@ mod tests {
+                 primary_thread_id: None,
+                 primary_session_configured: None,
+                 pending_primary_events: VecDeque::new(),
++                collab_thread_created_at: HashMap::new(),
++                collab_thread_sources: HashMap::new(),
++                collab_thread_prompts: HashMap::new(),
++                collab_thread_agents: HashMap::new(),
+             },
+             rx,
+             op_rx,
+@@ -2739,6 +3470,14 @@ mod tests {
+         s
+     }
+ 
++    fn line_to_plain_text(line: &Line<'_>) -> String {
++        let mut s = String::new();
++        for span in &line.spans {
++            s.push_str(&span.content);
++        }
++        s
++    }
++
+     #[tokio::test]
+     async fn model_migration_prompt_only_shows_for_deprecated_models() {
+         let seen = BTreeMap::new();
+@@ -2774,6 +3513,121 @@ mod tests {
+         ));
+     }
+ 
++    #[tokio::test]
++    async fn agents_overlay_shows_role_and_hierarchy_from_spawned_sources() {
++        let mut app = make_test_app().await;
++        let parent_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001").unwrap();
++        let child_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002").unwrap();
++        let external_parent =
++            ThreadId::from_string("00000000-0000-0000-0000-000000000099").unwrap();
++
++        app.collab_thread_sources.insert(
++            parent_id,
++            ProtocolSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++                parent_thread_id: external_parent,
++                depth: 1,
++                agent_type: Some("orchestrator".to_string()),
++                agent_name: None,
++            }),
++        );
++        app.collab_thread_sources.insert(
++            child_id,
++            ProtocolSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++                parent_thread_id: parent_id,
++                depth: 2,
++                agent_type: Some("worker".to_string()),
++                agent_name: None,
++            }),
++        );
++
++        let now = Instant::now();
++        app.collab_thread_created_at.insert(parent_id, now);
++        app.collab_thread_created_at.insert(child_id, now);
++
++        let lines = app.build_agents_details_lines().await;
++        let rendered: Vec<String> = lines.iter().map(line_to_plain_text).collect();
++        let role_lines: Vec<String> = rendered
++            .iter()
++            .filter(|line| line.contains("Role:"))
++            .cloned()
++            .collect();
++
++        assert_eq!(
++            role_lines,
++            vec![
++                "  Role: orchestrator  Name: —".to_string(),
++                "    Role: worker  Name: —".to_string(),
++            ]
++        );
++
++        let child_prefix = format!("  • {child_id}");
++        assert!(
++            rendered.iter().any(|line| line.starts_with(&child_prefix)),
++            "expected child bullet line to start with '{child_prefix}'"
++        );
++    }
++
++    #[tokio::test]
++    async fn agents_overlay_shows_context_left_when_available() -> Result<()> {
++        let mut app = make_test_app().await;
++        let with_usage = ThreadId::from_string("00000000-0000-0000-0000-000000000010").unwrap();
++        let without_usage = ThreadId::from_string("00000000-0000-0000-0000-000000000020").unwrap();
++
++        app.collab_thread_sources.insert(
++            with_usage,
++            ProtocolSessionSource::SubAgent(SubAgentSource::Review),
++        );
++        app.collab_thread_sources.insert(
++            without_usage,
++            ProtocolSessionSource::SubAgent(SubAgentSource::Review),
++        );
++
++        let now = Instant::now();
++        app.collab_thread_created_at.insert(with_usage, now);
++        app.collab_thread_created_at.insert(without_usage, now);
++
++        let context_window = 200_000;
++        let last_usage = TokenUsage {
++            total_tokens: 32_000,
++            ..TokenUsage::default()
++        };
++        let percent = last_usage.percent_of_context_window_remaining(context_window);
++        let token_event = Event {
++            id: String::new(),
++            msg: EventMsg::TokenCount(TokenCountEvent {
++                info: Some(TokenUsageInfo {
++                    total_token_usage: TokenUsage::default(),
++                    last_token_usage: last_usage,
++                    model_context_window: Some(context_window),
++                }),
++                rate_limits: None,
++            }),
++        };
++        app.enqueue_thread_event(with_usage, token_event).await?;
++
++        let lines = app.build_agents_summary_lines().await;
++        let rendered: Vec<String> = lines.iter().map(line_to_plain_text).collect();
++
++        let expected = format!("{percent}% left");
++        let with_usage_line = rendered
++            .iter()
++            .find(|line| line.contains(&with_usage.to_string()));
++        assert!(
++            with_usage_line.is_some_and(|line| line.contains(&expected)),
++            "expected summary line for {with_usage} to contain '{expected}', got {with_usage_line:?}"
++        );
++
++        let without_usage_line = rendered
++            .iter()
++            .find(|line| line.contains(&without_usage.to_string()));
++        assert!(
++            without_usage_line.is_some_and(|line| line.contains("—")),
++            "expected summary line for {without_usage} to contain '—', got {without_usage_line:?}"
++        );
++
++        Ok(())
++    }
++
+     #[tokio::test]
+     async fn model_migration_prompt_respects_hide_flag_and_self_target() {
+         let mut seen = BTreeMap::new();

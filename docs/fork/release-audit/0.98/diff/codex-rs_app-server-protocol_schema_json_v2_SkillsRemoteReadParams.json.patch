@@ -1,0 +1,12 @@
+diff --git a/codex-rs/app-server-protocol/schema/json/v2/SkillsRemoteReadParams.json b/codex-rs/app-server-protocol/schema/json/v2/SkillsRemoteReadParams.json
+deleted file mode 100644
+index ace2fb5ba..000000000
+--- a/codex-rs/app-server-protocol/schema/json/v2/SkillsRemoteReadParams.json
++++ /dev/null
+@@ -1,5 +0,0 @@
+-{
+-  "$schema": "http://json-schema.org/draft-07/schema#",
+-  "title": "SkillsRemoteReadParams",
+-  "type": "object"
+-}
+\ No newline at end of file

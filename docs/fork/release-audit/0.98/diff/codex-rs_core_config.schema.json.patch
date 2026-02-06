@@ -1,0 +1,94 @@
+diff --git a/codex-rs/core/config.schema.json b/codex-rs/core/config.schema.json
+index bf2439723..ea21f7682 100644
+--- a/codex-rs/core/config.schema.json
++++ b/codex-rs/core/config.schema.json
+@@ -187,6 +187,9 @@
+             "experimental_windows_sandbox": {
+               "type": "boolean"
+             },
++            "fn_multi_agents": {
++              "type": "boolean"
++            },
+             "include_apply_patch_tool": {
+               "type": "boolean"
+             },
+@@ -381,7 +384,10 @@
+       "description": "Initial collaboration mode to use when the TUI starts.",
+       "enum": [
+         "plan",
+-        "default"
++        "default",
++        "pair_programming",
++        "execute",
++        "custom"
+       ],
+       "type": "string"
+     },
+@@ -464,7 +470,7 @@
+               "$ref": "#/definitions/WireApi"
+             }
+           ],
+-          "default": "responses",
++          "default": "chat",
+           "description": "Which wire protocol this provider expects."
+         }
+       },
+@@ -708,7 +714,6 @@
+     },
+     "Personality": {
+       "enum": [
+-        "none",
+         "friendly",
+         "pragmatic"
+       ],
+@@ -1022,7 +1027,7 @@
+             }
+           ],
+           "default": null,
+-          "description": "Start the TUI in the specified collaboration mode (plan/default). Defaults to unset."
++          "description": "Start the TUI in the specified collaboration mode (plan/execute/etc.). Defaults to unset."
+         },
+         "notification_method": {
+           "allOf": [
+@@ -1088,7 +1093,7 @@
+       "type": "string"
+     },
+     "WireApi": {
+-      "description": "Wire protocol that the provider speaks.",
++      "description": "Wire protocol that the provider speaks. Most third-party services only implement the classic OpenAI Chat Completions JSON schema, whereas OpenAI itself (and a handful of others) additionally expose the more modern *Responses* API. The two protocols use different request/response shapes and *cannot* be auto-detected at runtime, therefore each provider entry must declare which one it expects.",
+       "oneOf": [
+         {
+           "description": "The Responses API exposed by OpenAI at `/v1/responses`.",
+@@ -1096,6 +1101,13 @@
+             "responses"
+           ],
+           "type": "string"
++        },
++        {
++          "description": "Regular Chat Completions compatible with `/v1/chat/completions`.",
++          "enum": [
++            "chat"
++          ],
++          "type": "string"
+         }
+       ]
+     }
+@@ -1209,6 +1221,9 @@
+         "experimental_windows_sandbox": {
+           "type": "boolean"
+         },
++        "fn_multi_agents": {
++          "type": "boolean"
++        },
+         "include_apply_patch_tool": {
+           "type": "boolean"
+         },
+@@ -1428,7 +1443,7 @@
+       "type": "array"
+     },
+     "oss_provider": {
+-      "description": "Preferred OSS provider for local models, e.g. \"lmstudio\" or \"ollama\".",
++      "description": "Preferred OSS provider for local models, e.g. \"lmstudio\", \"ollama\", or \"ollama-chat\".",
+       "type": "string"
+     },
+     "otel": {

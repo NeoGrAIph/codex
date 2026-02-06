@@ -1,0 +1,28 @@
+diff --git a/codex-rs/app-server-protocol/schema/json/v2/SkillsRemoteWriteResponse.json b/codex-rs/app-server-protocol/schema/json/v2/SkillsRemoteWriteResponse.json
+deleted file mode 100644
+index 1a9473d05..000000000
+--- a/codex-rs/app-server-protocol/schema/json/v2/SkillsRemoteWriteResponse.json
++++ /dev/null
+@@ -1,21 +0,0 @@
+-{
+-  "$schema": "http://json-schema.org/draft-07/schema#",
+-  "properties": {
+-    "id": {
+-      "type": "string"
+-    },
+-    "name": {
+-      "type": "string"
+-    },
+-    "path": {
+-      "type": "string"
+-    }
+-  },
+-  "required": [
+-    "id",
+-    "name",
+-    "path"
+-  ],
+-  "title": "SkillsRemoteWriteResponse",
+-  "type": "object"
+-}
+\ No newline at end of file

@@ -1,0 +1,10 @@
+diff --git a/codex-rs/app-server-protocol/schema/typescript/v2/Model.ts b/codex-rs/app-server-protocol/schema/typescript/v2/Model.ts
+index 7528a8fad..72daa93ed 100644
+--- a/codex-rs/app-server-protocol/schema/typescript/v2/Model.ts
++++ b/codex-rs/app-server-protocol/schema/typescript/v2/Model.ts
+@@ -5,4 +5,4 @@ import type { InputModality } from "../InputModality";
+ import type { ReasoningEffort } from "../ReasoningEffort";
+ import type { ReasoningEffortOption } from "./ReasoningEffortOption";
+ 
+-export type Model = { id: string, model: string, upgrade: string | null, displayName: string, description: string, supportedReasoningEfforts: Array<ReasoningEffortOption>, defaultReasoningEffort: ReasoningEffort, inputModalities: Array<InputModality>, supportsPersonality: boolean, isDefault: boolean, };
++export type Model = { id: string, model: string, displayName: string, description: string, supportedReasoningEfforts: Array<ReasoningEffortOption>, defaultReasoningEffort: ReasoningEffort, inputModalities: Array<InputModality>, supportsPersonality: boolean, isDefault: boolean, };

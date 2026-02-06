@@ -1,0 +1,13 @@
+diff --git a/codex-rs/mcp-server/src/codex_tool_runner.rs b/codex-rs/mcp-server/src/codex_tool_runner.rs
+index 6513c9e6f..6273607a2 100644
+--- a/codex-rs/mcp-server/src/codex_tool_runner.rs
++++ b/codex-rs/mcp-server/src/codex_tool_runner.rs
+@@ -322,8 +322,6 @@ async fn run_codex_tool_session_inner(
+                     | EventMsg::McpListToolsResponse(_)
+                     | EventMsg::ListCustomPromptsResponse(_)
+                     | EventMsg::ListSkillsResponse(_)
+-                    | EventMsg::ListRemoteSkillsResponse(_)
+-                    | EventMsg::RemoteSkillDownloaded(_)
+                     | EventMsg::ExecCommandBegin(_)
+                     | EventMsg::TerminalInteraction(_)
+                     | EventMsg::ExecCommandOutputDelta(_)

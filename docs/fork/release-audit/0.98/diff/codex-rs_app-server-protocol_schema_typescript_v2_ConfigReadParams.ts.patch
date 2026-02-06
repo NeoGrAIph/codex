@@ -1,0 +1,10 @@
+diff --git a/codex-rs/app-server-protocol/schema/typescript/v2/ConfigReadParams.ts b/codex-rs/app-server-protocol/schema/typescript/v2/ConfigReadParams.ts
+index c5d5bc874..3cb2394bc 100644
+--- a/codex-rs/app-server-protocol/schema/typescript/v2/ConfigReadParams.ts
++++ b/codex-rs/app-server-protocol/schema/typescript/v2/ConfigReadParams.ts
+@@ -8,4 +8,4 @@ export type ConfigReadParams = { includeLayers: boolean,
+  * return the effective config as seen from that directory (i.e., including any
+  * project layers between `cwd` and the project/repo root).
+  */
+-cwd?: string | null, };
++cwd: string | null, };

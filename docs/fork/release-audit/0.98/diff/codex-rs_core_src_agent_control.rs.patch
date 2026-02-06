@@ -1,0 +1,132 @@
+diff --git a/codex-rs/core/src/agent/control.rs b/codex-rs/core/src/agent/control.rs
+index a600a0d8b..49d162f2d 100644
+--- a/codex-rs/core/src/agent/control.rs
++++ b/codex-rs/core/src/agent/control.rs
+@@ -5,6 +5,8 @@ use crate::error::Result as CodexResult;
+ use crate::thread_manager::ThreadManagerState;
+ use codex_protocol::ThreadId;
+ use codex_protocol::protocol::Op;
++use codex_protocol::protocol::SessionSource;
++use codex_protocol::protocol::SubAgentSource;
+ use codex_protocol::user_input::UserInput;
+ use std::sync::Arc;
+ use std::sync::Weak;
+@@ -45,7 +47,8 @@ impl AgentControl {
+         let reservation = self.state.reserve_spawn_slot(config.agent_max_threads)?;
+ 
+         // The same `AgentControl` is sent to spawn the thread.
+-        let new_thread = match session_source {
++        let spawn_source = session_source.clone();
++        let new_thread = match spawn_source {
+             Some(session_source) => {
+                 state
+                     .spawn_new_thread_with_source(config, self.clone(), session_source)
+@@ -53,6 +56,14 @@ impl AgentControl {
+             }
+             None => state.spawn_new_thread(config, self.clone()).await?,
+         };
++        if let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++            parent_thread_id, ..
++        })) = session_source.as_ref()
++        {
++            state
++                .register_spawn_child(*parent_thread_id, new_thread.thread_id)
++                .await;
++        }
+         reservation.commit(new_thread.thread_id);
+ 
+         // Notify a new thread has been created. This notification will be processed by clients
+@@ -88,6 +99,7 @@ impl AgentControl {
+         if matches!(result, Err(CodexErr::InternalAgentDied)) {
+             let _ = state.remove_thread(&agent_id).await;
+             self.state.release_spawned_thread(agent_id);
++            state.drop_thread_links(agent_id).await;
+         }
+         result
+     }
+@@ -101,10 +113,25 @@ impl AgentControl {
+     /// Submit a shutdown request to an existing agent thread.
+     pub(crate) async fn shutdown_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
+         let state = self.upgrade()?;
+-        let result = state.send_op(agent_id, Op::Shutdown {}).await;
+-        let _ = state.remove_thread(&agent_id).await;
+-        self.state.release_spawned_thread(agent_id);
+-        result
++        let mut stack = vec![agent_id];
++        let mut order = Vec::new();
++        while let Some(current) = stack.pop() {
++            order.push(current);
++            stack.extend(state.children_of(current).await);
++        }
++
++        let mut parent_result = None;
++        for thread_id in order.into_iter().rev() {
++            let result = state.send_op(thread_id, Op::Shutdown {}).await;
++            let _ = state.remove_thread(&thread_id).await;
++            self.state.release_spawned_thread(thread_id);
++            state.drop_thread_links(thread_id).await;
++            if thread_id == agent_id {
++                parent_result = Some(result);
++            }
++        }
++
++        parent_result.unwrap_or_else(|| Ok(String::new()))
+     }
+ 
+     /// Fetch the last known status for `agent_id`, returning `NotFound` when unavailable.
+@@ -149,6 +176,8 @@ mod tests {
+     use codex_protocol::config_types::ModeKind;
+     use codex_protocol::protocol::ErrorEvent;
+     use codex_protocol::protocol::EventMsg;
++    use codex_protocol::protocol::SessionSource;
++    use codex_protocol::protocol::SubAgentSource;
+     use codex_protocol::protocol::TurnAbortReason;
+     use codex_protocol::protocol::TurnAbortedEvent;
+     use codex_protocol::protocol::TurnCompleteEvent;
+@@ -232,7 +261,7 @@ mod tests {
+     async fn on_event_updates_status_from_task_started() {
+         let status = agent_status_from_event(&EventMsg::TurnStarted(TurnStartedEvent {
+             model_context_window: None,
+-            collaboration_mode_kind: ModeKind::Default,
++            collaboration_mode_kind: ModeKind::Custom,
+         }));
+         assert_eq!(status, Some(AgentStatus::Running));
+     }
+@@ -518,4 +547,37 @@ mod tests {
+             .await
+             .expect("shutdown agent");
+     }
++
++    #[tokio::test]
++    async fn shutdown_cascades_to_thread_spawn_children() {
++        let harness = AgentControlHarness::new().await;
++        let (parent_id, _) = harness.start_thread().await;
++
++        let child_id = harness
++            .control
++            .spawn_agent(
++                harness.config.clone(),
++                "child".to_string(),
++                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++                    parent_thread_id: parent_id,
++                    depth: 1,
++                    agent_type: None,
++                    agent_name: None,
++                })),
++            )
++            .await
++            .expect("spawn child");
++
++        harness
++            .control
++            .shutdown_agent(parent_id)
++            .await
++            .expect("shutdown parent");
++
++        let ops = harness.manager.captured_ops();
++        let shutdown_child = ops
++            .iter()
++            .any(|(id, op)| *id == child_id && matches!(op, Op::Shutdown));
++        assert_eq!(shutdown_child, true);
++    }
+ }

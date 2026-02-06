@@ -1,0 +1,12 @@
+diff --git a/codex-rs/core/src/skills/mod.rs b/codex-rs/core/src/skills/mod.rs
+index 6148092a1..4d79bca25 100644
+--- a/codex-rs/core/src/skills/mod.rs
++++ b/codex-rs/core/src/skills/mod.rs
+@@ -3,7 +3,6 @@ pub mod injection;
+ pub mod loader;
+ pub mod manager;
+ pub mod model;
+-pub mod remote;
+ pub mod render;
+ pub mod system;
+ 

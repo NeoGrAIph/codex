@@ -1,0 +1,12 @@
+diff --git a/codex-rs/core/Cargo.toml b/codex-rs/core/Cargo.toml
+index d686343ae..45341087f 100644
+--- a/codex-rs/core/Cargo.toml
++++ b/codex-rs/core/Cargo.toml
+@@ -108,7 +108,6 @@ url = { workspace = true }
+ uuid = { workspace = true, features = ["serde", "v4", "v5"] }
+ which = { workspace = true }
+ wildmatch = { workspace = true }
+-zip = { workspace = true }
+ 
+ [features]
+ deterministic_process_ids = []

@@ -1,0 +1,23 @@
+diff --git a/codex-rs/app-server-protocol/schema/json/v2/ThreadStartResponse.json b/codex-rs/app-server-protocol/schema/json/v2/ThreadStartResponse.json
+index c85d7ce97..dcc2f3333 100644
+--- a/codex-rs/app-server-protocol/schema/json/v2/ThreadStartResponse.json
++++ b/codex-rs/app-server-protocol/schema/json/v2/ThreadStartResponse.json
+@@ -635,6 +635,18 @@
+           "properties": {
+             "thread_spawn": {
+               "properties": {
++                "agent_name": {
++                  "type": [
++                    "string",
++                    "null"
++                  ]
++                },
++                "agent_type": {
++                  "type": [
++                    "string",
++                    "null"
++                  ]
++                },
+                 "depth": {
+                   "format": "int32",
+                   "type": "integer"

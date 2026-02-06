@@ -1,0 +1,13 @@
+diff --git a/codex-rs/codex-api/src/requests/mod.rs b/codex-rs/codex-api/src/requests/mod.rs
+index 35fecf9a9..f0ab23a25 100644
+--- a/codex-rs/codex-api/src/requests/mod.rs
++++ b/codex-rs/codex-api/src/requests/mod.rs
+@@ -1,5 +1,8 @@
++pub mod chat;
+ pub(crate) mod headers;
+ pub mod responses;
+ 
++pub use chat::ChatRequest;
++pub use chat::ChatRequestBuilder;
+ pub use responses::ResponsesRequest;
+ pub use responses::ResponsesRequestBuilder;

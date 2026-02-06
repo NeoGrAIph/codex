@@ -1,0 +1,10 @@
+diff --git a/codex-rs/app-server-protocol/schema/typescript/ModeKind.ts b/codex-rs/app-server-protocol/schema/typescript/ModeKind.ts
+index 7d2324add..246d440c9 100644
+--- a/codex-rs/app-server-protocol/schema/typescript/ModeKind.ts
++++ b/codex-rs/app-server-protocol/schema/typescript/ModeKind.ts
+@@ -5,4 +5,4 @@
+ /**
+  * Initial collaboration mode to use when the TUI starts.
+  */
+-export type ModeKind = "plan" | "default";
++export type ModeKind = "plan" | "code" | "pair_programming" | "execute" | "custom";

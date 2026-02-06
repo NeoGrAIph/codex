@@ -1,0 +1,12 @@
+diff --git a/codex-rs/vendor/bubblewrap/ci/enable-userns.sh b/codex-rs/vendor/bubblewrap/ci/enable-userns.sh
+deleted file mode 100755
+index 9310e558b..000000000
+--- a/codex-rs/vendor/bubblewrap/ci/enable-userns.sh
++++ /dev/null
+@@ -1,6 +0,0 @@
+-#!/bin/bash
+-
+-set -e
+-
+-echo "kernel.apparmor_restrict_unprivileged_userns = 0" > /etc/sysctl.d/99-userns.conf
+-sysctl --system

@@ -1,0 +1,13 @@
+diff --git a/codex-rs/vendor/bubblewrap/completions/meson.build b/codex-rs/vendor/bubblewrap/completions/meson.build
+deleted file mode 100644
+index 958c90a2e..000000000
+--- a/codex-rs/vendor/bubblewrap/completions/meson.build
++++ /dev/null
+@@ -1,7 +0,0 @@
+-if get_option('bash_completion').enabled()
+-  subdir('bash')
+-endif
+-
+-if get_option('zsh_completion').enabled()
+-  subdir('zsh')
+-endif

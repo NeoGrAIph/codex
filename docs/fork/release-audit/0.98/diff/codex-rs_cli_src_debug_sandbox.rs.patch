@@ -1,0 +1,13 @@
+diff --git a/codex-rs/cli/src/debug_sandbox.rs b/codex-rs/cli/src/debug_sandbox.rs
+index 30352cbb8..af56977bd 100644
+--- a/codex-rs/cli/src/debug_sandbox.rs
++++ b/codex-rs/cli/src/debug_sandbox.rs
+@@ -130,7 +130,7 @@ async fn run_command_under_sandbox(
+     let sandbox_policy_cwd = cwd.clone();
+ 
+     let stdio_policy = StdioPolicy::Inherit;
+-    let env = create_env(&config.shell_environment_policy, None);
++    let env = create_env(&config.shell_environment_policy);
+ 
+     // Special-case Windows sandbox: execute and exit the process to emulate inherited stdio.
+     if let SandboxType::Windows = sandbox_type {

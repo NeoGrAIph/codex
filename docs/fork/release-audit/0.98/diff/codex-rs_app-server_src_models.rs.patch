@@ -1,0 +1,12 @@
+diff --git a/codex-rs/app-server/src/models.rs b/codex-rs/app-server/src/models.rs
+index 350b86f92..133dc73cc 100644
+--- a/codex-rs/app-server/src/models.rs
++++ b/codex-rs/app-server/src/models.rs
+@@ -22,7 +22,6 @@ fn model_from_preset(preset: ModelPreset) -> Model {
+     Model {
+         id: preset.id.to_string(),
+         model: preset.model.to_string(),
+-        upgrade: preset.upgrade.map(|upgrade| upgrade.id),
+         display_name: preset.display_name.to_string(),
+         description: preset.description.to_string(),
+         supported_reasoning_efforts: reasoning_efforts_from_preset(

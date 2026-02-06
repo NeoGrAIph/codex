@@ -1,0 +1,12 @@
+diff --git a/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__exploring_step5_finish_sed_range.snap b/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__exploring_step5_finish_sed_range.snap
+index 296b00f90..de15e7ca2 100644
+--- a/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__exploring_step5_finish_sed_range.snap
++++ b/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__exploring_step5_finish_sed_range.snap
+@@ -1,6 +1,6 @@
+ ---
+ source: tui/src/chatwidget/tests.rs
+-expression: blob5
++expression: active_blob(&chat)
+ ---
+ • Explored
+   └ List ls -la

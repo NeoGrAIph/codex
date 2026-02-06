@@ -1,0 +1,7 @@
+diff --git a/codex-rs/core/templates/collaboration_mode/code.md b/codex-rs/core/templates/collaboration_mode/code.md
+new file mode 100644
+index 000000000..2294e6199
+--- /dev/null
++++ b/codex-rs/core/templates/collaboration_mode/code.md
+@@ -0,0 +1 @@
++you are now in code mode.

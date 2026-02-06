@@ -1,0 +1,28 @@
+diff --git a/codex-rs/core/src/agent/guards.rs b/codex-rs/core/src/agent/guards.rs
+index 2f146f2f8..461bb245b 100644
+--- a/codex-rs/core/src/agent/guards.rs
++++ b/codex-rs/core/src/agent/guards.rs
+@@ -22,7 +22,7 @@ pub(crate) struct Guards {
+ }
+ 
+ /// Initial agent is depth 0.
+-pub(crate) const MAX_THREAD_SPAWN_DEPTH: i32 = 1;
++pub(crate) const MAX_THREAD_SPAWN_DEPTH: i32 = 2;
+ 
+ fn session_depth(session_source: &SessionSource) -> i32 {
+     match session_source {
+@@ -133,10 +133,13 @@ mod tests {
+         let session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+             parent_thread_id: ThreadId::new(),
+             depth: 1,
++            agent_type: None,
++            agent_name: None,
+         });
+         let child_depth = next_thread_spawn_depth(&session_source);
+         assert_eq!(child_depth, 2);
+-        assert!(exceeds_thread_spawn_depth_limit(child_depth));
++        assert!(!exceeds_thread_spawn_depth_limit(child_depth));
++        assert!(exceeds_thread_spawn_depth_limit(child_depth + 1));
+     }
+ 
+     #[test]

@@ -1,0 +1,32 @@
+diff --git a/codex-rs/protocol/src/models.rs b/codex-rs/protocol/src/models.rs
+index ae38a7890..8fae35139 100644
+--- a/codex-rs/protocol/src/models.rs
++++ b/codex-rs/protocol/src/models.rs
+@@ -109,7 +109,7 @@ pub enum ResponseItem {
+         encrypted_content: Option<String>,
+     },
+     LocalShellCall {
+-        /// Legacy id field retained for compatibility with older payloads.
++        /// Set when using the chat completions API.
+         #[serde(default, skip_serializing)]
+         #[ts(skip)]
+         id: Option<String>,
+@@ -125,7 +125,8 @@ pub enum ResponseItem {
+         name: String,
+         // The Responses API returns the function call arguments as a *string* that contains
+         // JSON, not as an already‑parsed object. We keep it as a raw string here and let
+-        // Session::handle_function_call parse it into a Value.
++        // Session::handle_function_call parse it into a Value. This exactly matches the
++        // Chat Completions + Responses API behavior.
+         arguments: String,
+         call_id: String,
+     },
+@@ -249,7 +250,7 @@ impl DeveloperInstructions {
+                     match command_prefixes {
+                         Some(prefixes) => {
+                             format!(
+-                                "{APPROVAL_POLICY_ON_REQUEST_RULE}\n## Approved command prefixes\nThe following prefix rules have already been approved: {prefixes}"
++                                "{APPROVAL_POLICY_ON_REQUEST_RULE}\nApproved command prefixes:\n{prefixes}"
+                             )
+                         }
+                         None => APPROVAL_POLICY_ON_REQUEST_RULE.to_string(),

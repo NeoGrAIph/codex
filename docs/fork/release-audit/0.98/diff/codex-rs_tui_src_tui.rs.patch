@@ -1,0 +1,22 @@
+diff --git a/codex-rs/tui/src/tui.rs b/codex-rs/tui/src/tui.rs
+index a77785c1b..761fa8362 100644
+--- a/codex-rs/tui/src/tui.rs
++++ b/codex-rs/tui/src/tui.rs
+@@ -10,7 +10,6 @@ use std::pin::Pin;
+ use std::sync::Arc;
+ use std::sync::atomic::AtomicBool;
+ use std::sync::atomic::Ordering;
+-use std::time::Duration;
+ 
+ use crossterm::Command;
+ use crossterm::SynchronizedUpdate;
+@@ -53,9 +52,6 @@ mod frame_requester;
+ #[cfg(unix)]
+ mod job_control;
+ 
+-/// Target frame interval for UI redraw scheduling.
+-pub(crate) const TARGET_FRAME_INTERVAL: Duration = frame_rate_limiter::MIN_FRAME_INTERVAL;
+-
+ /// A type alias for the terminal type used in this application
+ pub type Terminal = CustomTerminal<CrosstermBackend<Stdout>>;
+ 

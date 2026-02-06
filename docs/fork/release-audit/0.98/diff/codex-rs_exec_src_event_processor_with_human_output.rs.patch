@@ -1,0 +1,53 @@
+diff --git a/codex-rs/exec/src/event_processor_with_human_output.rs b/codex-rs/exec/src/event_processor_with_human_output.rs
+index cbe45b92f..7e4b642e1 100644
+--- a/codex-rs/exec/src/event_processor_with_human_output.rs
++++ b/codex-rs/exec/src/event_processor_with_human_output.rs
+@@ -593,20 +593,17 @@ impl EventProcessor for EventProcessorWithHumanOutput {
+                     view.path.display()
+                 );
+             }
+-            EventMsg::TurnAborted(abort_reason) => {
+-                match abort_reason.reason {
+-                    TurnAbortReason::Interrupted => {
+-                        ts_msg!(self, "task interrupted");
+-                    }
+-                    TurnAbortReason::Replaced => {
+-                        ts_msg!(self, "task aborted: replaced by a new task");
+-                    }
+-                    TurnAbortReason::ReviewEnded => {
+-                        ts_msg!(self, "task aborted: review ended");
+-                    }
++            EventMsg::TurnAborted(abort_reason) => match abort_reason.reason {
++                TurnAbortReason::Interrupted => {
++                    ts_msg!(self, "task interrupted");
+                 }
+-                return CodexStatus::InitiateShutdown;
+-            }
++                TurnAbortReason::Replaced => {
++                    ts_msg!(self, "task aborted: replaced by a new task");
++                }
++                TurnAbortReason::ReviewEnded => {
++                    ts_msg!(self, "task aborted: review ended");
++                }
++            },
+             EventMsg::ContextCompacted(_) => {
+                 ts_msg!(self, "context compacted");
+             }
+@@ -629,6 +626,8 @@ impl EventProcessor for EventProcessorWithHumanOutput {
+                 new_thread_id,
+                 prompt,
+                 status,
++                agent_type: _,
++                agent_name: _,
+             }) => {
+                 let success = new_thread_id.is_some() && !is_collab_status_failure(&status);
+                 let title_style = if success { self.green } else { self.red };
+@@ -776,8 +775,6 @@ impl EventProcessor for EventProcessorWithHumanOutput {
+             | EventMsg::McpListToolsResponse(_)
+             | EventMsg::ListCustomPromptsResponse(_)
+             | EventMsg::ListSkillsResponse(_)
+-            | EventMsg::ListRemoteSkillsResponse(_)
+-            | EventMsg::RemoteSkillDownloaded(_)
+             | EventMsg::RawResponseItem(_)
+             | EventMsg::UserMessage(_)
+             | EventMsg::EnteredReviewMode(_)

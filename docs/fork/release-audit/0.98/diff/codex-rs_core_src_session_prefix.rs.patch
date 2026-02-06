@@ -1,0 +1,13 @@
+diff --git a/codex-rs/core/src/session_prefix.rs b/codex-rs/core/src/session_prefix.rs
+index 198f5dff9..8ad13525a 100644
+--- a/codex-rs/core/src/session_prefix.rs
++++ b/codex-rs/core/src/session_prefix.rs
+@@ -16,7 +16,7 @@ pub(crate) fn is_session_prefix(text: &str) -> bool {
+     lowered.starts_with(ENVIRONMENT_CONTEXT_OPEN_TAG) || lowered.starts_with(TURN_ABORTED_OPEN_TAG)
+ }
+ 
+-/// Returns true if `text` starts with a session prefix marker (case-insensitive).
++/// Returns true if `content` starts with a session prefix marker (case-insensitive).
+ pub(crate) fn is_session_prefix_content(content: &[ContentItem]) -> bool {
+     if let [ContentItem::InputText { text }] = content {
+         is_session_prefix(text)

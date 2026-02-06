@@ -1,0 +1,12 @@
+diff --git a/codex-rs/linux-sandbox/Cargo.toml b/codex-rs/linux-sandbox/Cargo.toml
+index ff16a569f..f0de92142 100644
+--- a/codex-rs/linux-sandbox/Cargo.toml
++++ b/codex-rs/linux-sandbox/Cargo.toml
+@@ -34,7 +34,3 @@ tokio = { workspace = true, features = [
+     "rt-multi-thread",
+     "signal",
+ ] }
+-
+-[build-dependencies]
+-cc = "1"
+-pkg-config = "0.3"

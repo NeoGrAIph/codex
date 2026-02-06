@@ -1,0 +1,114 @@
+diff --git a/codex-rs/core/src/command_safety/is_safe_command.rs b/codex-rs/core/src/command_safety/is_safe_command.rs
+index e52079c74..98dcd2554 100644
+--- a/codex-rs/core/src/command_safety/is_safe_command.rs
++++ b/codex-rs/core/src/command_safety/is_safe_command.rs
+@@ -292,21 +292,21 @@ mod tests {
+         assert!(is_safe_to_call_with_exec(&vec_str(&[
+             "git",
+             "branch",
+-            "--show-current"
++            "--show-current",
+         ])));
+         assert!(is_safe_to_call_with_exec(&vec_str(&["base64"])));
+         assert!(is_safe_to_call_with_exec(&vec_str(&[
+-            "sed", "-n", "1,5p", "file.txt"
++            "sed", "-n", "1,5p", "file.txt",
+         ])));
+         assert!(is_safe_to_call_with_exec(&vec_str(&[
+             "nl",
+             "-nrz",
+-            "Cargo.toml"
++            "Cargo.toml",
+         ])));
+ 
+         // Safe `find` command (no unsafe options).
+         assert!(is_safe_to_call_with_exec(&vec_str(&[
+-            "find", ".", "-name", "file.txt"
++            "find", ".", "-name", "file.txt",
+         ])));
+ 
+         if cfg!(target_os = "linux") {
+@@ -321,12 +321,12 @@ mod tests {
+     #[test]
+     fn git_branch_mutating_flags_are_not_safe() {
+         assert!(!is_known_safe_command(&vec_str(&[
+-            "git", "branch", "-d", "feature"
++            "git", "branch", "-d", "feature",
+         ])));
+         assert!(!is_known_safe_command(&vec_str(&[
+             "git",
+             "branch",
+-            "new-branch"
++            "new-branch",
+         ])));
+     }
+ 
+@@ -335,11 +335,11 @@ mod tests {
+         use pretty_assertions::assert_eq;
+ 
+         assert_eq!(
+-            is_known_safe_command(&vec_str(&["git", "-C", ".", "branch", "--show-current"])),
++            is_known_safe_command(&vec_str(&["git", "-C", ".", "branch", "--show-current",])),
+             true
+         );
+         assert_eq!(
+-            is_known_safe_command(&vec_str(&["git", "-C", ".", "branch", "-d", "feature"])),
++            is_known_safe_command(&vec_str(&["git", "-C", ".", "branch", "-d", "feature",])),
+             false
+         );
+         assert_eq!(
+@@ -408,7 +408,7 @@ mod tests {
+         assert!(!is_safe_to_call_with_exec(&vec_str(&["foo"])));
+         assert!(!is_safe_to_call_with_exec(&vec_str(&["git", "fetch"])));
+         assert!(!is_safe_to_call_with_exec(&vec_str(&[
+-            "sed", "-n", "xp", "file.txt"
++            "sed", "-n", "xp", "file.txt",
+         ])));
+ 
+         // Unsafe `find` commands.
+@@ -507,23 +507,23 @@ mod tests {
+         assert!(is_known_safe_command(&vec_str(&[
+             "bash",
+             "-lc",
+-            "grep -R \"Cargo.toml\" -n"
++            "grep -R \"Cargo.toml\" -n",
+         ])));
+         assert!(is_known_safe_command(&vec_str(&[
+             "bash",
+             "-lc",
+-            "sed -n 1,5p file.txt"
++            "sed -n 1,5p file.txt",
+         ])));
+         assert!(is_known_safe_command(&vec_str(&[
+             "bash",
+             "-lc",
+-            "sed -n '1,5p' file.txt"
++            "sed -n '1,5p' file.txt",
+         ])));
+ 
+         assert!(is_known_safe_command(&vec_str(&[
+             "bash",
+             "-lc",
+-            "find . -name file.txt"
++            "find . -name file.txt",
+         ])));
+     }
+ 
+@@ -532,7 +532,7 @@ mod tests {
+         assert!(is_known_safe_command(&vec_str(&[
+             "bash",
+             "-lc",
+-            "grep -R \"Cargo.toml\" -n || true"
++            "grep -R \"Cargo.toml\" -n || true",
+         ])));
+         assert!(is_known_safe_command(&vec_str(&[
+             "bash",
+@@ -542,7 +542,7 @@ mod tests {
+         assert!(is_known_safe_command(&vec_str(&[
+             "bash",
+             "-lc",
+-            "echo 'hi' ; ls"
++            "echo 'hi' ; ls",
+         ])));
+         assert!(is_known_safe_command(&vec_str(&[
+             "bash",

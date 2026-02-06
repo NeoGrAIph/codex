@@ -1,0 +1,11 @@
+diff --git a/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__completed_mcp_tool_call_error_snapshot.snap b/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__completed_mcp_tool_call_error_snapshot.snap
+index 776f79207..bb0b826bb 100644
+--- a/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__completed_mcp_tool_call_error_snapshot.snap
++++ b/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__completed_mcp_tool_call_error_snapshot.snap
+@@ -1,6 +1,5 @@
+ ---
+ source: tui/src/history_cell.rs
+-assertion_line: 1817
+ expression: rendered
+ ---
+ • Called search.find_docs({"query":"ratatui styling","limit":3})

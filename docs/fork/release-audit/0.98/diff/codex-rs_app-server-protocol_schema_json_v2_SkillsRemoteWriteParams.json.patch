@@ -1,0 +1,24 @@
+diff --git a/codex-rs/app-server-protocol/schema/json/v2/SkillsRemoteWriteParams.json b/codex-rs/app-server-protocol/schema/json/v2/SkillsRemoteWriteParams.json
+deleted file mode 100644
+index 871a5a428..000000000
+--- a/codex-rs/app-server-protocol/schema/json/v2/SkillsRemoteWriteParams.json
++++ /dev/null
+@@ -1,17 +0,0 @@
+-{
+-  "$schema": "http://json-schema.org/draft-07/schema#",
+-  "properties": {
+-    "hazelnutId": {
+-      "type": "string"
+-    },
+-    "isPreload": {
+-      "type": "boolean"
+-    }
+-  },
+-  "required": [
+-    "hazelnutId",
+-    "isPreload"
+-  ],
+-  "title": "SkillsRemoteWriteParams",
+-  "type": "object"
+-}
+\ No newline at end of file

@@ -1,0 +1,9 @@
+diff --git a/codex-rs/vendor/bubblewrap/tests/use-as-subproject/README b/codex-rs/vendor/bubblewrap/tests/use-as-subproject/README
+deleted file mode 100644
+index 97d2e88eb..000000000
+--- a/codex-rs/vendor/bubblewrap/tests/use-as-subproject/README
++++ /dev/null
+@@ -1,3 +0,0 @@
+-This is a simple example of a project that uses bubblewrap as a
+-subproject. The intention is that if this project can successfully build
+-bubblewrap as a subproject, then so could Flatpak.

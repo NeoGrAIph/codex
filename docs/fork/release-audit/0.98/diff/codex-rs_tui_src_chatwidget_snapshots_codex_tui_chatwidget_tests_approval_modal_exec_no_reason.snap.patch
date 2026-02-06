@@ -1,0 +1,13 @@
+diff --git a/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__approval_modal_exec_no_reason.snap b/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__approval_modal_exec_no_reason.snap
+index 2bbe9aefc..04b278a12 100644
+--- a/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__approval_modal_exec_no_reason.snap
++++ b/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__approval_modal_exec_no_reason.snap
+@@ -2,6 +2,8 @@
+ source: tui/src/chatwidget/tests.rs
+ expression: terminal.backend().vt100().screen().contents()
+ ---
++
++
+   Would you like to run the following command?
+ 
+   $ echo hello world

@@ -1,0 +1,137 @@
+diff --git a/codex-rs/state/src/runtime.rs b/codex-rs/state/src/runtime.rs
+index 25c666fa6..4c843c3be 100644
+--- a/codex-rs/state/src/runtime.rs
++++ b/codex-rs/state/src/runtime.rs
+@@ -37,8 +37,7 @@ use std::sync::Arc;
+ use std::time::Duration;
+ use tracing::warn;
+ 
+-pub const STATE_DB_FILENAME: &str = "state";
+-pub const STATE_DB_VERSION: u32 = 2;
++pub const STATE_DB_FILENAME: &str = "state.sqlite";
+ 
+ const METRIC_DB_INIT: &str = "codex.db.init";
+ 
+@@ -59,8 +58,7 @@ impl StateRuntime {
+         otel: Option<OtelManager>,
+     ) -> anyhow::Result<Arc<Self>> {
+         tokio::fs::create_dir_all(&codex_home).await?;
+-        remove_legacy_state_files(&codex_home).await;
+-        let state_path = state_db_path(codex_home.as_path());
++        let state_path = codex_home.join(STATE_DB_FILENAME);
+         let existed = tokio::fs::try_exists(&state_path).await.unwrap_or(false);
+         let pool = match open_sqlite(&state_path).await {
+             Ok(db) => Arc::new(db),
+@@ -519,8 +517,17 @@ LIMIT ?
+         if tools.is_empty() {
+             return Ok(());
+         }
+-        let thread_id = thread_id.to_string();
+         let mut tx = self.pool.begin().await?;
++        let thread_id = thread_id.to_string();
++        let existing: Option<i64> =
++            sqlx::query_scalar("SELECT 1 FROM thread_dynamic_tools WHERE thread_id = ? LIMIT 1")
++                .bind(thread_id.as_str())
++                .fetch_optional(&mut *tx)
++                .await?;
++        if existing.is_some() {
++            tx.commit().await?;
++            return Ok(());
++        }
+         for (idx, tool) in tools.iter().enumerate() {
+             let position = i64::try_from(idx).unwrap_or(i64::MAX);
+             let input_schema = serde_json::to_string(&tool.input_schema)?;
+@@ -533,7 +540,6 @@ INSERT INTO thread_dynamic_tools (
+     description,
+     input_schema
+ ) VALUES (?, ?, ?, ?, ?)
+-ON CONFLICT(thread_id, position) DO NOTHING
+                 "#,
+             )
+             .bind(thread_id.as_str())
+@@ -725,77 +731,6 @@ async fn open_sqlite(path: &Path) -> anyhow::Result<SqlitePool> {
+     Ok(pool)
+ }
+ 
+-pub fn state_db_filename() -> String {
+-    format!("{STATE_DB_FILENAME}_{STATE_DB_VERSION}.sqlite")
+-}
+-
+-pub fn state_db_path(codex_home: &Path) -> PathBuf {
+-    codex_home.join(state_db_filename())
+-}
+-
+-async fn remove_legacy_state_files(codex_home: &Path) {
+-    let current_name = state_db_filename();
+-    let mut entries = match tokio::fs::read_dir(codex_home).await {
+-        Ok(entries) => entries,
+-        Err(err) => {
+-            warn!(
+-                "failed to read codex_home for state db cleanup {}: {err}",
+-                codex_home.display()
+-            );
+-            return;
+-        }
+-    };
+-    while let Ok(Some(entry)) = entries.next_entry().await {
+-        if !entry
+-            .file_type()
+-            .await
+-            .map(|file_type| file_type.is_file())
+-            .unwrap_or(false)
+-        {
+-            continue;
+-        }
+-        let file_name = entry.file_name();
+-        let file_name = file_name.to_string_lossy();
+-        if !should_remove_state_file(file_name.as_ref(), current_name.as_str()) {
+-            continue;
+-        }
+-
+-        let legacy_path = entry.path();
+-        if let Err(err) = tokio::fs::remove_file(&legacy_path).await {
+-            warn!(
+-                "failed to remove legacy state db file {}: {err}",
+-                legacy_path.display()
+-            );
+-        }
+-    }
+-}
+-
+-fn should_remove_state_file(file_name: &str, current_name: &str) -> bool {
+-    let mut base_name = file_name;
+-    for suffix in ["-wal", "-shm", "-journal"] {
+-        if let Some(stripped) = file_name.strip_suffix(suffix) {
+-            base_name = stripped;
+-            break;
+-        }
+-    }
+-    if base_name == current_name {
+-        return false;
+-    }
+-    let unversioned_name = format!("{STATE_DB_FILENAME}.sqlite");
+-    if base_name == unversioned_name {
+-        return true;
+-    }
+-
+-    let Some(version_with_extension) = base_name.strip_prefix(&format!("{STATE_DB_FILENAME}_"))
+-    else {
+-        return false;
+-    };
+-    let Some(version_suffix) = version_with_extension.strip_suffix(".sqlite") else {
+-        return false;
+-    };
+-    !version_suffix.is_empty() && version_suffix.chars().all(|ch| ch.is_ascii_digit())
+-}
+-
+ fn push_thread_filters<'a>(
+     builder: &mut QueryBuilder<'a, Sqlite>,
+     archived_only: bool,
+@@ -864,7 +799,6 @@ fn push_thread_order_and_limit(
+     builder.push(" LIMIT ");
+     builder.push_bind(limit as i64);
+ }
+-
+ #[cfg(test)]
+ mod tests {
+     use super::STATE_DB_FILENAME;

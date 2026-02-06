@@ -1,0 +1,7 @@
+diff --git a/codex-rs/vendor/bubblewrap/tests/use-as-subproject/dummy-config.h.in b/codex-rs/vendor/bubblewrap/tests/use-as-subproject/dummy-config.h.in
+deleted file mode 100644
+index 1d1e56a8c..000000000
+--- a/codex-rs/vendor/bubblewrap/tests/use-as-subproject/dummy-config.h.in
++++ /dev/null
+@@ -1 +0,0 @@
+-#error Should not use superproject generated config.h to compile bubblewrap

@@ -1,0 +1,7 @@
+diff --git a/codex-rs/vendor/bubblewrap/.dir-locals.el b/codex-rs/vendor/bubblewrap/.dir-locals.el
+deleted file mode 100644
+index 351404089..000000000
+--- a/codex-rs/vendor/bubblewrap/.dir-locals.el
++++ /dev/null
+@@ -1 +0,0 @@
+-((c-mode . ((indent-tabs-mode . nil) (c-file-style . "gnu"))))

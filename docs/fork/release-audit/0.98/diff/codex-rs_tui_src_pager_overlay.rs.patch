@@ -1,0 +1,21 @@
+diff --git a/codex-rs/tui/src/pager_overlay.rs b/codex-rs/tui/src/pager_overlay.rs
+index 58f15fa7f..5f3f79e32 100644
+--- a/codex-rs/tui/src/pager_overlay.rs
++++ b/codex-rs/tui/src/pager_overlay.rs
+@@ -17,6 +17,7 @@
+ 
+ use std::io::Result;
+ use std::sync::Arc;
++use std::time::Duration;
+ 
+ use crate::chatwidget::ActiveCellTranscriptKey;
+ use crate::history_cell::HistoryCell;
+@@ -298,7 +299,7 @@ impl PagerView {
+             }
+         }
+         tui.frame_requester()
+-            .schedule_frame_in(crate::tui::TARGET_FRAME_INTERVAL);
++            .schedule_frame_in(Duration::from_millis(16));
+         Ok(())
+     }
+ 

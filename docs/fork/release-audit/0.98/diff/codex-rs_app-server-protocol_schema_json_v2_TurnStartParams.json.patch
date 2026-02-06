@@ -1,0 +1,24 @@
+diff --git a/codex-rs/app-server-protocol/schema/json/v2/TurnStartParams.json b/codex-rs/app-server-protocol/schema/json/v2/TurnStartParams.json
+index be351a48e..35a87890a 100644
+--- a/codex-rs/app-server-protocol/schema/json/v2/TurnStartParams.json
++++ b/codex-rs/app-server-protocol/schema/json/v2/TurnStartParams.json
+@@ -53,7 +53,10 @@
+       "description": "Initial collaboration mode to use when the TUI starts.",
+       "enum": [
+         "plan",
+-        "default"
++        "code",
++        "pair_programming",
++        "execute",
++        "custom"
+       ],
+       "type": "string"
+     },
+@@ -66,7 +69,6 @@
+     },
+     "Personality": {
+       "enum": [
+-        "none",
+         "friendly",
+         "pragmatic"
+       ],

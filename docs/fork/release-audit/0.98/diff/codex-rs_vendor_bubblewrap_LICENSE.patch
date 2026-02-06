@@ -1,0 +1,8 @@
+diff --git a/codex-rs/vendor/bubblewrap/LICENSE b/codex-rs/vendor/bubblewrap/LICENSE
+deleted file mode 120000
+index d24842f3c..000000000
+--- a/codex-rs/vendor/bubblewrap/LICENSE
++++ /dev/null
+@@ -1 +0,0 @@
+-COPYING
+\ No newline at end of file

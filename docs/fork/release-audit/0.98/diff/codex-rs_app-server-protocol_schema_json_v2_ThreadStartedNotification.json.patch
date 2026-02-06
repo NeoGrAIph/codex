@@ -1,0 +1,23 @@
+diff --git a/codex-rs/app-server-protocol/schema/json/v2/ThreadStartedNotification.json b/codex-rs/app-server-protocol/schema/json/v2/ThreadStartedNotification.json
+index 44aca775c..ca484772f 100644
+--- a/codex-rs/app-server-protocol/schema/json/v2/ThreadStartedNotification.json
++++ b/codex-rs/app-server-protocol/schema/json/v2/ThreadStartedNotification.json
+@@ -508,6 +508,18 @@
+           "properties": {
+             "thread_spawn": {
+               "properties": {
++                "agent_name": {
++                  "type": [
++                    "string",
++                    "null"
++                  ]
++                },
++                "agent_type": {
++                  "type": [
++                    "string",
++                    "null"
++                  ]
++                },
+                 "depth": {
+                   "format": "int32",
+                   "type": "integer"

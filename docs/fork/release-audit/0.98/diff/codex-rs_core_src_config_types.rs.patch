@@ -1,0 +1,13 @@
+diff --git a/codex-rs/core/src/config/types.rs b/codex-rs/core/src/config/types.rs
+index 7ffcf3a8e..e949d869a 100644
+--- a/codex-rs/core/src/config/types.rs
++++ b/codex-rs/core/src/config/types.rs
+@@ -471,7 +471,7 @@ pub struct Tui {
+     #[serde(default = "default_true")]
+     pub show_tooltips: bool,
+ 
+-    /// Start the TUI in the specified collaboration mode (plan/default).
++    /// Start the TUI in the specified collaboration mode (plan/execute/etc.).
+     /// Defaults to unset.
+     #[serde(default)]
+     pub experimental_mode: Option<ModeKind>,

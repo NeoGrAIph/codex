@@ -1,0 +1,11 @@
+diff --git a/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__model_reasoning_selection_popup_extra_high_warning.snap b/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__model_reasoning_selection_popup_extra_high_warning.snap
+index 3eb172c10..2404dced5 100644
+--- a/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__model_reasoning_selection_popup_extra_high_warning.snap
++++ b/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__model_reasoning_selection_popup_extra_high_warning.snap
+@@ -1,6 +1,5 @@
+ ---
+ source: tui/src/chatwidget/tests.rs
+-assertion_line: 1548
+ expression: popup
+ ---
+   Select Reasoning Level for gpt-5.1-codex-max

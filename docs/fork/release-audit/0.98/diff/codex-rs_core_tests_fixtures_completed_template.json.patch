@@ -1,0 +1,22 @@
+diff --git a/codex-rs/core/tests/fixtures/completed_template.json b/codex-rs/core/tests/fixtures/completed_template.json
+new file mode 100644
+index 000000000..1774dc5e8
+--- /dev/null
++++ b/codex-rs/core/tests/fixtures/completed_template.json
+@@ -0,0 +1,16 @@
++[
++  {
++    "type": "response.completed",
++    "response": {
++      "id": "__ID__",
++      "usage": {
++        "input_tokens": 0,
++        "input_tokens_details": null,
++        "output_tokens": 0,
++        "output_tokens_details": null,
++        "total_tokens": 0
++      },
++      "output": []
++    }
++  }
++]

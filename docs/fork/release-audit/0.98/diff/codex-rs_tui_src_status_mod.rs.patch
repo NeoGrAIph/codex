@@ -1,0 +1,12 @@
+diff --git a/codex-rs/tui/src/status/mod.rs b/codex-rs/tui/src/status/mod.rs
+index 89c8daefd..0550762e3 100644
+--- a/codex-rs/tui/src/status/mod.rs
++++ b/codex-rs/tui/src/status/mod.rs
+@@ -5,6 +5,7 @@ mod helpers;
+ mod rate_limits;
+ 
+ pub(crate) use card::new_status_output;
++pub(crate) use helpers::context_left_label_spans;
+ pub(crate) use helpers::format_tokens_compact;
+ pub(crate) use rate_limits::RateLimitSnapshotDisplay;
+ pub(crate) use rate_limits::rate_limit_snapshot_display;

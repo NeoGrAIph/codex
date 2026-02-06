@@ -1,0 +1,828 @@
+diff --git a/codex-rs/core/src/tools/spec.rs b/codex-rs/core/src/tools/spec.rs
+index ddac191a9..023697f35 100644
+--- a/codex-rs/core/src/tools/spec.rs
++++ b/codex-rs/core/src/tools/spec.rs
+@@ -1,15 +1,14 @@
+-use crate::agent::AgentRole;
+ use crate::client_common::tools::ResponsesApiTool;
+ use crate::client_common::tools::ToolSpec;
+ use crate::features::Feature;
+ use crate::features::Features;
++use crate::tool_allowlist::ToolAllowlist;
+ use crate::tools::handlers::PLAN_TOOL;
+ use crate::tools::handlers::apply_patch::create_apply_patch_freeform_tool;
+ use crate::tools::handlers::apply_patch::create_apply_patch_json_tool;
+ use crate::tools::handlers::collab::DEFAULT_WAIT_TIMEOUT_MS;
+ use crate::tools::handlers::collab::MAX_WAIT_TIMEOUT_MS;
+ use crate::tools::handlers::collab::MIN_WAIT_TIMEOUT_MS;
+-use crate::tools::handlers::request_user_input_tool_description;
+ use crate::tools::registry::ToolRegistryBuilder;
+ use codex_protocol::config_types::WebSearchMode;
+ use codex_protocol::dynamic_tools::DynamicToolSpec;
+@@ -24,6 +23,9 @@ use serde_json::json;
+ use std::collections::BTreeMap;
+ use std::collections::HashMap;
+ 
++mod agent_tools;
++use agent_tools::register_agent_tools;
++
+ #[derive(Debug, Clone)]
+ pub(crate) struct ToolsConfig {
+     pub shell_type: ConfigShellToolType,
+@@ -33,12 +35,22 @@ pub(crate) struct ToolsConfig {
+     pub collaboration_modes_tools: bool,
+     pub request_rule_enabled: bool,
+     pub experimental_supported_tools: Vec<String>,
++    pub agent_registry_present: bool,
++    pub agent_descriptions: Option<String>,
++    pub agent_name_descriptions: Option<String>,
++    pub tool_allowlist: Option<ToolAllowlist>,
++    pub tool_denylist: Option<ToolAllowlist>,
+ }
+ 
+ pub(crate) struct ToolsConfigParams<'a> {
+     pub(crate) model_info: &'a ModelInfo,
+     pub(crate) features: &'a Features,
+     pub(crate) web_search_mode: Option<WebSearchMode>,
++    pub(crate) tool_allowlist: Option<&'a [String]>,
++    pub(crate) tool_denylist: Option<&'a [String]>,
++    pub(crate) agent_registry_present: bool,
++    pub(crate) agent_descriptions: Option<String>,
++    pub(crate) agent_name_descriptions: Option<String>,
+ }
+ 
+ impl ToolsConfig {
+@@ -47,9 +59,14 @@ impl ToolsConfig {
+             model_info,
+             features,
+             web_search_mode,
++            tool_allowlist,
++            tool_denylist,
++            agent_registry_present,
++            agent_descriptions,
++            agent_name_descriptions,
+         } = params;
+         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
+-        let include_collab_tools = features.enabled(Feature::Collab);
++        let include_collab_tools = features.enabled(Feature::FnMultiAgents);
+         let include_collaboration_modes_tools = features.enabled(Feature::CollaborationModes);
+         let request_rule_enabled = features.enabled(Feature::RequestRule);
+ 
+@@ -86,6 +103,11 @@ impl ToolsConfig {
+             collaboration_modes_tools: include_collaboration_modes_tools,
+             request_rule_enabled,
+             experimental_supported_tools: model_info.experimental_supported_tools.clone(),
++            agent_registry_present: *agent_registry_present,
++            agent_descriptions: agent_descriptions.clone(),
++            agent_name_descriptions: agent_name_descriptions.clone(),
++            tool_allowlist: tool_allowlist.map(ToolAllowlist::from_patterns),
++            tool_denylist: tool_denylist.map(ToolAllowlist::from_patterns),
+         }
+     }
+ }
+@@ -446,7 +468,10 @@ fn create_view_image_tool() -> ToolSpec {
+     })
+ }
+ 
+-fn create_spawn_agent_tool() -> ToolSpec {
++fn create_spawn_agent_tool(
++    agent_descriptions: Option<&str>,
++    agent_name_descriptions: Option<&str>,
++) -> ToolSpec {
+     let mut properties = BTreeMap::new();
+     properties.insert(
+         "message".to_string(),
+@@ -457,13 +482,61 @@ fn create_spawn_agent_tool() -> ToolSpec {
+             ),
+         },
+     );
++    let agent_type_description = match agent_descriptions {
++        Some(descriptions) if !descriptions.is_empty() => format!(
++            "Optional agent type ({descriptions}). Use an explicit type when delegating."
++        ),
++        _ => "Agent type to spawn (e.g., worker, reviewer, explorer). Use list_agents to see all available."
++            .to_string(),
++    };
+     properties.insert(
+         "agent_type".to_string(),
+         JsonSchema::String {
+-            description: Some(format!(
+-                "Optional agent type ({}). Use an explicit type when delegating.",
+-                AgentRole::enum_values().join(", ")
+-            )),
++            description: Some(agent_type_description),
++        },
++    );
++    if let Some(agent_name_descriptions) = agent_name_descriptions {
++        let agent_name_description = if agent_name_descriptions.is_empty() {
++            "Optional agent_name within agent_type for alternate instructions. Use list_agents to see all available."
++                .to_string()
++        } else {
++            format!(
++                "Optional agent_name within agent_type for alternate instructions. Available: {agent_name_descriptions}. Use list_agents for full details."
++            )
++        };
++        properties.insert(
++            "agent_name".to_string(),
++            JsonSchema::String {
++                description: Some(agent_name_description),
++            },
++        );
++    } else if agent_descriptions.is_some() {
++        properties.insert(
++            "agent_name".to_string(),
++            JsonSchema::String {
++                description: Some(
++                    "Optional agent_name within agent_type for alternate instructions. Use list_agents to see all available."
++                        .to_string(),
++                ),
++            },
++        );
++    }
++    properties.insert(
++        "model".to_string(),
++        JsonSchema::String {
++            description: Some(
++                "Optional model override for the spawned agent (highest priority). If provided, must match an available model."
++                    .to_string(),
++            ),
++        },
++    );
++    properties.insert(
++        "reasoning_effort".to_string(),
++        JsonSchema::String {
++            description: Some(
++                "Optional reasoning effort override for the spawned agent (highest priority). Allowed: none, minimal, low, medium, high, xhigh."
++                    .to_string(),
++            ),
+         },
+     );
+ 
+@@ -624,7 +697,9 @@ fn create_request_user_input_tool() -> ToolSpec {
+ 
+     ToolSpec::Function(ResponsesApiTool {
+         name: "request_user_input".to_string(),
+-        description: request_user_input_tool_description(),
++        description:
++            "Request user input for one to three short questions and wait for the response."
++                .to_string(),
+         strict: false,
+         parameters: JsonSchema::Object {
+             properties,
+@@ -1047,6 +1122,42 @@ pub fn create_tools_json_for_responses_api(
+ 
+     Ok(tools_json)
+ }
++/// Returns JSON values that are compatible with Function Calling in the
++/// Chat Completions API:
++/// https://platform.openai.com/docs/guides/function-calling?api-mode=chat
++pub(crate) fn create_tools_json_for_chat_completions_api(
++    tools: &[ToolSpec],
++) -> crate::error::Result<Vec<serde_json::Value>> {
++    // We start with the JSON for the Responses API and than rewrite it to match
++    // the chat completions tool call format.
++    let responses_api_tools_json = create_tools_json_for_responses_api(tools)?;
++    let tools_json = responses_api_tools_json
++        .into_iter()
++        .filter_map(|mut tool| {
++            if tool.get("type") != Some(&serde_json::Value::String("function".to_string())) {
++                return None;
++            }
++
++            if let Some(map) = tool.as_object_mut() {
++                let name = map
++                    .get("name")
++                    .and_then(|v| v.as_str())
++                    .unwrap_or_default()
++                    .to_string();
++                // Remove "type" field as it is not needed in chat completions.
++                map.remove("type");
++                Some(json!({
++                    "type": "function",
++                    "name": name,
++                    "function": map,
++                }))
++            } else {
++                None
++            }
++        })
++        .collect::<Vec<serde_json::Value>>();
++    Ok(tools_json)
++}
+ 
+ pub(crate) fn mcp_tool_to_openai_tool(
+     fully_qualified_name: String,
+@@ -1219,6 +1330,33 @@ fn sanitize_json_schema(value: &mut JsonValue) {
+     }
+ }
+ 
++fn tool_allowed(config: &ToolsConfig, tool_name: &str) -> bool {
++    if let Some(allowlist) = &config.tool_allowlist
++        && !allowlist.allows(tool_name)
++        && !shell_alias_allows_tool(config, allowlist, tool_name)
++    {
++        return false;
++    }
++    if let Some(denylist) = &config.tool_denylist
++        && denylist.allows(tool_name)
++    {
++        return false;
++    }
++    true
++}
++
++fn shell_alias_allows_tool(
++    config: &ToolsConfig,
++    allowlist: &ToolAllowlist,
++    tool_name: &str,
++) -> bool {
++    if config.shell_type != ConfigShellToolType::UnifiedExec {
++        return false;
++    }
++    matches!(tool_name, "exec_command" | "write_stdin")
++        && (allowlist.allows("shell_command") || allowlist.allows("shell"))
++}
++
+ /// Builds the tool registry builder while collecting tool specs for later serialization.
+ pub(crate) fn build_specs(
+     config: &ToolsConfig,
+@@ -1257,19 +1395,13 @@ pub(crate) fn build_specs(
+ 
+     match &config.shell_type {
+         ConfigShellToolType::Default => {
+-            builder.push_spec_with_parallel_support(
+-                create_shell_tool(config.request_rule_enabled),
+-                true,
+-            );
++            builder.push_spec(create_shell_tool(config.request_rule_enabled));
+         }
+         ConfigShellToolType::Local => {
+-            builder.push_spec_with_parallel_support(ToolSpec::LocalShell {}, true);
++            builder.push_spec(ToolSpec::LocalShell {});
+         }
+         ConfigShellToolType::UnifiedExec => {
+-            builder.push_spec_with_parallel_support(
+-                create_exec_command_tool(config.request_rule_enabled),
+-                true,
+-            );
++            builder.push_spec(create_exec_command_tool(config.request_rule_enabled));
+             builder.push_spec(create_write_stdin_tool());
+             builder.register_handler("exec_command", unified_exec_handler.clone());
+             builder.register_handler("write_stdin", unified_exec_handler);
+@@ -1278,10 +1410,7 @@ pub(crate) fn build_specs(
+             // Do nothing.
+         }
+         ConfigShellToolType::ShellCommand => {
+-            builder.push_spec_with_parallel_support(
+-                create_shell_command_tool(config.request_rule_enabled),
+-                true,
+-            );
++            builder.push_spec(create_shell_command_tool(config.request_rule_enabled));
+         }
+     }
+ 
+@@ -1348,6 +1477,8 @@ pub(crate) fn build_specs(
+         builder.register_handler("list_dir", list_dir_handler);
+     }
+ 
++    register_agent_tools(&mut builder, config);
++
+     if config
+         .experimental_supported_tools
+         .contains(&"test_sync_tool".to_string())
+@@ -1376,7 +1507,10 @@ pub(crate) fn build_specs(
+ 
+     if config.collab_tools {
+         let collab_handler = Arc::new(CollabHandler);
+-        builder.push_spec(create_spawn_agent_tool());
++        builder.push_spec(create_spawn_agent_tool(
++            config.agent_descriptions.as_deref(),
++            config.agent_name_descriptions.as_deref(),
++        ));
+         builder.push_spec(create_send_input_tool());
+         builder.push_spec(create_wait_tool());
+         builder.push_spec(create_close_agent_tool());
+@@ -1420,6 +1554,23 @@ pub(crate) fn build_specs(
+         }
+     }
+ 
++    let before_tool_filter = if config.tool_allowlist.is_some() || config.tool_denylist.is_some() {
++        Some(builder.spec_names())
++    } else {
++        None
++    };
++    if config.tool_allowlist.is_some() || config.tool_denylist.is_some() {
++        builder.retain_tools(|tool_name| tool_allowed(config, tool_name));
++        if let Some(before_names) = before_tool_filter {
++            let after_names = builder.spec_names();
++            if !before_names.is_empty() && after_names.is_empty() {
++                tracing::warn!(
++                    "tool allowlist/denylist filtered out all tools; check agent allowlist"
++                );
++            }
++        }
++    }
++
+     builder
+ }
+ 
+@@ -1430,6 +1581,7 @@ mod tests {
+     use crate::models_manager::manager::ModelsManager;
+     use crate::tools::registry::ConfiguredToolSpec;
+     use pretty_assertions::assert_eq;
++    use std::collections::HashSet;
+ 
+     use super::*;
+ 
+@@ -1504,6 +1656,22 @@ mod tests {
+         }
+     }
+ 
++    fn spawn_agent_schema_has_agent_name(tools: &[ConfiguredToolSpec]) -> bool {
++        let Some(tool) = tools
++            .iter()
++            .find(|tool| tool_name(&tool.spec) == "spawn_agent")
++        else {
++            return false;
++        };
++        let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = &tool.spec else {
++            panic!("unexpected spawn_agent spec: {:?}", tool.spec);
++        };
++        match parameters {
++            JsonSchema::Object { properties, .. } => properties.contains_key("agent_name"),
++            other => panic!("unexpected spawn_agent schema: {other:?}"),
++        }
++    }
++
+     fn shell_tool_name(config: &ToolsConfig) -> Option<&'static str> {
+         match config.shell_type {
+             ConfigShellToolType::Default => Some("shell"),
+@@ -1570,6 +1738,11 @@ mod tests {
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Live),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+         let (tools, _) = build_specs(&config, None, &[]).build();
+ 
+@@ -1628,12 +1801,17 @@ mod tests {
+         let config = test_config();
+         let model_info = ModelsManager::construct_model_info_offline("gpt-5-codex", &config);
+         let mut features = Features::with_defaults();
+-        features.enable(Feature::Collab);
++        features.enable(Feature::FnMultiAgents);
+         features.enable(Feature::CollaborationModes);
+         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+         let (tools, _) = build_specs(&tools_config, None, &[]).build();
+         assert_contains_tool_names(
+@@ -1652,6 +1830,11 @@ mod tests {
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+         let (tools, _) = build_specs(&tools_config, None, &[]).build();
+         assert!(
+@@ -1664,11 +1847,125 @@ mod tests {
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
++        });
++        let (tools, _) = build_specs(&tools_config, None, &[]).build();
++        assert_contains_tool_names(&tools, &["request_user_input"]);
++    }
++
++    #[test]
++    fn spawn_agent_schema_gates_agent_name_on_registry_presence() {
++        let config = test_config();
++        let model_info = ModelsManager::construct_model_info_offline("gpt-5-codex", &config);
++        let mut features = Features::with_defaults();
++        features.enable(Feature::FnMultiAgents);
++
++        let tools_config = ToolsConfig::new(&ToolsConfigParams {
++            model_info: &model_info,
++            features: &features,
++            web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
++        });
++        let (tools, _) = build_specs(&tools_config, None, &[]).build();
++        assert!(!spawn_agent_schema_has_agent_name(&tools));
++
++        let tools_config = ToolsConfig::new(&ToolsConfigParams {
++            model_info: &model_info,
++            features: &features,
++            web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: true,
++            agent_descriptions: Some(
++                "{ \"name\": \"worker\", \"description\": \"Use for tests\" }".to_string(),
++            ),
++            agent_name_descriptions: Some(
++                "{ \"agent_type\": \"worker\", \"agent_names\": [{ \"name\": \"strict\", \"description\": \"Strict mode\" }] }"
++                    .to_string(),
++            ),
++        });
++        let (tools, _) = build_specs(&tools_config, None, &[]).build();
++        assert!(spawn_agent_schema_has_agent_name(&tools));
++    }
++
++    #[test]
++    fn tool_allowlist_and_denylist_filter_specs() {
++        let config = test_config();
++        let model_info = ModelsManager::construct_model_info_offline("gpt-5-codex", &config);
++        let mut features = Features::with_defaults();
++        features.enable(Feature::CollaborationModes);
++
++        let allowlist = vec!["update_plan".to_string(), "request_user_input".to_string()];
++        let tools_config = ToolsConfig::new(&ToolsConfigParams {
++            model_info: &model_info,
++            features: &features,
++            web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: Some(&allowlist),
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
++        });
++        let (tools, _) = build_specs(&tools_config, None, &[]).build();
++        let actual: HashSet<String> = tools
++            .iter()
++            .map(|tool| tool.spec.name().to_string())
++            .collect();
++        let expected: HashSet<String> = ["update_plan", "request_user_input"]
++            .into_iter()
++            .map(ToString::to_string)
++            .collect();
++        assert_eq!(actual, expected);
++
++        let denylist = vec!["update_plan".to_string()];
++        let tools_config = ToolsConfig::new(&ToolsConfigParams {
++            model_info: &model_info,
++            features: &features,
++            web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: None,
++            tool_denylist: Some(&denylist),
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+         let (tools, _) = build_specs(&tools_config, None, &[]).build();
++        assert!(
++            !tools.iter().any(|tool| tool.spec.name() == "update_plan"),
++            "update_plan should be removed by denylist"
++        );
+         assert_contains_tool_names(&tools, &["request_user_input"]);
+     }
+ 
++    #[test]
++    fn tool_allowlist_maps_shell_command_to_unified_exec() {
++        let config = test_config();
++        let model_info = ModelsManager::construct_model_info_offline("gpt-5-codex", &config);
++        let mut features = Features::with_defaults();
++        features.enable(Feature::UnifiedExec);
++
++        let allowlist = vec!["shell_command".to_string()];
++        let tools_config = ToolsConfig::new(&ToolsConfigParams {
++            model_info: &model_info,
++            features: &features,
++            web_search_mode: None,
++            tool_allowlist: Some(&allowlist),
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
++        });
++        let (tools, _) = build_specs(&tools_config, None, &[]).build();
++        assert_contains_tool_names(&tools, &["exec_command", "write_stdin"]);
++    }
++
+     fn assert_model_tools(
+         model_slug: &str,
+         features: &Features,
+@@ -1681,28 +1978,17 @@ mod tests {
+             model_info: &model_info,
+             features,
+             web_search_mode,
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+         let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), &[]).build();
+         let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
+         assert_eq!(&tool_names, &expected_tools,);
+     }
+ 
+-    fn assert_default_model_tools(
+-        model_slug: &str,
+-        features: &Features,
+-        web_search_mode: Option<WebSearchMode>,
+-        shell_tool: &'static str,
+-        expected_tail: &[&str],
+-    ) {
+-        let mut expected = if features.enabled(Feature::UnifiedExec) {
+-            vec!["exec_command", "write_stdin"]
+-        } else {
+-            vec![shell_tool]
+-        };
+-        expected.extend(expected_tail);
+-        assert_model_tools(model_slug, features, web_search_mode, &expected);
+-    }
+-
+     #[test]
+     fn web_search_mode_cached_sets_external_web_access_false() {
+         let config = test_config();
+@@ -1713,6 +1999,11 @@ mod tests {
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+         let (tools, _) = build_specs(&tools_config, None, &[]).build();
+ 
+@@ -1735,6 +2026,11 @@ mod tests {
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Live),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+         let (tools, _) = build_specs(&tools_config, None, &[]).build();
+ 
+@@ -1751,12 +2047,12 @@ mod tests {
+     fn test_build_specs_gpt5_codex_default() {
+         let mut features = Features::with_defaults();
+         features.enable(Feature::CollaborationModes);
+-        assert_default_model_tools(
++        assert_model_tools(
+             "gpt-5-codex",
+             &features,
+             Some(WebSearchMode::Cached),
+-            "shell_command",
+             &[
++                "shell_command",
+                 "list_mcp_resources",
+                 "list_mcp_resource_templates",
+                 "read_mcp_resource",
+@@ -1773,12 +2069,12 @@ mod tests {
+     fn test_build_specs_gpt51_codex_default() {
+         let mut features = Features::with_defaults();
+         features.enable(Feature::CollaborationModes);
+-        assert_default_model_tools(
++        assert_model_tools(
+             "gpt-5.1-codex",
+             &features,
+             Some(WebSearchMode::Cached),
+-            "shell_command",
+             &[
++                "shell_command",
+                 "list_mcp_resources",
+                 "list_mcp_resource_templates",
+                 "read_mcp_resource",
+@@ -1843,12 +2139,12 @@ mod tests {
+     fn test_codex_mini_defaults() {
+         let mut features = Features::with_defaults();
+         features.enable(Feature::CollaborationModes);
+-        assert_default_model_tools(
++        assert_model_tools(
+             "codex-mini-latest",
+             &features,
+             Some(WebSearchMode::Cached),
+-            "local_shell",
+             &[
++                "local_shell",
+                 "list_mcp_resources",
+                 "list_mcp_resource_templates",
+                 "read_mcp_resource",
+@@ -1864,12 +2160,12 @@ mod tests {
+     fn test_codex_5_1_mini_defaults() {
+         let mut features = Features::with_defaults();
+         features.enable(Feature::CollaborationModes);
+-        assert_default_model_tools(
++        assert_model_tools(
+             "gpt-5.1-codex-mini",
+             &features,
+             Some(WebSearchMode::Cached),
+-            "shell_command",
+             &[
++                "shell_command",
+                 "list_mcp_resources",
+                 "list_mcp_resource_templates",
+                 "read_mcp_resource",
+@@ -1886,12 +2182,12 @@ mod tests {
+     fn test_gpt_5_defaults() {
+         let mut features = Features::with_defaults();
+         features.enable(Feature::CollaborationModes);
+-        assert_default_model_tools(
++        assert_model_tools(
+             "gpt-5",
+             &features,
+             Some(WebSearchMode::Cached),
+-            "shell",
+             &[
++                "shell",
+                 "list_mcp_resources",
+                 "list_mcp_resource_templates",
+                 "read_mcp_resource",
+@@ -1907,12 +2203,12 @@ mod tests {
+     fn test_gpt_5_1_defaults() {
+         let mut features = Features::with_defaults();
+         features.enable(Feature::CollaborationModes);
+-        assert_default_model_tools(
++        assert_model_tools(
+             "gpt-5.1",
+             &features,
+             Some(WebSearchMode::Cached),
+-            "shell_command",
+             &[
++                "shell_command",
+                 "list_mcp_resources",
+                 "list_mcp_resource_templates",
+                 "read_mcp_resource",
+@@ -1981,6 +2277,11 @@ mod tests {
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Live),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+         let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), &[]).build();
+ 
+@@ -2003,10 +2304,15 @@ mod tests {
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+         let (tools, _) = build_specs(&tools_config, None, &[]).build();
+ 
+-        assert!(find_tool(&tools, "exec_command").supports_parallel_tool_calls);
++        assert!(!find_tool(&tools, "exec_command").supports_parallel_tool_calls);
+         assert!(!find_tool(&tools, "write_stdin").supports_parallel_tool_calls);
+         assert!(find_tool(&tools, "grep_files").supports_parallel_tool_calls);
+         assert!(find_tool(&tools, "list_dir").supports_parallel_tool_calls);
+@@ -2022,6 +2328,11 @@ mod tests {
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+         let (tools, _) = build_specs(&tools_config, None, &[]).build();
+ 
+@@ -2053,6 +2364,11 @@ mod tests {
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Live),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+         let (tools, _) = build_specs(
+             &tools_config,
+@@ -2138,6 +2454,11 @@ mod tests {
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+ 
+         // Intentionally construct a map with keys that would sort alphabetically.
+@@ -2182,6 +2503,11 @@ mod tests {
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+ 
+         let (tools, _) = build_specs(
+@@ -2234,6 +2560,11 @@ mod tests {
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+ 
+         let (tools, _) = build_specs(
+@@ -2283,6 +2614,11 @@ mod tests {
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+ 
+         let (tools, _) = build_specs(
+@@ -2334,6 +2670,11 @@ mod tests {
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+ 
+         let (tools, _) = build_specs(
+@@ -2443,6 +2784,11 @@ Examples of valid command strings:
+             model_info: &model_info,
+             features: &features,
+             web_search_mode: Some(WebSearchMode::Cached),
++            tool_allowlist: None,
++            tool_denylist: None,
++            agent_registry_present: false,
++            agent_descriptions: None,
++            agent_name_descriptions: None,
+         });
+         let (tools, _) = build_specs(
+             &tools_config,
+@@ -2566,5 +2912,26 @@ Examples of valid command strings:
+                 },
+             })]
+         );
++
++        let tools_json = create_tools_json_for_chat_completions_api(&tools).unwrap();
++
++        assert_eq!(
++            tools_json,
++            vec![json!({
++                "type": "function",
++                "name": "demo",
++                "function": {
++                    "name": "demo",
++                    "description": "A demo tool",
++                    "strict": false,
++                    "parameters": {
++                        "type": "object",
++                        "properties": {
++                            "foo": { "type": "string" }
++                        },
++                    },
++                }
++            })]
++        );
+     }
+ }

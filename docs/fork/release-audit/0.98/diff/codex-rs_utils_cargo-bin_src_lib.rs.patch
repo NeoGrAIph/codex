@@ -1,0 +1,83 @@
+diff --git a/codex-rs/utils/cargo-bin/src/lib.rs b/codex-rs/utils/cargo-bin/src/lib.rs
+index 6517a77c9..0e1c42157 100644
+--- a/codex-rs/utils/cargo-bin/src/lib.rs
++++ b/codex-rs/utils/cargo-bin/src/lib.rs
+@@ -63,7 +63,14 @@ pub fn cargo_bin(name: &str) -> Result<PathBuf, CargoBinError> {
+         Err(err) => Err(CargoBinError::NotFound {
+             name: name.to_owned(),
+             env_keys,
+-            fallback: format!("assert_cmd fallback failed: {err}"),
++            fallback: match try_build_bin(name) {
++                Ok(path) => return Ok(path),
++                Err(build_err) => {
++                    format!(
++                        "assert_cmd fallback failed: {err}; cargo build fallback failed: {build_err}"
++                    )
++                }
++            },
+         }),
+     }
+ }
+@@ -85,6 +92,62 @@ pub fn runfiles_available() -> bool {
+     std::env::var_os(RUNFILES_MANIFEST_ONLY_ENV).is_some()
+ }
+ 
++fn try_build_bin(name: &str) -> Result<PathBuf, String> {
++    let workspace_root = workspace_root().map_err(|err| err.to_string())?;
++    let status = std::process::Command::new("cargo")
++        .arg("build")
++        .arg("--bin")
++        .arg(name)
++        .current_dir(&workspace_root)
++        .status()
++        .map_err(|err| format!("failed to run cargo build: {err}"))?;
++    if !status.success() {
++        return Err(format!("cargo build failed with status {status}"));
++    }
++
++    let target_dir = cargo_target_dir(&workspace_root);
++    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
++    let exe_name = if cfg!(windows) {
++        format!("{name}.exe")
++    } else {
++        name.to_string()
++    };
++    let candidate = target_dir.join(profile).join(exe_name);
++    if candidate.exists() {
++        Ok(candidate)
++    } else {
++        Err(format!(
++            "expected binary at {}, but it does not exist",
++            candidate.display()
++        ))
++    }
++}
++
++fn workspace_root() -> std::io::Result<PathBuf> {
++    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
++    let workspace_root = manifest_dir
++        .parent()
++        .and_then(Path::parent)
++        .ok_or_else(|| {
++            std::io::Error::new(
++                std::io::ErrorKind::NotFound,
++                "failed to resolve workspace root from CARGO_MANIFEST_DIR",
++            )
++        })?;
++    Ok(workspace_root.to_path_buf())
++}
++
++fn cargo_target_dir(workspace_root: &Path) -> PathBuf {
++    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
++        .map(PathBuf::from)
++        .unwrap_or_else(|| workspace_root.join("target"));
++    if target_dir.is_absolute() {
++        target_dir
++    } else {
++        workspace_root.join(target_dir)
++    }
++}
++
+ fn resolve_bin_from_env(key: &str, value: OsString) -> Result<PathBuf, CargoBinError> {
+     let raw = PathBuf::from(&value);
+     if runfiles_available() {

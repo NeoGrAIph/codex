@@ -1,0 +1,8 @@
+diff --git a/codex-rs/vendor/bubblewrap/tests/use-as-subproject/.gitignore b/codex-rs/vendor/bubblewrap/tests/use-as-subproject/.gitignore
+deleted file mode 100644
+index 371a7d97b..000000000
+--- a/codex-rs/vendor/bubblewrap/tests/use-as-subproject/.gitignore
++++ /dev/null
+@@ -1,2 +0,0 @@
+-/_build/
+-/subprojects/

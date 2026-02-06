@@ -1,0 +1,13 @@
+diff --git a/codex-rs/codex-api/src/common.rs b/codex-rs/codex-api/src/common.rs
+index f1a996f12..40f386455 100644
+--- a/codex-rs/codex-api/src/common.rs
++++ b/codex-rs/codex-api/src/common.rs
+@@ -14,7 +14,7 @@ use std::task::Context;
+ use std::task::Poll;
+ use tokio::sync::mpsc;
+ 
+-/// Canonical prompt input for Responses endpoints.
++/// Canonical prompt input for Chat and Responses endpoints.
+ #[derive(Debug, Clone)]
+ pub struct Prompt {
+     /// Fully-resolved system instructions for this turn.

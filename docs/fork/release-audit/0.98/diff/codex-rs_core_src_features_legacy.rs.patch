@@ -1,0 +1,15 @@
+diff --git a/codex-rs/core/src/features/legacy.rs b/codex-rs/core/src/features/legacy.rs
+index 0c0f75714..a8f6186ed 100644
+--- a/codex-rs/core/src/features/legacy.rs
++++ b/codex-rs/core/src/features/legacy.rs
+@@ -13,6 +13,10 @@ const ALIASES: &[Alias] = &[
+         legacy_key: "connectors",
+         feature: Feature::Apps,
+     },
++    Alias {
++        legacy_key: "collab",
++        feature: Feature::FnMultiAgents,
++    },
+     Alias {
+         legacy_key: "enable_experimental_windows_sandbox",
+         feature: Feature::WindowsSandbox,

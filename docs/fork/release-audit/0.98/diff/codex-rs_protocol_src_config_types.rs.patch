@@ -1,0 +1,70 @@
+diff --git a/codex-rs/protocol/src/config_types.rs b/codex-rs/protocol/src/config_types.rs
+index 7586212ad..9af0aa21e 100644
+--- a/codex-rs/protocol/src/config_types.rs
++++ b/codex-rs/protocol/src/config_types.rs
+@@ -96,7 +96,6 @@ pub enum WindowsSandboxLevel {
+ #[serde(rename_all = "lowercase")]
+ #[strum(serialize_all = "lowercase")]
+ pub enum Personality {
+-    None,
+     Friendly,
+     Pragmatic,
+ }
+@@ -174,23 +173,12 @@ pub enum AltScreenMode {
+ pub enum ModeKind {
+     Plan,
+     #[default]
+-    #[serde(
+-        alias = "code",
+-        alias = "pair_programming",
+-        alias = "execute",
+-        alias = "custom"
+-    )]
++    #[serde(alias = "code")]
+     Default,
+-    #[doc(hidden)]
+-    #[serde(skip_serializing, skip_deserializing)]
+-    #[schemars(skip)]
+-    #[ts(skip)]
+     PairProgramming,
+-    #[doc(hidden)]
+-    #[serde(skip_serializing, skip_deserializing)]
+-    #[schemars(skip)]
+-    #[ts(skip)]
+     Execute,
++    // === FORK: Preserve Custom collaboration mode (used by the fork to represent user-provided instructions).
++    Custom,
+ }
+ 
+ pub const TUI_VISIBLE_COLLABORATION_MODES: [ModeKind; 2] = [ModeKind::Default, ModeKind::Plan];
+@@ -202,6 +190,7 @@ impl ModeKind {
+             Self::Default => "Default",
+             Self::PairProgramming => "Pair Programming",
+             Self::Execute => "Execute",
++            Self::Custom => "Custom",
+         }
+     }
+ 
+@@ -338,12 +327,9 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn mode_kind_deserializes_alias_values_to_default() {
+-        for alias in ["code", "pair_programming", "execute", "custom"] {
+-            let json = format!("\"{alias}\"");
+-            let mode: ModeKind = serde_json::from_str(&json).expect("deserialize mode");
+-            assert_eq!(ModeKind::Default, mode);
+-        }
++    fn mode_kind_deserializes_code_alias_to_default() {
++        let mode: ModeKind = serde_json::from_str("\"code\"").expect("deserialize mode");
++        assert_eq!(ModeKind::Default, mode);
+     }
+ 
+     #[test]
+@@ -357,5 +343,6 @@ mod tests {
+ 
+         assert!(!ModeKind::PairProgramming.is_tui_visible());
+         assert!(!ModeKind::Execute.is_tui_visible());
++        assert!(!ModeKind::Custom.is_tui_visible());
+     }
+ }

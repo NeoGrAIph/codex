@@ -1,0 +1,9 @@
+diff --git a/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__exec_approval_history_decision_aborted_multiline.snap b/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__exec_approval_history_decision_aborted_multiline.snap
+index d35cb1759..5aee3b284 100644
+--- a/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__exec_approval_history_decision_aborted_multiline.snap
++++ b/codex-rs/tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__exec_approval_history_decision_aborted_multiline.snap
+@@ -3,4 +3,3 @@ source: tui/src/chatwidget/tests.rs
+ expression: lines_to_single_string(&aborted_multi)
+ ---
+ ✗ You canceled the request to run echo line1 ...
+-

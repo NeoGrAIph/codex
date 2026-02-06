@@ -1,0 +1,13 @@
+diff --git a/codex-rs/app-server/src/filters.rs b/codex-rs/app-server/src/filters.rs
+index bd784c3dc..fbefd0df5 100644
+--- a/codex-rs/app-server/src/filters.rs
++++ b/codex-rs/app-server/src/filters.rs
+@@ -133,6 +133,8 @@ mod tests {
+         let spawn = CoreSessionSource::SubAgent(CoreSubAgentSource::ThreadSpawn {
+             parent_thread_id,
+             depth: 1,
++            agent_type: None,
++            agent_name: None,
+         });
+ 
+         assert!(source_kind_matches(

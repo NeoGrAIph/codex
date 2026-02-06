@@ -1,0 +1,13 @@
+diff --git a/codex-rs/app-server-protocol/schema/json/v2/RawResponseItemCompletedNotification.json b/codex-rs/app-server-protocol/schema/json/v2/RawResponseItemCompletedNotification.json
+index c1e36ad8e..bc0cef5bf 100644
+--- a/codex-rs/app-server-protocol/schema/json/v2/RawResponseItemCompletedNotification.json
++++ b/codex-rs/app-server-protocol/schema/json/v2/RawResponseItemCompletedNotification.json
+@@ -421,7 +421,7 @@
+               ]
+             },
+             "id": {
+-              "description": "Legacy id field retained for compatibility with older payloads.",
++              "description": "Set when using the chat completions API.",
+               "type": [
+                 "string",
+                 "null"

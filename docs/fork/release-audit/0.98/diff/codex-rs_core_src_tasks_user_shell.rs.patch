@@ -1,0 +1,16 @@
+diff --git a/codex-rs/core/src/tasks/user_shell.rs b/codex-rs/core/src/tasks/user_shell.rs
+index 6c37cb150..31479f55e 100644
+--- a/codex-rs/core/src/tasks/user_shell.rs
++++ b/codex-rs/core/src/tasks/user_shell.rs
+@@ -105,10 +105,7 @@ impl SessionTask for UserShellCommandTask {
+         let exec_env = ExecEnv {
+             command: exec_command.clone(),
+             cwd: cwd.clone(),
+-            env: create_env(
+-                &turn_context.shell_environment_policy,
+-                Some(session.conversation_id),
+-            ),
++            env: create_env(&turn_context.shell_environment_policy),
+             // TODO(zhao-oai): Now that we have ExecExpiration::Cancellation, we
+             // should use that instead of an "arbitrarily large" timeout here.
+             expiration: USER_SHELL_TIMEOUT_MS.into(),

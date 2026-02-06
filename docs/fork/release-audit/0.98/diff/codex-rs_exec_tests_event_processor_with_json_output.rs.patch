@@ -1,0 +1,22 @@
+diff --git a/codex-rs/exec/tests/event_processor_with_json_output.rs b/codex-rs/exec/tests/event_processor_with_json_output.rs
+index 8c1c73e57..c7d85371c 100644
+--- a/codex-rs/exec/tests/event_processor_with_json_output.rs
++++ b/codex-rs/exec/tests/event_processor_with_json_output.rs
+@@ -117,7 +117,7 @@ fn task_started_produces_turn_started_event() {
+         "t1",
+         EventMsg::TurnStarted(codex_core::protocol::TurnStartedEvent {
+             model_context_window: Some(32_000),
+-            collaboration_mode_kind: ModeKind::Default,
++            collaboration_mode_kind: ModeKind::Custom,
+         }),
+     ));
+ 
+@@ -569,6 +569,8 @@ fn collab_spawn_begin_and_end_emit_item_events() {
+             new_thread_id: Some(new_thread_id),
+             prompt: prompt.clone(),
+             status: AgentStatus::Running,
++            agent_type: None,
++            agent_name: None,
+         }),
+     );
+     let end_events = ep.collect_thread_events(&end);

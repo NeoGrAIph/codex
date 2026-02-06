@@ -1,0 +1,13 @@
+diff --git a/codex-rs/mcp-server/tests/common/mcp_process.rs b/codex-rs/mcp-server/tests/common/mcp_process.rs
+index c01912028..8dbc4f4db 100644
+--- a/codex-rs/mcp-server/tests/common/mcp_process.rs
++++ b/codex-rs/mcp-server/tests/common/mcp_process.rs
+@@ -171,7 +171,7 @@ impl McpProcess {
+                 "serverInfo": {
+                     "name": "codex-mcp-server",
+                     "title": "Codex",
+-                    "version": "0.0.0",
++                    "version": env!("CARGO_PKG_VERSION"),
+                     "user_agent": user_agent
+                 },
+                 "protocolVersion": ProtocolVersion::V_2025_03_26

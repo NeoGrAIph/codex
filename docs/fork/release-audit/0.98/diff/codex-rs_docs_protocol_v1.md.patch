@@ -1,0 +1,14 @@
+diff --git a/codex-rs/docs/protocol_v1.md b/codex-rs/docs/protocol_v1.md
+index 4d4e5c147..8f68ecc9a 100644
+--- a/codex-rs/docs/protocol_v1.md
++++ b/codex-rs/docs/protocol_v1.md
+@@ -72,9 +72,6 @@ For complete documentation of the `Op` and `EventMsg` variants, refer to [protoc
+   - `Op::UserInputAnswer` – Provide answers for a `request_user_input` tool call
+   - `Op::ListSkills` – Request skills for one or more cwd values (optionally `force_reload`)
+   - `Op::UserTurn` and `Op::OverrideTurnContext` accept an optional `personality` override that updates the model’s communication style
+-
+-Valid `personality` values are `friendly`, `pragmatic`, and `none`. When `none` is selected, the personality placeholder is replaced with an empty string.
+-
+ - `EventMsg`
+   - `EventMsg::AgentMessage` – Messages from the `Model`
+   - `EventMsg::AgentMessageContentDelta` – Streaming assistant text

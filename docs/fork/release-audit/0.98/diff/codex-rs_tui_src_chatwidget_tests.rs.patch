@@ -1,0 +1,251 @@
+diff --git a/codex-rs/tui/src/chatwidget/tests.rs b/codex-rs/tui/src/chatwidget/tests.rs
+index ba2816009..447b2ebeb 100644
+--- a/codex-rs/tui/src/chatwidget/tests.rs
++++ b/codex-rs/tui/src/chatwidget/tests.rs
+@@ -824,7 +824,7 @@ async fn make_chatwidget_manual(
+     let models_manager = Arc::new(ModelsManager::new(codex_home, auth_manager.clone()));
+     let reasoning_effort = None;
+     let base_mode = CollaborationMode {
+-        mode: ModeKind::Default,
++        mode: ModeKind::Custom,
+         settings: Settings {
+             model: resolved_model.clone(),
+             reasoning_effort,
+@@ -852,7 +852,6 @@ async fn make_chatwidget_manual(
+         rate_limit_warnings: RateLimitWarningState::default(),
+         rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
+         rate_limit_poller: None,
+-        adaptive_chunking: crate::streaming::chunking::AdaptiveChunkingPolicy::default(),
+         stream_controller: None,
+         plan_stream_controller: None,
+         running_commands: HashMap::new(),
+@@ -2164,7 +2163,7 @@ async fn unified_exec_wait_after_final_agent_message_snapshot() {
+         id: "turn-1".into(),
+         msg: EventMsg::TurnStarted(TurnStartedEvent {
+             model_context_window: None,
+-            collaboration_mode_kind: ModeKind::Default,
++            collaboration_mode_kind: ModeKind::Custom,
+         }),
+     });
+ 
+@@ -2199,7 +2198,7 @@ async fn unified_exec_wait_before_streamed_agent_message_snapshot() {
+         id: "turn-1".into(),
+         msg: EventMsg::TurnStarted(TurnStartedEvent {
+             model_context_window: None,
+-            collaboration_mode_kind: ModeKind::Default,
++            collaboration_mode_kind: ModeKind::Custom,
+         }),
+     });
+ 
+@@ -2410,7 +2409,7 @@ async fn collab_mode_shift_tab_cycles_only_when_enabled_and_idle() {
+     let initial = chat.current_collaboration_mode().clone();
+     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+     assert_eq!(chat.current_collaboration_mode(), &initial);
+-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
++    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Custom);
+ 
+     chat.set_feature_enabled(Feature::CollaborationModes, true);
+ 
+@@ -2462,7 +2461,7 @@ async fn collab_slash_command_opens_picker_and_updates_mode() {
+             ..
+         } => {}
+         other => {
+-            panic!("expected Op::UserTurn with code collab mode, got {other:?}")
++            panic!("expected Op::UserTurn with default collab mode, got {other:?}")
+         }
+     }
+ 
+@@ -2480,7 +2479,7 @@ async fn collab_slash_command_opens_picker_and_updates_mode() {
+             ..
+         } => {}
+         other => {
+-            panic!("expected Op::UserTurn with code collab mode, got {other:?}")
++            panic!("expected Op::UserTurn with default collab mode, got {other:?}")
+         }
+     }
+ }
+@@ -2543,7 +2542,7 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
+ }
+ 
+ #[tokio::test]
+-async fn collaboration_modes_defaults_to_code_on_startup() {
++async fn collaboration_modes_defaults_to_default_on_startup() {
+     let codex_home = tempdir().expect("tempdir");
+     let cfg = ConfigBuilder::default()
+         .codex_home(codex_home.path().to_path_buf())
+@@ -2657,7 +2656,7 @@ async fn set_reasoning_effort_updates_active_collaboration_mask() {
+ }
+ 
+ #[tokio::test]
+-async fn collab_mode_is_sent_after_enabling() {
++async fn collab_mode_is_not_sent_until_selected() {
+     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+     chat.thread_id = Some(ThreadId::new());
+     chat.set_feature_enabled(Feature::CollaborationModes, true);
+@@ -2667,14 +2666,12 @@ async fn collab_mode_is_sent_after_enabling() {
+     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+     match next_submit_op(&mut op_rx) {
+         Op::UserTurn {
+-            collaboration_mode:
+-                Some(CollaborationMode {
+-                    mode: ModeKind::Default,
+-                    ..
+-                }),
++            collaboration_mode,
+             personality: None,
+             ..
+-        } => {}
++        } => {
++            assert_eq!(collaboration_mode, None);
++        }
+         other => {
+             panic!("expected Op::UserTurn, got {other:?}")
+         }
+@@ -2682,44 +2679,11 @@ async fn collab_mode_is_sent_after_enabling() {
+ }
+ 
+ #[tokio::test]
+-async fn collab_mode_toggle_on_applies_default_preset() {
+-    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+-    chat.thread_id = Some(ThreadId::new());
+-
+-    chat.bottom_pane
+-        .set_composer_text("before toggle".to_string(), Vec::new(), Vec::new());
+-    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+-    match next_submit_op(&mut op_rx) {
+-        Op::UserTurn {
+-            collaboration_mode: None,
+-            personality: None,
+-            ..
+-        } => {}
+-        other => panic!("expected Op::UserTurn without collaboration_mode, got {other:?}"),
+-    }
+-
++async fn collab_mode_enabling_keeps_custom_until_selected() {
++    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+     chat.set_feature_enabled(Feature::CollaborationModes, true);
+-
+-    chat.bottom_pane
+-        .set_composer_text("after toggle".to_string(), Vec::new(), Vec::new());
+-    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+-    match next_submit_op(&mut op_rx) {
+-        Op::UserTurn {
+-            collaboration_mode:
+-                Some(CollaborationMode {
+-                    mode: ModeKind::Default,
+-                    ..
+-                }),
+-            personality: None,
+-            ..
+-        } => {}
+-        other => {
+-            panic!("expected Op::UserTurn with default collaboration_mode, got {other:?}")
+-        }
+-    }
+-
+-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
+-    assert_eq!(chat.current_collaboration_mode().mode, ModeKind::Default);
++    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Custom);
++    assert_eq!(chat.current_collaboration_mode().mode, ModeKind::Custom);
+ }
+ 
+ #[tokio::test]
+@@ -3067,7 +3031,7 @@ async fn interrupted_turn_error_message_snapshot() {
+         id: "task-1".into(),
+         msg: EventMsg::TurnStarted(TurnStartedEvent {
+             model_context_window: None,
+-            collaboration_mode_kind: ModeKind::Default,
++            collaboration_mode_kind: ModeKind::Custom,
+         }),
+     });
+ 
+@@ -4084,7 +4048,7 @@ async fn interrupt_clears_unified_exec_wait_streak_snapshot() {
+         id: "turn-1".into(),
+         msg: EventMsg::TurnStarted(TurnStartedEvent {
+             model_context_window: None,
+-            collaboration_mode_kind: ModeKind::Default,
++            collaboration_mode_kind: ModeKind::Custom,
+         }),
+     });
+ 
+@@ -4158,7 +4122,7 @@ async fn ui_snapshots_small_heights_task_running() {
+         id: "task-1".into(),
+         msg: EventMsg::TurnStarted(TurnStartedEvent {
+             model_context_window: None,
+-            collaboration_mode_kind: ModeKind::Default,
++            collaboration_mode_kind: ModeKind::Custom,
+         }),
+     });
+     chat.handle_codex_event(Event {
+@@ -4190,7 +4154,7 @@ async fn status_widget_and_approval_modal_snapshot() {
+         id: "task-1".into(),
+         msg: EventMsg::TurnStarted(TurnStartedEvent {
+             model_context_window: None,
+-            collaboration_mode_kind: ModeKind::Default,
++            collaboration_mode_kind: ModeKind::Custom,
+         }),
+     });
+     // Provide a deterministic header for the status line.
+@@ -4243,7 +4207,7 @@ async fn status_widget_active_snapshot() {
+         id: "task-1".into(),
+         msg: EventMsg::TurnStarted(TurnStartedEvent {
+             model_context_window: None,
+-            collaboration_mode_kind: ModeKind::Default,
++            collaboration_mode_kind: ModeKind::Custom,
+         }),
+     });
+     // Provide a deterministic header via a bold reasoning chunk.
+@@ -4293,7 +4257,7 @@ async fn mcp_startup_complete_does_not_clear_running_task() {
+         id: "task-1".into(),
+         msg: EventMsg::TurnStarted(TurnStartedEvent {
+             model_context_window: None,
+-            collaboration_mode_kind: ModeKind::Default,
++            collaboration_mode_kind: ModeKind::Custom,
+         }),
+     });
+ 
+@@ -4850,7 +4814,7 @@ async fn stream_recovery_restores_previous_status_header() {
+         id: "task".into(),
+         msg: EventMsg::TurnStarted(TurnStartedEvent {
+             model_context_window: None,
+-            collaboration_mode_kind: ModeKind::Default,
++            collaboration_mode_kind: ModeKind::Custom,
+         }),
+     });
+     drain_insert_history(&mut rx);
+@@ -4888,7 +4852,7 @@ async fn multiple_agent_messages_in_single_turn_emit_multiple_headers() {
+         id: "s1".into(),
+         msg: EventMsg::TurnStarted(TurnStartedEvent {
+             model_context_window: None,
+-            collaboration_mode_kind: ModeKind::Default,
++            collaboration_mode_kind: ModeKind::Custom,
+         }),
+     });
+ 
+@@ -5083,7 +5047,7 @@ async fn chatwidget_exec_and_status_layout_vt100_snapshot() {
+         id: "t1".into(),
+         msg: EventMsg::TurnStarted(TurnStartedEvent {
+             model_context_window: None,
+-            collaboration_mode_kind: ModeKind::Default,
++            collaboration_mode_kind: ModeKind::Custom,
+         }),
+     });
+     chat.handle_codex_event(Event {
+@@ -5131,7 +5095,7 @@ async fn chatwidget_markdown_code_blocks_vt100_snapshot() {
+         id: "t1".into(),
+         msg: EventMsg::TurnStarted(TurnStartedEvent {
+             model_context_window: None,
+-            collaboration_mode_kind: ModeKind::Default,
++            collaboration_mode_kind: ModeKind::Custom,
+         }),
+     });
+     // Build a vt100 visual from the history insertions only (no UI overlay)
+@@ -5221,7 +5185,7 @@ async fn chatwidget_tall() {
+         id: "t1".into(),
+         msg: EventMsg::TurnStarted(TurnStartedEvent {
+             model_context_window: None,
+-            collaboration_mode_kind: ModeKind::Default,
++            collaboration_mode_kind: ModeKind::Custom,
+         }),
+     });
+     for i in 0..30 {

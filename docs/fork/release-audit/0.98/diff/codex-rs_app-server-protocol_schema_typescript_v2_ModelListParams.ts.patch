@@ -1,0 +1,15 @@
+diff --git a/codex-rs/app-server-protocol/schema/typescript/v2/ModelListParams.ts b/codex-rs/app-server-protocol/schema/typescript/v2/ModelListParams.ts
+index b0bc5326c..a2b7214b7 100644
+--- a/codex-rs/app-server-protocol/schema/typescript/v2/ModelListParams.ts
++++ b/codex-rs/app-server-protocol/schema/typescript/v2/ModelListParams.ts
+@@ -6,8 +6,8 @@ export type ModelListParams = {
+ /**
+  * Opaque pagination cursor returned by a previous call.
+  */
+-cursor?: string | null, 
++cursor: string | null, 
+ /**
+  * Optional page size; defaults to a reasonable server-side value.
+  */
+-limit?: number | null, };
++limit: number | null, };

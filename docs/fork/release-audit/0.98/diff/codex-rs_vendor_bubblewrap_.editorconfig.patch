@@ -1,0 +1,11 @@
+diff --git a/codex-rs/vendor/bubblewrap/.editorconfig b/codex-rs/vendor/bubblewrap/.editorconfig
+deleted file mode 100644
+index 89742b698..000000000
+--- a/codex-rs/vendor/bubblewrap/.editorconfig
++++ /dev/null
+@@ -1,5 +0,0 @@
+-[*.[ch]]
+-indent_style = space
+-indent_size = 2
+-trim_trailing_whitespace = true
+-indent_brace_style = gnu

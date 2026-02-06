@@ -1,0 +1,21 @@
+diff --git a/codex-rs/core/src/mcp_connection_manager.rs b/codex-rs/core/src/mcp_connection_manager.rs
+index d6447738c..ff8cb7e11 100644
+--- a/codex-rs/core/src/mcp_connection_manager.rs
++++ b/codex-rs/core/src/mcp_connection_manager.rs
+@@ -480,7 +480,15 @@ impl McpConnectionManager {
+     pub async fn list_all_tools(&self) -> HashMap<String, ToolInfo> {
+         let mut tools = HashMap::new();
+         for (server_name, managed_client) in &self.clients {
+-            let client = managed_client.client().await.ok();
++            // === FORK: Avoid blocking on codex_apps_mcp startup; use tools only when ready.
++            let client = if server_name == CODEX_APPS_MCP_SERVER_NAME {
++                match managed_client.client.clone().now_or_never() {
++                    Some(Ok(client)) => Some(client),
++                    _ => None,
++                }
++            } else {
++                managed_client.client().await.ok()
++            };
+             if let Some(client) = client {
+                 let rmcp_client = client.client;
+                 let tool_timeout = client.tool_timeout;

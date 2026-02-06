@@ -1,0 +1,17 @@
+diff --git a/codex-rs/codex-api/src/sse/responses.rs b/codex-rs/codex-api/src/sse/responses.rs
+index 95bda35fb..2c9110472 100644
+--- a/codex-rs/codex-api/src/sse/responses.rs
++++ b/codex-rs/codex-api/src/sse/responses.rs
+@@ -165,12 +165,6 @@ pub struct ResponsesStreamEvent {
+     content_index: Option<i64>,
+ }
+ 
+-impl ResponsesStreamEvent {
+-    pub fn kind(&self) -> &str {
+-        &self.kind
+-    }
+-}
+-
+ #[derive(Debug)]
+ pub enum ResponsesEventError {
+     Api(ApiError),

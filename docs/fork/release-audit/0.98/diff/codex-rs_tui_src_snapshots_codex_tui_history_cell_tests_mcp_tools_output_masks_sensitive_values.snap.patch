@@ -1,0 +1,11 @@
+diff --git a/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__mcp_tools_output_masks_sensitive_values.snap b/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__mcp_tools_output_masks_sensitive_values.snap
+index b9c0dfdee..329cd232d 100644
+--- a/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__mcp_tools_output_masks_sensitive_values.snap
++++ b/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__mcp_tools_output_masks_sensitive_values.snap
+@@ -1,6 +1,5 @@
+ ---
+ source: tui/src/history_cell.rs
+-assertion_line: 1540
+ expression: rendered
+ ---
+ /mcp

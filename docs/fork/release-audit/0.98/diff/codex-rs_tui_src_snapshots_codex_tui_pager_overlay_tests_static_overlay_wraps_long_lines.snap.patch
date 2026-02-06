@@ -1,0 +1,11 @@
+diff --git a/codex-rs/tui/src/snapshots/codex_tui__pager_overlay__tests__static_overlay_wraps_long_lines.snap b/codex-rs/tui/src/snapshots/codex_tui__pager_overlay__tests__static_overlay_wraps_long_lines.snap
+index 2dfab2aa7..8bbcc488c 100644
+--- a/codex-rs/tui/src/snapshots/codex_tui__pager_overlay__tests__static_overlay_wraps_long_lines.snap
++++ b/codex-rs/tui/src/snapshots/codex_tui__pager_overlay__tests__static_overlay_wraps_long_lines.snap
+@@ -1,6 +1,5 @@
+ ---
+ source: tui/src/pager_overlay.rs
+-assertion_line: 798
+ expression: term.backend()
+ ---
+ "/ S T A T I C / / / / / "

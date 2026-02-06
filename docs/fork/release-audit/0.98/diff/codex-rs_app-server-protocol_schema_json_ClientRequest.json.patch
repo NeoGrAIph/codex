@@ -1,0 +1,162 @@
+diff --git a/codex-rs/app-server-protocol/schema/json/ClientRequest.json b/codex-rs/app-server-protocol/schema/json/ClientRequest.json
+index 54041b40f..e344c8868 100644
+--- a/codex-rs/app-server-protocol/schema/json/ClientRequest.json
++++ b/codex-rs/app-server-protocol/schema/json/ClientRequest.json
+@@ -1053,7 +1053,10 @@
+       "description": "Initial collaboration mode to use when the TUI starts.",
+       "enum": [
+         "plan",
+-        "default"
++        "code",
++        "pair_programming",
++        "execute",
++        "custom"
+       ],
+       "type": "string"
+     },
+@@ -1175,7 +1178,6 @@
+     },
+     "Personality": {
+       "enum": [
+-        "none",
+         "friendly",
+         "pragmatic"
+       ],
+@@ -1412,7 +1414,7 @@
+               ]
+             },
+             "id": {
+-              "description": "Legacy id field retained for compatibility with older payloads.",
++              "description": "Set when using the chat completions API.",
+               "type": [
+                 "string",
+                 "null"
+@@ -2188,24 +2190,6 @@
+       },
+       "type": "object"
+     },
+-    "SkillsRemoteReadParams": {
+-      "type": "object"
+-    },
+-    "SkillsRemoteWriteParams": {
+-      "properties": {
+-        "hazelnutId": {
+-          "type": "string"
+-        },
+-        "isPreload": {
+-          "type": "boolean"
+-        }
+-      },
+-      "required": [
+-        "hazelnutId",
+-        "isPreload"
+-      ],
+-      "type": "object"
+-    },
+     "TextElement": {
+       "properties": {
+         "byteRange": {
+@@ -2240,17 +2224,6 @@
+       ],
+       "type": "object"
+     },
+-    "ThreadCompactStartParams": {
+-      "properties": {
+-        "threadId": {
+-          "type": "string"
+-        }
+-      },
+-      "required": [
+-        "threadId"
+-      ],
+-      "type": "object"
+-    },
+     "ThreadForkParams": {
+       "description": "There are two ways to fork a thread: 1. By thread_id: load the thread from disk by thread_id and fork it into a new thread. 2. By path: load the thread from disk by path and fork it into a new thread.\n\nIf using path, the thread_id param will be ignored.\n\nPrefer using thread_id whenever possible.",
+       "properties": {
+@@ -3226,30 +3199,6 @@
+       "title": "Thread/unarchiveRequest",
+       "type": "object"
+     },
+-    {
+-      "properties": {
+-        "id": {
+-          "$ref": "#/definitions/RequestId"
+-        },
+-        "method": {
+-          "enum": [
+-            "thread/compact/start"
+-          ],
+-          "title": "Thread/compact/startRequestMethod",
+-          "type": "string"
+-        },
+-        "params": {
+-          "$ref": "#/definitions/ThreadCompactStartParams"
+-        }
+-      },
+-      "required": [
+-        "id",
+-        "method",
+-        "params"
+-      ],
+-      "title": "Thread/compact/startRequest",
+-      "type": "object"
+-    },
+     {
+       "properties": {
+         "id": {
+@@ -3370,54 +3319,6 @@
+       "title": "Skills/listRequest",
+       "type": "object"
+     },
+-    {
+-      "properties": {
+-        "id": {
+-          "$ref": "#/definitions/RequestId"
+-        },
+-        "method": {
+-          "enum": [
+-            "skills/remote/read"
+-          ],
+-          "title": "Skills/remote/readRequestMethod",
+-          "type": "string"
+-        },
+-        "params": {
+-          "$ref": "#/definitions/SkillsRemoteReadParams"
+-        }
+-      },
+-      "required": [
+-        "id",
+-        "method",
+-        "params"
+-      ],
+-      "title": "Skills/remote/readRequest",
+-      "type": "object"
+-    },
+-    {
+-      "properties": {
+-        "id": {
+-          "$ref": "#/definitions/RequestId"
+-        },
+-        "method": {
+-          "enum": [
+-            "skills/remote/write"
+-          ],
+-          "title": "Skills/remote/writeRequestMethod",
+-          "type": "string"
+-        },
+-        "params": {
+-          "$ref": "#/definitions/SkillsRemoteWriteParams"
+-        }
+-      },
+-      "required": [
+-        "id",
+-        "method",
+-        "params"
+-      ],
+-      "title": "Skills/remote/writeRequest",
+-      "type": "object"
+-    },
+     {
+       "properties": {
+         "id": {

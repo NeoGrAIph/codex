@@ -1,0 +1,8 @@
+diff --git a/codex-rs/vendor/bubblewrap/uncrustify.sh b/codex-rs/vendor/bubblewrap/uncrustify.sh
+deleted file mode 100755
+index 7c9080b19..000000000
+--- a/codex-rs/vendor/bubblewrap/uncrustify.sh
++++ /dev/null
+@@ -1,2 +0,0 @@
+-#!/bin/sh
+-uncrustify -c uncrustify.cfg --no-backup `git ls-tree --name-only -r HEAD | grep \\\.[ch]$`

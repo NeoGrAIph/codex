@@ -1,0 +1,11 @@
+diff --git a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__skills_toggle_view__tests__skills_toggle_basic.snap b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__skills_toggle_view__tests__skills_toggle_basic.snap
+index 53ed604e4..e5984581a 100644
+--- a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__skills_toggle_view__tests__skills_toggle_basic.snap
++++ b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__skills_toggle_view__tests__skills_toggle_basic.snap
+@@ -1,6 +1,5 @@
+ ---
+ source: tui/src/bottom_pane/skills_toggle_view.rs
+-assertion_line: 439
+ expression: "render_lines(&view, 72)"
+ ---
+                                                                         

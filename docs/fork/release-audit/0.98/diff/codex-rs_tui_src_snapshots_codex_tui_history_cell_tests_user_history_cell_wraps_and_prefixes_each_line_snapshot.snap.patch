@@ -1,0 +1,12 @@
+diff --git a/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__user_history_cell_wraps_and_prefixes_each_line_snapshot.snap b/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__user_history_cell_wraps_and_prefixes_each_line_snapshot.snap
+index 9870dddb0..51ce9e312 100644
+--- a/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__user_history_cell_wraps_and_prefixes_each_line_snapshot.snap
++++ b/codex-rs/tui/src/snapshots/codex_tui__history_cell__tests__user_history_cell_wraps_and_prefixes_each_line_snapshot.snap
+@@ -2,6 +2,7 @@
+ source: tui/src/history_cell.rs
+ expression: rendered
+ ---
++
+ › one two
+   three
+   four five

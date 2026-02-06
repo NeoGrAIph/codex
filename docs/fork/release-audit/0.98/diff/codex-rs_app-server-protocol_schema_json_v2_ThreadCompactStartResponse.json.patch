@@ -1,0 +1,12 @@
+diff --git a/codex-rs/app-server-protocol/schema/json/v2/ThreadCompactStartResponse.json b/codex-rs/app-server-protocol/schema/json/v2/ThreadCompactStartResponse.json
+deleted file mode 100644
+index bb372b6dd..000000000
+--- a/codex-rs/app-server-protocol/schema/json/v2/ThreadCompactStartResponse.json
++++ /dev/null
+@@ -1,5 +0,0 @@
+-{
+-  "$schema": "http://json-schema.org/draft-07/schema#",
+-  "title": "ThreadCompactStartResponse",
+-  "type": "object"
+-}
+\ No newline at end of file

@@ -1,0 +1,10 @@
+diff --git a/codex-rs/app-server-protocol/schema/typescript/v2/ChatgptAuthTokensRefreshParams.ts b/codex-rs/app-server-protocol/schema/typescript/v2/ChatgptAuthTokensRefreshParams.ts
+index 4393c7f7a..75e677f5c 100644
+--- a/codex-rs/app-server-protocol/schema/typescript/v2/ChatgptAuthTokensRefreshParams.ts
++++ b/codex-rs/app-server-protocol/schema/typescript/v2/ChatgptAuthTokensRefreshParams.ts
+@@ -13,4 +13,4 @@ export type ChatgptAuthTokensRefreshParams = { reason: ChatgptAuthTokensRefreshR
+  * This may be `null` when the prior ID token did not include a workspace
+  * identifier (`chatgpt_account_id`) or when the token could not be parsed.
+  */
+-previousAccountId?: string | null, };
++previousAccountId: string | null, };

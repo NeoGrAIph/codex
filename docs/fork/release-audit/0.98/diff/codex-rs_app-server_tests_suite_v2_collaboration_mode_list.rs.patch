@@ -1,0 +1,36 @@
+diff --git a/codex-rs/app-server/tests/suite/v2/collaboration_mode_list.rs b/codex-rs/app-server/tests/suite/v2/collaboration_mode_list.rs
+index 4837f68cd..cdcc554e1 100644
+--- a/codex-rs/app-server/tests/suite/v2/collaboration_mode_list.rs
++++ b/codex-rs/app-server/tests/suite/v2/collaboration_mode_list.rs
+@@ -1,8 +1,8 @@
+ //! Validates that the collaboration mode list endpoint returns the expected default presets.
+ //!
+ //! The test drives the app server through the MCP harness and asserts that the list response
+-//! includes the plan and default modes with their default model and reasoning effort
+-//! settings, which keeps the API contract visible in one place.
++//! includes the plan and default modes with their default model and reasoning effort settings, which
++//! keeps the API contract visible in one place.
+ 
+ #![allow(clippy::unwrap_used)]
+ 
+@@ -45,8 +45,18 @@ async fn list_collaboration_modes_returns_presets() -> Result<()> {
+     let CollaborationModeListResponse { data: items } =
+         to_response::<CollaborationModeListResponse>(response)?;
+ 
+-    let expected = vec![plan_preset(), default_preset()];
+-    assert_eq!(expected, items);
++    let expected = [plan_preset(), default_preset()];
++    assert_eq!(expected.len(), items.len());
++    for (expected_mask, actual_mask) in expected.iter().zip(items.iter()) {
++        assert_eq!(expected_mask.name, actual_mask.name);
++        assert_eq!(expected_mask.mode, actual_mask.mode);
++        assert_eq!(expected_mask.model, actual_mask.model);
++        assert_eq!(expected_mask.reasoning_effort, actual_mask.reasoning_effort);
++        assert_eq!(
++            expected_mask.developer_instructions,
++            actual_mask.developer_instructions
++        );
++    }
+     Ok(())
+ }
+ 

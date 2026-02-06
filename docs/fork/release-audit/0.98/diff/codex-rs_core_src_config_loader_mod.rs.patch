@@ -1,0 +1,12 @@
+diff --git a/codex-rs/core/src/config_loader/mod.rs b/codex-rs/core/src/config_loader/mod.rs
+index 0ae54111a..14a43cf01 100644
+--- a/codex-rs/core/src/config_loader/mod.rs
++++ b/codex-rs/core/src/config_loader/mod.rs
+@@ -34,7 +34,6 @@ use toml::Value as TomlValue;
+ pub use cloud_requirements::CloudRequirementsLoader;
+ pub use config_requirements::ConfigRequirements;
+ pub use config_requirements::ConfigRequirementsToml;
+-pub use config_requirements::ConstrainedWithSource;
+ pub use config_requirements::McpServerIdentity;
+ pub use config_requirements::McpServerRequirement;
+ pub use config_requirements::RequirementSource;

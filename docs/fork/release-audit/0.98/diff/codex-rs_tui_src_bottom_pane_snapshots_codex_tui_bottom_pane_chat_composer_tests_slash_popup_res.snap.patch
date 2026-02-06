@@ -1,0 +1,11 @@
+diff --git a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__slash_popup_res.snap b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__slash_popup_res.snap
+index df8ea36e6..ff5628a2f 100644
+--- a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__slash_popup_res.snap
++++ b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__slash_popup_res.snap
+@@ -1,6 +1,5 @@
+ ---
+ source: tui/src/bottom_pane/chat_composer.rs
+-assertion_line: 2385
+ expression: terminal.backend()
+ ---
+ "                                                            "

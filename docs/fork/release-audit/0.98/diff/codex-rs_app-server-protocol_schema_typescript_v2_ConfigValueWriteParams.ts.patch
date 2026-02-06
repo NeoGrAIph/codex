@@ -1,0 +1,10 @@
+diff --git a/codex-rs/app-server-protocol/schema/typescript/v2/ConfigValueWriteParams.ts b/codex-rs/app-server-protocol/schema/typescript/v2/ConfigValueWriteParams.ts
+index 9204760f8..2dedfe8d0 100644
+--- a/codex-rs/app-server-protocol/schema/typescript/v2/ConfigValueWriteParams.ts
++++ b/codex-rs/app-server-protocol/schema/typescript/v2/ConfigValueWriteParams.ts
+@@ -8,4 +8,4 @@ export type ConfigValueWriteParams = { keyPath: string, value: JsonValue, mergeS
+ /**
+  * Path to the config file to write; defaults to the user's `config.toml` when omitted.
+  */
+-filePath?: string | null, expectedVersion?: string | null, };
++filePath: string | null, expectedVersion: string | null, };

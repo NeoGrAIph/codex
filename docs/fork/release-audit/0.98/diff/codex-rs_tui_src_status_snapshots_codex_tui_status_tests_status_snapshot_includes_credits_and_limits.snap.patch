@@ -1,0 +1,13 @@
+diff --git a/codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_includes_credits_and_limits.snap b/codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_includes_credits_and_limits.snap
+index 1707a4c5f..9e2f4ef14 100644
+--- a/codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_includes_credits_and_limits.snap
++++ b/codex-rs/tui/src/status/snapshots/codex_tui__status__tests__status_snapshot_includes_credits_and_limits.snap
+@@ -5,7 +5,7 @@ expression: sanitized
+ /status
+ 
+ ╭───────────────────────────────────────────────────────────────────╮
+-│  >_ OpenAI Codex (v0.0.0)                                         │
++│  >_ OpenAI Codex (vFN0.98.0)                                      │
+ │                                                                   │
+ │ Visit https://chatgpt.com/codex/settings/usage for up-to-date     │
+ │ information on rate limits and credits                            │

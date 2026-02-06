@@ -1,0 +1,15 @@
+diff --git a/codex-rs/app-server-protocol/schema/typescript/v2/ThreadLoadedListParams.ts b/codex-rs/app-server-protocol/schema/typescript/v2/ThreadLoadedListParams.ts
+index ef1e0ac08..5419b00bd 100644
+--- a/codex-rs/app-server-protocol/schema/typescript/v2/ThreadLoadedListParams.ts
++++ b/codex-rs/app-server-protocol/schema/typescript/v2/ThreadLoadedListParams.ts
+@@ -6,8 +6,8 @@ export type ThreadLoadedListParams = {
+ /**
+  * Opaque pagination cursor returned by a previous call.
+  */
+-cursor?: string | null, 
++cursor: string | null, 
+ /**
+  * Optional page size; defaults to no limit.
+  */
+-limit?: number | null, };
++limit: number | null, };

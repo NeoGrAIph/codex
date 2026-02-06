@@ -1,0 +1,9 @@
+diff --git a/codex-rs/codex-api/src/sse/mod.rs b/codex-rs/codex-api/src/sse/mod.rs
+index cb689afc1..e3ab770c4 100644
+--- a/codex-rs/codex-api/src/sse/mod.rs
++++ b/codex-rs/codex-api/src/sse/mod.rs
+@@ -1,3 +1,4 @@
++pub mod chat;
+ pub mod responses;
+ 
+ pub use responses::process_sse;

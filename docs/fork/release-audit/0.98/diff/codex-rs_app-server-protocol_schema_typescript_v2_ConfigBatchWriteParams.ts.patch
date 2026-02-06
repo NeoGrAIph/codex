@@ -1,0 +1,10 @@
+diff --git a/codex-rs/app-server-protocol/schema/typescript/v2/ConfigBatchWriteParams.ts b/codex-rs/app-server-protocol/schema/typescript/v2/ConfigBatchWriteParams.ts
+index 77df84e3b..c4012fc33 100644
+--- a/codex-rs/app-server-protocol/schema/typescript/v2/ConfigBatchWriteParams.ts
++++ b/codex-rs/app-server-protocol/schema/typescript/v2/ConfigBatchWriteParams.ts
+@@ -7,4 +7,4 @@ export type ConfigBatchWriteParams = { edits: Array<ConfigEdit>,
+ /**
+  * Path to the config file to write; defaults to the user's `config.toml` when omitted.
+  */
+-filePath?: string | null, expectedVersion?: string | null, };
++filePath: string | null, expectedVersion: string | null, };
