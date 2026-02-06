@@ -1311,8 +1311,9 @@ impl App {
             // Clear any in-flight rollback guard when switching threads.
             self.backtrack.pending_rollback = None;
             self.suppress_shutdown_complete = true;
-            self.chat_widget.submit_op(Op::Shutdown);
-            self.server.remove_thread(&thread_id).await;
+            if let Err(err) = self.server.shutdown_thread_cascading(thread_id).await {
+                tracing::warn!(%err, "failed to request cascading shutdown");
+            }
         }
     }
 
@@ -3882,12 +3883,8 @@ mod tests {
         while op_rx.try_recv().is_ok() {}
 
         app.shutdown_current_thread().await;
-
-        match op_rx.try_recv() {
-            Ok(Op::Shutdown) => {}
-            Ok(other) => panic!("expected Op::Shutdown, got {other:?}"),
-            Err(_) => panic!("expected shutdown op to be sent"),
-        }
+        assert!(app.suppress_shutdown_complete);
+        assert!(op_rx.try_recv().is_err());
     }
 
     #[tokio::test]

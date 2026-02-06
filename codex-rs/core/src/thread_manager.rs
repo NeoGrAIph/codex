@@ -317,6 +317,12 @@ impl ThreadManager {
         Ok(())
     }
 
+    /// Request shutdown for `thread_id` and any spawned child agents, removing them from the
+    /// manager as part of the cascade.
+    pub async fn shutdown_thread_cascading(&self, thread_id: ThreadId) -> CodexResult<String> {
+        self.agent_control().shutdown_agent(thread_id).await
+    }
+
     /// Fork an existing thread by taking messages up to the given position (not including
     /// the message at the given position) and starting a new thread with identical
     /// configuration (unless overridden by the caller's `config`). The new thread will have

@@ -3874,13 +3874,16 @@ impl CodexMessageProcessor {
         let mut state_db_ctx = None;
 
         // If the thread is active, request shutdown and wait briefly.
-        if let Some(conversation) = self.thread_manager.remove_thread(&thread_id).await {
+        if let Ok(conversation) = self.thread_manager.get_thread(thread_id).await {
             if let Some(ctx) = conversation.state_db() {
                 state_db_ctx = Some(ctx);
             }
             info!("thread {thread_id} was active; shutting down");
-            // Request shutdown.
-            match conversation.submit(Op::Shutdown).await {
+            match self
+                .thread_manager
+                .shutdown_thread_cascading(thread_id)
+                .await
+            {
                 Ok(_) => {
                     // Poll agent status rather than consuming events so attached listeners do not block shutdown.
                     let wait_for_shutdown = async {
@@ -3899,7 +3902,7 @@ impl CodexMessageProcessor {
                     }
                 }
                 Err(err) => {
-                    error!("failed to submit Shutdown to thread {thread_id}: {err}");
+                    error!("failed to request cascading shutdown for thread {thread_id}: {err}");
                 }
             }
         }

@@ -580,4 +580,41 @@ mod tests {
             .any(|(id, op)| *id == child_id && matches!(op, Op::Shutdown));
         assert_eq!(shutdown_child, true);
     }
+
+    #[tokio::test]
+    async fn thread_manager_shutdown_thread_cascades_to_thread_spawn_children() {
+        let harness = AgentControlHarness::new().await;
+        let (parent_id, _) = harness.start_thread().await;
+
+        let child_id = harness
+            .control
+            .spawn_agent(
+                harness.config.clone(),
+                "child".to_string(),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: parent_id,
+                    depth: 1,
+                    agent_type: None,
+                    agent_name: None,
+                })),
+            )
+            .await
+            .expect("spawn child");
+
+        harness
+            .manager
+            .shutdown_thread_cascading(parent_id)
+            .await
+            .expect("shutdown parent");
+
+        let ops = harness.manager.captured_ops();
+        let shutdown_parent = ops
+            .iter()
+            .any(|(id, op)| *id == parent_id && matches!(op, Op::Shutdown));
+        let shutdown_child = ops
+            .iter()
+            .any(|(id, op)| *id == child_id && matches!(op, Op::Shutdown));
+        assert_eq!(shutdown_parent, true);
+        assert_eq!(shutdown_child, true);
+    }
 }
