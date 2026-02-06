@@ -20,6 +20,18 @@
 `docs/fork/native-first-audit.md`). На текущий момент coverage gaps закрыты дополнительными карточками (codex-api,
 app-server, windows-sandbox-rs, exec/mcp-server, state/otel/secrets).
 
+## Progress
+
+Обновление после D13-стабилизации (commit `e692cb2e9`, 2026-02-06):
+
+- ✅ **D13 / NF-APP-SERVER-001/002/003/004** — реализовано: возвращены `thread/compact/start`, `skills/remote/read|write`
+  (disabled-by-policy), `model/list` содержит optional `upgrade`, а `ModeKind::Custom` не появляется on-wire.
+- ✅ **D6 / NF-PROTO-004** — реализовано: `ModeKind::Custom` — внутренний sentinel и никогда не сериализуется on-wire
+  (при этом сериализация/rollout не падают).
+- Прогнаны проверки:
+  - `cd codex-rs && cargo test -p codex-app-server-protocol`
+  - `cd codex-rs && cargo test -p codex-app-server`
+
 ## Baseline and scope
 
 - Base: `rust-v0.98.0` (commit `82464689c…`)
@@ -59,10 +71,11 @@ Generated artifacts verification (do not review line-by-line):
 - **NF-PROTO-001**: удалены remote skills RPC/events. Breaking для клиентов.
 - **NF-PROTO-003**: TS schema optional/nullable правила. Потенциальный compile-time break для TS-клиентов.
 - **NF-PROTO-004**: on-wire `ModeKind::Custom`. Риск несовместимости с внешними клиентами/персистентностью.
+  ✅ DONE (`e692cb2e9`).
 - **NF-PROTO-007**: `.agents` убран из sandbox read-only subpaths. Потенциальная security-регрессия.
 - **NF-META-005**: удаление `codex-rs/vendor/bubblewrap/**` без доказанного замещения (см. также NF-LS-003).
 - **NF-APP-SERVER-001/002/003/004**: несколько breaking изменений JSON-RPC контрактов (compact/start, remote skills,
-  model/list upgrade, on-wire `ModeKind::Custom`).
+  model/list upgrade, on-wire `ModeKind::Custom`). ✅ DONE (`e692cb2e9`).
 - **NF-WIN-SB-001/002**: существенные изменения security boundary/токенов в Windows sandbox.
 - **NF-STATE-001/002**: миграционные/контрактные риски state DB (фиксированное имя `state.sqlite`, семантика dynamic tools).
 - **NF-EXEC-001 / NF-MCP-001**: семантика `TurnAborted` и тестовый wire API (Responses vs Chat) в смежных подсистемах.
