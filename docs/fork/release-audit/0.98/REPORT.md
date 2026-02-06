@@ -28,9 +28,14 @@ app-server, windows-sandbox-rs, exec/mcp-server, state/otel/secrets).
   (disabled-by-policy), `model/list` содержит optional `upgrade`, а `ModeKind::Custom` не появляется on-wire.
 - ✅ **D6 / NF-PROTO-004** — реализовано: `ModeKind::Custom` — внутренний sentinel и никогда не сериализуется on-wire
   (при этом сериализация/rollout не падают).
+- ✅ **D1 / NF-CORE-001 + NF-CODEX-API-001 + NF-MCP-001** — реализовано: канон wire API = Responses-only, `wire_api="chat"`
+  invalid, `codex-api` и MCP test-suite переведены на `/v1/responses` SSE (commits `2965b0bca`, `901e3488c`).
 - Прогнаны проверки:
   - `cd codex-rs && cargo test -p codex-app-server-protocol`
   - `cd codex-rs && cargo test -p codex-app-server`
+  - `cd codex-rs && cargo test -p codex-core`
+  - `cd codex-rs && cargo test -p codex-api`
+  - `cd codex-rs && cargo test -p codex-mcp-server`
 
 ## Baseline and scope
 
@@ -62,8 +67,7 @@ Generated artifacts verification (do not review line-by-line):
 
 ### P0 (blockers)
 
-- **NF-CORE-001**: reintroduce `WireApi::Chat` и смена дефолта wire API на Chat. Высокий риск расхождения с upstream
-  и нестабильной совместимости по провайдерам/инструментам.
+- **NF-CORE-001**: reintroduce `WireApi::Chat` и смена дефолта wire API на Chat. ✅ DONE (`2965b0bca`).
 - **NF-CORE-007 / NF-LS-001**: exec-policy читает `.codex/rules` из trust-disabled project layer. Риск security bypass.
 - **NF-CORE-008**: ослабление requirements constraints (убран source-tracking + убран fallback дефолтов на required).
   Риск нарушения security/compliance инвариантов.
@@ -79,6 +83,7 @@ Generated artifacts verification (do not review line-by-line):
 - **NF-WIN-SB-001/002**: существенные изменения security boundary/токенов в Windows sandbox.
 - **NF-STATE-001/002**: миграционные/контрактные риски state DB (фиксированное имя `state.sqlite`, семантика dynamic tools).
 - **NF-EXEC-001 / NF-MCP-001**: семантика `TurnAborted` и тестовый wire API (Responses vs Chat) в смежных подсистемах.
+  NF-MCP-001 ✅ DONE (`901e3488c`); NF-EXEC-001 pending.
 
 ### P1 (should-do)
 
