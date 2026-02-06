@@ -43,6 +43,21 @@
 | A | 26 |
 | R | 5 |
 
+## Coverage gaps (TODO triage)
+
+Эти подсекции присутствуют в `DIFF_INDEX.md`, но в текущем проходе **не разобраны карточками** (требуется отдельный
+triage, иначе финальный риск-профиль неполный):
+
+- `codex-rs/codex-api/**` (24)
+- `codex-rs/app-server/**` (15)
+- `codex-rs/windows-sandbox-rs/**` (11)
+- `codex-rs/mcp-server/**` (6)
+- `codex-rs/exec/**` (5)
+- `codex-rs/state/**` (4)
+- `codex-rs/otel/**` (4)
+- `codex-rs/secrets/**` (3)
+- `codex-rs/app-server-test-client/**` (3)
+
 ## Формат карточек
 
 Определения:
@@ -58,6 +73,10 @@
 
 - Не вставлять большие диффы сюда; ссылаться на `.patch` из `docs/fork/release-audit/0.98/diff/…`.
 - `generated/vendor` не аудитим построчно: фиксируем только риски и правила регенерации.
+- Generated artifacts verification (do not review line-by-line):
+- `app-server-protocol/schema/**`: `just write-app-server-schema` (diff должен совпасть).
+- `core/config.schema.json`: `just write-config-schema`.
+- `Cargo.lock`: обновляется только через Cargo; подтверждать сборкой/тестами, а не построчным ревью.
 
 ## Карточки (native-first)
 
@@ -73,7 +92,9 @@
 | NF-CORE-004 | core | [config/mod.rs.patch](release-audit/0.98/diff/codex-rs_core_src_config_mod.rs.patch)<br>[tool_allowlist.rs.patch](release-audit/0.98/diff/codex-rs_core_src_tool_allowlist.rs.patch)<br>[tools_spec.rs.patch](release-audit/0.98/diff/codex-rs_core_src_tools_spec.rs.patch)<br>[tools_registry.rs.patch](release-audit/0.98/diff/codex-rs_core_src_tools_registry.rs.patch) | Tool allowlist/denylist (wildmatch), фильтрация registry/specs, “policy floor” для spawned agents | Upstream-native механизма нет; но концепт близок к upstream security posture | KEEP, но оформить как upstream-совместимую policy-модель (без завязки на registry) и документировать как security feature | P1 | Риск неожиданных пустых toolset’ов; нужно покрыть тестами комбинации allow/deny + agent profiles |
 | NF-CORE-006 | core | [skills_remote.rs.patch](release-audit/0.98/diff/codex-rs_core_src_skills_remote.rs.patch)<br>[skills/mod.rs.patch](release-audit/0.98/diff/codex-rs_core_src_skills_mod.rs.patch) | Удалён remote skills downloader (сетевые запросы) | Upstream-native фича конфликтует с sandbox/network ограничениями; fork более безопасен | KEEP (fork-only): либо полностью отключено, либо возвращать только за явным флагом/feature и с явной моделью угроз | P1 | Риск потери функционала upstream; нужно подтвердить, что продукт не зависит от remote skills |
 | NF-CORE-009 | core | [models_manager/manager.rs.patch](release-audit/0.98/diff/codex-rs_core_src_models_manager_manager.rs.patch)<br>[models_manager/model_info.rs.patch](release-audit/0.98/diff/codex-rs_core_src_models_manager_model_info.rs.patch) | Fork добавляет `experimental_supported_tools` (read_file/list_dir/grep_files) в локальные model defaults и “backfill” при пустых remote-данных | Upstream-native источник истины = remote model metadata; fork костыль компенсирует неполные remote ответы | Держать временно, но стремиться к upstream-native: починить/дождаться remote metadata и удалить backfill | P1 | Риск дрейфа: локальные дефолты могут не совпадать с реальными capabilities модели |
+| NF-CORE-012 | core | [rollout/list.rs.patch](release-audit/0.98/diff/codex-rs_core_src_rollout_list.rs.patch)<br>[state_db.rs.patch](release-audit/0.98/diff/codex-rs_core_src_state_db.rs.patch) | Rollout/thread lookup: перестали предпочитать SQLite DB; файловый поиск стал canonical, а DB используется для parity-check и warning-ов | Upstream-native упирает на DB-ускорение; fork-дельта повышает корректность при stale DB ценой возможной деградации perf | Определить канонический источник истины (FS vs DB) и закрепить это тестами/метриками; если DB должен быть каноничным — вернуть upstream путь после стабилизации миграции | P1 | Риск: perf регрессия при листинге/поиске threads; “шумные” предупреждения о mismatch |
 | NF-CORE-005 | core | [agents.rs.patch](release-audit/0.98/diff/codex-rs_core_src_tools_handlers_agents.rs.patch)<br>[agent_tools.rs.patch](release-audit/0.98/diff/codex-rs_core_src_tools_spec_agent_tools.rs.patch)<br>[handlers/mod.rs.patch](release-audit/0.98/diff/codex-rs_core_src_tools_handlers_mod.rs.patch) | Новые tools: `list_agents`/`read_agent` (доступ к локальному registry из модели) | Upstream-native можно было бы заменить “read_file + conventions”, но tool-API безопаснее/структурнее | KEEP (fork-only) как thin-layer над registry | P2 | Риск раскрытия инструкций (ожидаемо); уточнить политику scope (system/user/project) |
+| NF-CORE-013 | core | [apply_patch runtime.patch](release-audit/0.98/diff/codex-rs_core_src_tools_runtimes_apply_patch.rs.patch) | `apply_patch` runtime теперь резолвит “invoker” бинарь (codex vs apply_patch) по `codex_exe` и окружению (в т.ч. когда invoker = `codex-linux-sandbox`) | Upstream-native чаще полагается на `current_exe`; fork-дельта выглядит как robustness fix для sandboxed окружений | KEEP; добавить регрессионные тесты на резолвинг invoker (особенно для `codex-linux-sandbox` и Windows) | P2 | Риск: tool может не запускаться при нестандартной раскладке бинарей; важно, чтобы резолвинг не позволял подмену запускаемого exe |
 | NF-CORE-010 | core | [mcp_connection_manager.rs.patch](release-audit/0.98/diff/codex-rs_core_src_mcp_connection_manager.rs.patch) | Не блокировать `list_all_tools()` на старте `codex_apps_mcp` (используется `now_or_never`) | Upstream-native должен решать readiness/таймаутами, а не специальным кейсом | Либо upstream fix, либо общий механизм “soft readiness” для MCP клиентов | P2 | Риск: tools могут “пропадать” на ранних запросах; проверить наличие retry/refresh пути |
 | NF-CORE-011 | core | [exec_env.rs.patch](release-audit/0.98/diff/codex-rs_core_src_exec_env.rs.patch) | Убран инжект `CODEX_THREAD_ID` в env для shell | Upstream-native может использовать это для трассировки/аудита; fork уменьшает утечки контекста в subprocess | Подтвердить, что thread-id не нужен downstream; иначе заменить upstream-native способом (structured logging/headers), не env | P2 | Риск потери корреляции в логах/скриптах |
 

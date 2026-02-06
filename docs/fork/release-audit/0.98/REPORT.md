@@ -16,6 +16,9 @@
 
 Карточки с деталями и ссылками на `.patch`: `docs/fork/native-first-audit.md`.
 
+Примечание по полноте: текущий проход карточек **не покрывает** ряд крупных подсекций диффа (см. Coverage gaps в
+`docs/fork/native-first-audit.md`). Для финального sign-off по 0.98 их нужно отдельным triage разобрать.
+
 ## Baseline and scope
 
 - Base: `rust-v0.98.0` (commit `82464689c…`)
@@ -36,6 +39,12 @@ Triage (по `DIFF_INDEX.md`):
 - vendor: 50
 - generated: 71
 
+Generated artifacts verification (do not review line-by-line):
+
+- `app-server-protocol/schema/**`: `just write-app-server-schema` (diff должен совпасть).
+- `core/config.schema.json`: `just write-config-schema`.
+- `Cargo.lock`: обновляется только через Cargo; подтверждать сборкой/тестами.
+
 ## Key risks and regressions
 
 ### P0 (blockers)
@@ -51,6 +60,8 @@ Triage (по `DIFF_INDEX.md`):
 - **NF-PROTO-004**: on-wire `ModeKind::Custom`. Риск несовместимости с внешними клиентами/персистентностью.
 - **NF-PROTO-007**: `.agents` убран из sandbox read-only subpaths. Потенциальная security-регрессия.
 - **NF-META-005**: удаление `codex-rs/vendor/bubblewrap/**` без доказанного замещения (см. также NF-LS-003).
+- **Coverage gaps:** `codex-rs/codex-api/**`, `codex-rs/app-server/**`, `codex-rs/windows-sandbox-rs/**` и др. пока без
+  карточек; до финального решения по 0.98 нужен отдельный triage (см. `docs/fork/native-first-audit.md`).
 
 ### P1 (should-do)
 
@@ -145,7 +156,7 @@ Triage (по `DIFF_INDEX.md`):
 ### Skills / registry flows
 
 1. List agents: проверить перечень профилей, варианты `agent_names`, отображение `reasoning_effort`.
-2. Remote skills (если включено): list/read/write, обработка сетевых ошибок.
+2. Local skills/custom prompts: list/read/write, обработка ошибок валидации, отображение в UI.
 
 ### After naming sync (повторно)
 
