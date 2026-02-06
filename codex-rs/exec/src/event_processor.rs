@@ -4,6 +4,7 @@ use codex_core::config::Config;
 use codex_core::protocol::Event;
 use codex_core::protocol::SessionConfiguredEvent;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CodexStatus {
     Running,
     InitiateShutdown,
