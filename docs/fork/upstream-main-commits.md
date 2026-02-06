@@ -88,6 +88,7 @@ git log --reverse --oneline upstream/main ^fork/colab-agents
 69. 4922b3e57 feat: add phase 1 mem db (#10634) — status: integrated (adopt; cherry-pick `4bad02f1d`); notes: thread_memory таблица + runtime API + тесты
 70. 7f2035761 Stop client from being state carrier (#10595) — status: integrated (adapt; cherry-pick `5feb90704`); notes: TurnContext стал носителем turn-конфига/контекста вместо ModelClient; минимальные конфликт‑резолвы в core
 71. 0e8d359da Session-level model client (#10664) — status: integrated (adapt; cherry-pick `24ea26c00`); notes: session-level ModelClient + per-turn ModelClientSession, удалён transport_manager; fork-фиксы: восстановили поддержку WireApi::Chat и обновили handlers под TurnContext без client
+72. ae4de43cc feat(linux-sandbox): add bwrap support (#9938) — status: integrated (adapt; cherry-pick `1ccdbae25`); notes: bubblewrap-based pipeline (bwrap) + preflight `/proc` mount fallback; synced `codex-rs/linux-sandbox/src/lib.rs` with upstream module layout (drop legacy `mounts`)
 
 ## Likely conflict zones for fork/colab-agents
 
