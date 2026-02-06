@@ -1,0 +1,168 @@
+# Decisions: Release Audit 0.98 (Dx log)
+
+> Owner: <team/owner> | Scope: fork/colab-agents upgrade decisions | Audience: devs
+> Status: draft | Last reviewed: 2026-02-06 | Related: `docs/fork/native-first-audit.md`, `docs/fork/release-audit/0.98/REPORT.md`
+
+Этот документ фиксирует решения по пунктам `D1..Dn` (что решили и почему), чтобы на их основе строить корректный план
+последующих работ.
+
+## D1 (зафиксированное решение) Upstream-first канон wire API
+
+**Контекст**
+
+- Цель форка: максимально следовать upstream (Codex) как источнику истины ("канон = upstream").
+- В апстриме `rust-v0.98.0` каноничный wire это **Responses API** (`/v1/responses`). Chat Completions (`/v1/chat/completions`)
+  как основной путь в upstream не используется и не должен становиться дефолтом в форке.
+
+**Решение**
+
+1. **Канон/дефолт в форке: `WireApi::Responses` и `/v1/responses`**, полностью совпадая с upstream.
+2. **Chat Completions (`/v1/chat/completions`) не считаем критичной функциональностью** и **не поддерживаем как обязательный
+   путь**, пока не проведен отдельный аудит потребности.
+3. Любые fork-изменения, которые:
+- делают "default = Chat"
+- перепрошивают тестовую/интеграционную обвязку (например MCP) на chat/completions
+- добавляют/расширяют Chat wire как основной пользовательский путь
+  считаем **нежелательным дрейфом** и кандидатом на откат/дефолтный disable.
+
+**Почему так (плюсы/минусы)**
+
+- Плюсы: минимальный дрейф от upstream; меньше тестовой матрицы; меньше риска subtle-bugs в стриминге/tool calls; ускоряет
+  будущие апгрейды.
+- Минусы: потенциально теряем поддержку провайдеров/локальных моделей, которые требуют chat/completions, но:
+  - это не upstream-фича,
+  - и сейчас мы не считаем ее обязательной без отдельного подтверждения.
+
+**Отдельный аудит (TODO, чтобы решение было "качественным")**
+
+- Аудит вопроса "нужен ли Chat wire форку" должен ответить:
+1. Есть ли у нас реально используемые сценарии/пользователи, которым нужен chat/completions.
+2. Можно ли закрыть эти сценарии upstream-каноничным Responses (или через upstream-supported провайдеры).
+3. Если Chat все же нужен: можно ли оставить его как строго opt-in режим, не затрагивающий дефолты и базовые тесты.
+
+**Связанные карточки, которые должны следовать этому решению**
+
+- `NF-CORE-001`, `NF-CODEX-API-001/002/003`, `NF-MCP-001` (и частично `NF-EXEC-002`, `NF-TUI-006`): при планировании работ
+  по ним default должен быть Responses и "upstream-first".
+
+## D1 (исследование / обоснование)
+
+**Факт: upstream 0.98 канон = Responses-only**
+
+- В upstream `WireApi` фактически содержит только `Responses`, и конфиг `wire_api="chat"` **не "deprecated"**, а **invalid**
+  (ошибка десериализации + допустимые варианты только `["responses"]`).
+- Следствие: "канон = upstream" означает:
+  - дефолт и основной путь должны быть `/v1/responses`
+  - Chat wire не должен включаться "по умолчанию" и вообще должен считаться не поддержанным (пока не принято отдельное
+    продуктовое решение и не сделан отдельный аудит необходимости).
+
+**Текущее состояние форка: Chat wire не просто есть, он стал дефолтом и проник в инфраструктуру**
+
+Критичные точки дрейфа:
+
+- `codex-rs/core/src/model_provider_info.rs`: `WireApi::Chat` сейчас **default**, а `wire_api` в schema тоже default=`chat`.
+- `codex-rs/core/src/client.rs`: есть реальный runtime путь `WireApi::Chat => stream_chat_completions_api(...)`.
+- `codex-rs/codex-api/*`: добавлен wire-switch (`Provider.wire`, `WireApi::{Responses,Chat,Compact}`), и `ResponsesClient`
+  при `WireApi::Chat` ходит в `/chat/completions`.
+- Тесты/фикстуры: значимая доля тестов и моков завязана на `wire_api="chat"` и `/v1/chat/completions` (core tests,
+  codex-api tests, `mcp-server` suite, `cli_stream` и тестовые фикстуры в config).
+
+**Impact (что сломается при возврате к канону без адаптации)**
+
+- Непосредственно начнут падать/станут нерелевантны:
+  - тесты, которые мокают `/v1/chat/completions`
+  - тесты, которые ожидают default `wire_api=chat`
+  - тесты, которые используют `ChatClient` или chat-SSE парсер
+- Часть fork-UX вокруг `ollama-chat`/chat deprecation notice тоже попадет под пересмотр, потому что upstream-позиция: chat
+  "removed/invalid", а не "deprecated".
+
+**Корректный план перехода к канону (минимальный по смыслу)**
+
+Шаг 1 (core): вернуть upstream semantics "Responses-only"
+
+- `WireApi` оставить только `Responses`, `chat` сделать invalid при парсинге конфига (сообщение уровня upstream).
+- убрать `WireApi::Chat` ветку в `ModelClientSession::stream` и связанные chat-пути/tool-json/deprecation notice.
+- регенерировать `codex-rs/core/config.schema.json` так, чтобы enum и default были только `responses`.
+
+Шаг 2 (`codex-api`): убрать wire-switch и chat поверхность
+
+- убрать `Provider.wire`/`WireApi` из `codex-api` (как в upstream).
+- `ResponsesClient` всегда path=`responses`.
+- удалить/откатить chat endpoint/requests/sse модули.
+- (желательно) вернуть upstream websocket события (etag/rate_limits), которые форк урезал.
+
+Шаг 3 (tests/fixtures): удалить/переписать chat-зависимые тесты на Responses
+
+- удалить/переписать `core` и `codex-api` chat tests.
+- перевести `mcp-server` mock wire обратно на Responses SSE.
+- убрать `wire_api="chat"` из тестовых config fixtures и "openai-chat-completions" провайдера.
+
+**Верификация (как убедиться, что переход корректный)**
+
+- `cargo test -p codex-api`
+- `cargo test -p codex-core`
+- `cargo test -p codex-mcp-server`
+- Проверка: `wire_api="chat"` в config должен **падать на парсинге** с явным сообщением; нигде не должен остаться мок
+  `/v1/chat/completions`; schema `wire_api` допускает только `responses`.
+
+**Дополнительный TODO (по требованию)**
+
+- Перед реализацией/в процессе реализации задать исполнителю/ревьюеру отдельный вопрос: "Impact на пользовательский
+  функционал форка" (не только тесты), и провести отдельный аудит необходимости chat-провайдеров.
+
+## D2 (зафиксированное решение): A
+
+**Решение**
+
+- `.codex/rules` из trust-disabled (untrusted) layers **полностью игнорируем**. Эти слои **не влияют** на exec/tool policy
+  ни в сторону "allow", ни в сторону "deny".
+
+**Почему (контекст)**
+
+- Это security-критичная зона: недоверенный проект не должен иметь возможность повлиять на правила выполнения инструментов.
+- Стратегия форка: upstream-first (канон = upstream), минимизируем дрейф и сложные модели "deny-only".
+
+**Следствие для плана работ**
+
+- Любое текущие fork-изменения, из-за которых `.codex/rules` из trust-disabled слоев начинают учитываться, должны быть
+  откатаны/приведены к upstream поведению.
+- Тесты: должен быть явный тест, что в trust-disabled слой положенный `.codex/rules` не меняет effective policy.
+
+## D3 (pending): requirements enforcement + provenance vs agents tool overrides
+
+Контекст:
+- Есть переопределение доступности инструментов из файлов в `~/.codex/agents/*.md` и `.codex/agents/*.md`.
+
+Текущее состояние решения:
+- Целевой вариант: upstream-first enforcement + provenance (Option A), если совместимо.
+- Если выяснится, что агентские overrides невозможно реализовать без ослабления requirements (или это приводит к слишком
+  большому diff/регрессиям), допускается узкий hybrid (Option B) как временная совместимость.
+- Требуется отдельное расследование, чтобы сделать выбор A/B корректно.
+
+## D4 (зафиксированное решение): defer, upstream-first target
+
+**Контекст**
+
+- Upstream-first стратегия (D1/D2): upstream chunking/commit_tick предпочтительнее.
+- Но есть риск зависимости fork-TUI (включая multi-agent overlay / Ctrl+N) от текущей упрощенной семантики стриминга.
+- Churn снапшотов `codex-tui` допустим.
+
+**Решение**
+
+1. **Целевое состояние (target): D4 = A (вернуть upstream adaptive chunking + commit_tick).**
+2. **Сейчас не внедряем.** Ставим как **последнюю задачу** и **отдельный PR/этап**, чтобы:\n
+- изолировать риск регрессий,\n
+- проще было понять "что сломалось" если сломается,\n
+- легче откатить, не затрагивая остальной апгрейд.
+
+**Backlog item (обязательная подготовка)**
+
+- Отдельно проверить/зафиксировать зависимости multi-agent overlay от стриминга:
+- какие компоненты TUI читают "частично закоммиченный" текст,
+- не ломает ли upstream commit_tick lifecycle: переключение summary/details overlay, backtrack, transcript pager.
+
+**Верификация для будущей отдельной задачи**
+
+- `cargo test -p codex-tui` + снапшоты (`cargo insta pending-snapshots -p codex-tui`)
+- ручной прогон: длинный стрим с бурстами + открыть/закрыть Agents overlay во время стрима + переключение summary/details.
+
