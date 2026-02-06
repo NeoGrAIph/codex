@@ -33,7 +33,8 @@ app-server, windows-sandbox-rs, exec/mcp-server, state/otel/secrets).
   Коммиты: `2965b0bca` (fix(wire): restore upstream Responses-only semantics), `901e3488c`
   (test(mcp-server): migrate suite to Responses SSE).
 - ✅ **D2 / NF-CORE-007** — ✅ DONE: exec-policy больше не читает `.codex/rules` из trust-disabled (disabled) project layers.
-  Commit: `73681a6e5` (fix(core): enforce trust and tool policy for subagents).
+  Commits: `73681a6e5` (fix(core): enforce trust and tool policy for subagents), `5ab253881`
+  (fix(security): trust-gate project layers and rules).
 - ✅ **D3 / NF-CORE-008 + NF-CORE-003** — ✅ DONE: восстановлены requirements enforcement + provenance (fallback дефолтов на
   requirement-default, source-tracking), а также закрыт bypass tool-policy через `spawn_agent`.
   Commits: `2107dc485` (fix(core): restore requirements provenance and fallback defaults), `73681a6e5`.
@@ -75,7 +76,7 @@ Generated artifacts verification (do not review line-by-line):
 ### P0 (blockers)
 
 - **NF-CORE-001**: reintroduce `WireApi::Chat` и смена дефолта wire API на Chat. ✅ DONE (`2965b0bca`).
-- **NF-CORE-007 / NF-LS-001**: exec-policy читает `.codex/rules` из trust-disabled project layer. ✅ DONE (`73681a6e5`).
+- **NF-CORE-007 / NF-LS-001**: exec-policy читает `.codex/rules` из trust-disabled project layer. ✅ DONE (`73681a6e5`, `5ab253881`).
 - **NF-CORE-008**: ослабление requirements constraints (убран source-tracking + убран fallback дефолтов на required).
   ✅ DONE (`2107dc485`).
 - **NF-TUI-003**: удалён upstream streaming chunking/commit_tick orchestration. Риск заметной деградации UX на длинных стримах.
@@ -122,7 +123,7 @@ Generated artifacts verification (do not review line-by-line):
 1. **Выбрать канон wire API (Responses vs Chat)** и перестать менять upstream-дефолты без необходимости.
    - Target: `WireApi::Responses` как дефолт (upstream), Chat — только как явный opt-in для OSS провайдеров (если нужен).
    - Cards: NF-CORE-001, NF-TUI-006.
-2. **Закрыть security-риск trust-disabled `.codex/rules`.** ✅ DONE (`73681a6e5`).
+2. **Закрыть security-риск trust-disabled `.codex/rules`.** ✅ DONE (`73681a6e5`, `5ab253881`).
    - Target: disabled/untrusted layers не могут ослаблять policy; минимум deny-only из disabled слоя.
    - Cards: NF-CORE-007, NF-LS-001.
 3. **Восстановить requirements enforcement (и provenance).** ✅ DONE (`2107dc485`).
