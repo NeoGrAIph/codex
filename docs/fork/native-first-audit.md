@@ -81,6 +81,8 @@
 
 ### Core
 
+D1 (Responses-only): ✅ DONE — `2965b0bca`, `901e3488c`.
+
 | Card | Area | Files (patch) | Fork delta (что изменили) | Native-first assessment | Recommendation | Priority | Risks/Notes |
 |---|---|---|---|---|---|---|---|
 | NF-CORE-001 | core | [model_provider_info.rs.patch](release-audit/0.98/diff/codex-rs_core_src_model_provider_info.rs.patch)<br>[client.rs.patch](release-audit/0.98/diff/codex-rs_core_src_client.rs.patch)<br>[tools_spec.rs.patch](release-audit/0.98/diff/codex-rs_core_src_tools_spec.rs.patch)<br>[codex.rs.patch](release-audit/0.98/diff/codex-rs_core_src_codex.rs.patch) | ✅ DONE (`2965b0bca`): удалён Chat wire (`WireApi::Chat`), канон/дефолт = Responses-only; `wire_api="chat"` invalid; провайдеры/тесты/фикстуры переведены на Responses SSE | Upstream 0.98 intentionally удалил/запретил chat-wire; native-first = придерживаться Responses-only (или отдельный adapter-слой вне core) | ✅ DONE (`2965b0bca`): Responses-only (upstream) | P0 | Высокий риск расхождения поведения/тестов с upstream снят; совместимость с OSS провайдерами теперь завязана на Responses |

@@ -28,8 +28,10 @@ app-server, windows-sandbox-rs, exec/mcp-server, state/otel/secrets).
   (disabled-by-policy), `model/list` содержит optional `upgrade`, а `ModeKind::Custom` не появляется on-wire.
 - ✅ **D6 / NF-PROTO-004** — реализовано: `ModeKind::Custom` — внутренний sentinel и никогда не сериализуется on-wire
   (при этом сериализация/rollout не падают).
-- ✅ **D1 / NF-CORE-001 + NF-CODEX-API-001 + NF-MCP-001** — реализовано: канон wire API = Responses-only, `wire_api="chat"`
-  invalid, `codex-api` и MCP test-suite переведены на `/v1/responses` SSE (commits `2965b0bca`, `901e3488c`).
+- ✅ **D1 / NF-CORE-001 + NF-CODEX-API-001 + NF-MCP-001** — ✅ DONE: восстановлена upstream семантика Responses-only
+  (удалён Chat wire; `wire_api="chat"` invalid); `codex-api` и MCP test-suite переведены на `/v1/responses` SSE.
+  Коммиты: `2965b0bca` (fix(wire): restore upstream Responses-only semantics), `901e3488c`
+  (test(mcp-server): migrate suite to Responses SSE).
 - Прогнаны проверки:
   - `cd codex-rs && cargo test -p codex-app-server-protocol`
   - `cd codex-rs && cargo test -p codex-app-server`
