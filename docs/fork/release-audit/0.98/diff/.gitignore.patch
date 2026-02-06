@@ -1,0 +1,9 @@
+diff --git a/.gitignore b/.gitignore
+index 8f39b7b1c..bc10ee21c 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -90,4 +90,3 @@ CHANGELOG.ignore.md
+ # Python bytecode files
+ __pycache__/
+ *.pyc
+-
