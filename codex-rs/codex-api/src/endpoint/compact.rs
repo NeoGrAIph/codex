@@ -3,7 +3,6 @@ use crate::auth::add_auth_headers;
 use crate::common::CompactionInput;
 use crate::error::ApiError;
 use crate::provider::Provider;
-use crate::provider::WireApi;
 use crate::telemetry::run_with_request_telemetry;
 use codex_client::HttpTransport;
 use codex_client::RequestTelemetry;
@@ -36,13 +35,8 @@ impl<T: HttpTransport, A: AuthProvider> CompactClient<T, A> {
         self
     }
 
-    fn path(&self) -> Result<&'static str, ApiError> {
-        match self.provider.wire {
-            WireApi::Compact | WireApi::Responses => Ok("responses/compact"),
-            WireApi::Chat => Err(ApiError::Stream(
-                "compact endpoint requires responses wire api".to_string(),
-            )),
-        }
+    fn path(&self) -> &'static str {
+        "responses/compact"
     }
 
     pub async fn compact(
@@ -50,7 +44,7 @@ impl<T: HttpTransport, A: AuthProvider> CompactClient<T, A> {
         body: serde_json::Value,
         extra_headers: HeaderMap,
     ) -> Result<Vec<ResponseItem>, ApiError> {
-        let path = self.path()?;
+        let path = self.path();
         let builder = || {
             let mut req = self.provider.build_request(Method::POST, path);
             req.headers.extend(extra_headers.clone());
@@ -96,15 +90,27 @@ mod tests {
     use codex_client::StreamResponse;
     use codex_client::TransportError;
     use http::HeaderMap;
+    use http::StatusCode;
+    use std::sync::Arc;
+    use std::sync::Mutex;
     use std::time::Duration;
 
     #[derive(Clone, Default)]
-    struct DummyTransport;
+    struct DummyTransport {
+        last_request: Arc<Mutex<Option<Request>>>,
+    }
 
     #[async_trait]
     impl HttpTransport for DummyTransport {
-        async fn execute(&self, _req: Request) -> Result<Response, TransportError> {
-            Err(TransportError::Build("execute should not run".to_string()))
+        async fn execute(&self, req: Request) -> Result<Response, TransportError> {
+            *self.last_request.lock().unwrap() = Some(req);
+            Ok(Response {
+                status: StatusCode::OK,
+                headers: HeaderMap::new(),
+                body: serde_json::to_vec(&serde_json::json!({ "output": [] }))
+                    .unwrap()
+                    .into(),
+            })
         }
 
         async fn stream(&self, _req: Request) -> Result<StreamResponse, TransportError> {
@@ -121,12 +127,11 @@ mod tests {
         }
     }
 
-    fn provider(wire: WireApi) -> Provider {
+    fn provider() -> Provider {
         Provider {
             name: "test".to_string(),
             base_url: "https://example.com/v1".to_string(),
             query_params: None,
-            wire,
             headers: HeaderMap::new(),
             retry: RetryConfig {
                 max_attempts: 1,
@@ -140,23 +145,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn errors_when_wire_is_chat() {
-        let client = CompactClient::new(DummyTransport, provider(WireApi::Chat), DummyAuth);
+    async fn compact_uses_responses_compact_path() {
+        let transport = DummyTransport::default();
+        let client = CompactClient::new(transport.clone(), provider(), DummyAuth);
         let input = CompactionInput {
             model: "gpt-test",
             input: &[],
             instructions: "inst",
         };
-        let err = client
+        let output = client
             .compact_input(&input, HeaderMap::new())
             .await
-            .expect_err("expected wire mismatch to fail");
+            .expect("request should succeed");
 
-        match err {
-            ApiError::Stream(msg) => {
-                assert_eq!(msg, "compact endpoint requires responses wire api");
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert_eq!(output, Vec::<ResponseItem>::new());
+
+        let url = transport
+            .last_request
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .url
+            .clone();
+        assert!(
+            url.ends_with("/responses/compact"),
+            "expected url to end with /responses/compact, got {url}"
+        );
     }
 }

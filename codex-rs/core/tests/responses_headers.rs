@@ -13,15 +13,21 @@ use codex_core::ResponseItem;
 use codex_core::WEB_SEARCH_ELIGIBLE_HEADER;
 use codex_core::WireApi;
 use codex_core::models_manager::manager::ModelsManager;
+use codex_core::protocol::AskForApproval;
+use codex_core::protocol::EventMsg;
+use codex_core::protocol::Op;
+use codex_core::protocol::SandboxPolicy;
 use codex_otel::OtelManager;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::user_input::UserInput;
 use core_test_support::load_default_config_for_test;
 use core_test_support::responses;
 use core_test_support::test_codex::test_codex;
+use core_test_support::wait_for_event;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -440,88 +446,38 @@ async fn responses_stream_includes_turn_metadata_header_for_git_workspace_e2e() 
         responses::ev_response_created("resp-1"),
         responses::ev_completed("resp-1"),
     ]);
-    let provider = ModelProviderInfo {
-        name: "mock".into(),
-        base_url: Some(format!("{}/v1", server.uri())),
-        env_key: None,
-        env_key_instructions: None,
-        experimental_bearer_token: None,
-        wire_api: WireApi::Responses,
-        query_params: None,
-        http_headers: None,
-        env_http_headers: None,
-        request_max_retries: Some(0),
-        stream_max_retries: Some(0),
-        stream_idle_timeout_ms: Some(5_000),
-        requires_openai_auth: false,
-        supports_websockets: false,
-    };
-
-    let codex_home = TempDir::new().expect("failed to create TempDir");
-    let mut config = load_default_config_for_test(&codex_home).await;
-    config.model_provider_id = provider.name.clone();
-    config.model_provider = provider.clone();
-    let effort = config.model_reasoning_effort;
-    let summary = config.model_reasoning_summary;
-    let model = ModelsManager::get_model_offline(config.model.as_deref());
-    config.model = Some(model.clone());
-    let config = Arc::new(config);
-
-    let conversation_id = ThreadId::new();
-    let auth_mode = AuthMode::Chatgpt;
-    let session_source =
-        SessionSource::SubAgent(SubAgentSource::Other("turn-metadata-e2e".to_string()));
-    let model_info = ModelsManager::construct_model_info_offline(model.as_str(), &config);
-    let otel_manager = OtelManager::new(
-        conversation_id,
-        model.as_str(),
-        model_info.slug.as_str(),
-        None,
-        Some("test@test.com".to_string()),
-        Some(auth_mode),
-        false,
-        "test".to_string(),
-        session_source.clone(),
-    );
-
-    let client = ModelClient::new(
-        Arc::clone(&config),
-        None,
-        model_info,
-        otel_manager,
-        provider,
-        effort,
-        summary,
-        conversation_id,
-        session_source,
-        TransportManager::new(),
-    );
 
     let workspace = TempDir::new().expect("workspace tempdir");
     let cwd = workspace.path();
 
-    let mut prompt = Prompt::default();
-    prompt.input = vec![ResponseItem::Message {
-        id: None,
-        role: "user".into(),
-        content: vec![ContentItem::InputText {
-            text: "hello".into(),
-        }],
-        end_turn: None,
-        phase: None,
-    }];
-
     let first_request = responses::mount_sse_once(&server, response_body.clone()).await;
-    let mut first_session = client.new_session(Some(cwd.to_path_buf()));
-    let mut first_stream = first_session
-        .stream(&prompt)
+    let fixture = test_codex()
+        .build(&server)
         .await
-        .expect("stream first turn");
-    while let Some(event) = first_stream.next().await {
-        if matches!(event, Ok(ResponseEvent::Completed { .. })) {
-            break;
-        }
-    }
+        .expect("build codex fixture");
+    let session_model = fixture.session_configured.model.clone();
+
+    fixture
+        .codex
+        .submit(Op::UserTurn {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            cwd: cwd.to_path_buf(),
+            approval_policy: AskForApproval::Never,
+            sandbox_policy: SandboxPolicy::ReadOnly,
+            model: session_model.clone(),
+            effort: None,
+            summary: ReasoningSummary::Auto,
+            collaboration_mode: None,
+            personality: None,
+        })
+        .await
+        .expect("submit first turn");
+
+    wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
     assert_eq!(
         first_request
             .single_request()
@@ -578,14 +534,27 @@ async fn responses_stream_includes_turn_metadata_header_for_git_workspace_e2e() 
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let request_recorder = responses::mount_sse_once(&server, response_body.clone()).await;
-        let mut session = client.new_session(Some(cwd.to_path_buf()));
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let mut stream = session.stream(&prompt).await.expect("stream post-git turn");
-        while let Some(event) = stream.next().await {
-            if matches!(event, Ok(ResponseEvent::Completed { .. })) {
-                break;
-            }
-        }
+        fixture
+            .codex
+            .submit(Op::UserTurn {
+                items: vec![UserInput::Text {
+                    text: "hello".into(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                cwd: cwd.to_path_buf(),
+                approval_policy: AskForApproval::Never,
+                sandbox_policy: SandboxPolicy::ReadOnly,
+                model: session_model.clone(),
+                effort: None,
+                summary: ReasoningSummary::Auto,
+                collaboration_mode: None,
+                personality: None,
+            })
+            .await
+            .expect("submit post-git turn");
+
+        wait_for_event(&fixture.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
         let maybe_header = request_recorder
             .single_request()

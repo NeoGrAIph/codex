@@ -920,7 +920,7 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
 
     let open_call_id = "uexec-delayed-open";
     let open_args = json!({
-        "cmd": "sleep 3 && echo MARKER1 && sleep 3 && echo MARKER2",
+        "cmd": "sleep 5 && echo MARKER1 && sleep 5 && echo MARKER2",
         "yield_time_ms": 10,
         "tty": true,
     });
@@ -1042,6 +1042,29 @@ async fn unified_exec_terminal_interaction_captures_delayed_output() -> Result<(
         };
         if task_completed && end_event.is_some() {
             break;
+        }
+    }
+
+    // Under heavy test load, terminal interaction events can arrive slightly after
+    // TurnComplete/ExecCommandEnd. Drain a few additional events to make the
+    // ordering expectation robust.
+    if terminal_events.len() < 3 {
+        for _ in 0..20 {
+            if terminal_events.len() >= 3 {
+                break;
+            }
+
+            let Ok(Ok(event)) =
+                tokio::time::timeout(Duration::from_millis(250), codex.next_event()).await
+            else {
+                break;
+            };
+
+            if let EventMsg::TerminalInteraction(ev) = event.msg
+                && ev.call_id == open_call_id
+            {
+                terminal_events.push(ev);
+            }
         }
     }
 
