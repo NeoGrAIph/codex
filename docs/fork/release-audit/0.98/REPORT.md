@@ -16,8 +16,9 @@
 
 Карточки с деталями и ссылками на `.patch`: `docs/fork/native-first-audit.md`.
 
-Примечание по полноте: текущий проход карточек **не покрывает** ряд крупных подсекций диффа (см. Coverage gaps в
-`docs/fork/native-first-audit.md`). Для финального sign-off по 0.98 их нужно отдельным triage разобрать.
+Примечание по полноте: изначально текущий проход карточек **не покрывал** ряд крупных подсекций диффа (см. Coverage gaps в
+`docs/fork/native-first-audit.md`). На текущий момент coverage gaps закрыты дополнительными карточками (codex-api,
+app-server, windows-sandbox-rs, exec/mcp-server, state/otel/secrets).
 
 ## Baseline and scope
 
@@ -60,8 +61,11 @@ Generated artifacts verification (do not review line-by-line):
 - **NF-PROTO-004**: on-wire `ModeKind::Custom`. Риск несовместимости с внешними клиентами/персистентностью.
 - **NF-PROTO-007**: `.agents` убран из sandbox read-only subpaths. Потенциальная security-регрессия.
 - **NF-META-005**: удаление `codex-rs/vendor/bubblewrap/**` без доказанного замещения (см. также NF-LS-003).
-- **Coverage gaps:** `codex-rs/codex-api/**`, `codex-rs/app-server/**`, `codex-rs/windows-sandbox-rs/**` и др. пока без
-  карточек; до финального решения по 0.98 нужен отдельный triage (см. `docs/fork/native-first-audit.md`).
+- **NF-APP-SERVER-001/002/003/004**: несколько breaking изменений JSON-RPC контрактов (compact/start, remote skills,
+  model/list upgrade, on-wire `ModeKind::Custom`).
+- **NF-WIN-SB-001/002**: существенные изменения security boundary/токенов в Windows sandbox.
+- **NF-STATE-001/002**: миграционные/контрактные риски state DB (фиксированное имя `state.sqlite`, семантика dynamic tools).
+- **NF-EXEC-001 / NF-MCP-001**: семантика `TurnAborted` и тестовый wire API (Responses vs Chat) в смежных подсистемах.
 
 ### P1 (should-do)
 
