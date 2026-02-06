@@ -29,8 +29,8 @@ status: AgentStatus,
 /**
  * Optional agent type requested for the spawned agent.
  */
-agent_type?: string | null, 
+agent_type?: string, 
 /**
  * Optional agent name requested for the spawned agent.
  */
-agent_name?: string | null, };
+agent_name?: string, };

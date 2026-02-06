@@ -49,7 +49,10 @@ use codex_app_server_protocol::SendUserMessageParams;
 use codex_app_server_protocol::SendUserTurnParams;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SetDefaultModelParams;
+use codex_app_server_protocol::SkillsRemoteReadParams;
+use codex_app_server_protocol::SkillsRemoteWriteParams;
 use codex_app_server_protocol::ThreadArchiveParams;
+use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadLoadedListParams;
@@ -418,6 +421,15 @@ impl McpProcess {
         self.send_request("thread/unarchive", params).await
     }
 
+    /// Send a `thread/compact/start` JSON-RPC request.
+    pub async fn send_thread_compact_start_request(
+        &mut self,
+        params: ThreadCompactStartParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/compact/start", params).await
+    }
+
     /// Send a `thread/rollback` JSON-RPC request.
     pub async fn send_thread_rollback_request(
         &mut self,
@@ -461,6 +473,24 @@ impl McpProcess {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("model/list", params).await
+    }
+
+    /// Send a `skills/remote/read` JSON-RPC request.
+    pub async fn send_skills_remote_read_request(
+        &mut self,
+        params: SkillsRemoteReadParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("skills/remote/read", params).await
+    }
+
+    /// Send a `skills/remote/write` JSON-RPC request.
+    pub async fn send_skills_remote_write_request(
+        &mut self,
+        params: SkillsRemoteWriteParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("skills/remote/write", params).await
     }
 
     /// Send an `app/list` JSON-RPC request.

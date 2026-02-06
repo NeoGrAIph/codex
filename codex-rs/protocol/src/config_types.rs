@@ -166,19 +166,41 @@ pub enum AltScreenMode {
 }
 
 /// Initial collaboration mode to use when the TUI starts.
-#[derive(
-    Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, JsonSchema, TS, Default,
-)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Hash, JsonSchema, TS, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ModeKind {
     Plan,
     #[default]
-    #[serde(alias = "code")]
+    #[serde(alias = "code", alias = "custom")]
     Default,
     PairProgramming,
     Execute,
-    // === FORK: Preserve Custom collaboration mode (used by the fork to represent user-provided instructions).
+
+    // === FORK: Preserve Custom collaboration mode as an internal sentinel only.
+    // It must not appear on-wire / in schemars / in TS exports.
+    #[doc(hidden)]
+    #[serde(skip_deserializing)]
+    #[schemars(skip)]
+    #[ts(skip)]
     Custom,
+}
+
+impl serde::Serialize for ModeKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let wire = match self {
+            Self::Plan => "plan",
+            Self::Default => "default",
+            Self::PairProgramming => "pair_programming",
+            Self::Execute => "execute",
+            // === FORK: internal sentinel; never emit on-wire.
+            Self::Custom => "default",
+        };
+
+        serializer.serialize_str(wire)
+    }
 }
 
 pub const TUI_VISIBLE_COLLABORATION_MODES: [ModeKind; 2] = [ModeKind::Default, ModeKind::Plan];
@@ -327,9 +349,28 @@ mod tests {
     }
 
     #[test]
-    fn mode_kind_deserializes_code_alias_to_default() {
-        let mode: ModeKind = serde_json::from_str("\"code\"").expect("deserialize mode");
-        assert_eq!(ModeKind::Default, mode);
+    fn mode_kind_deserializes_alias_values_to_default() {
+        for alias in ["code", "custom"] {
+            let json = format!("\"{alias}\"");
+            let mode: ModeKind = serde_json::from_str(&json).expect("deserialize mode");
+            assert_eq!(ModeKind::Default, mode);
+        }
+    }
+
+    #[test]
+    fn mode_kind_deserializes_named_values() {
+        let mode: ModeKind =
+            serde_json::from_str("\"pair_programming\"").expect("deserialize mode");
+        assert_eq!(ModeKind::PairProgramming, mode);
+
+        let mode: ModeKind = serde_json::from_str("\"execute\"").expect("deserialize mode");
+        assert_eq!(ModeKind::Execute, mode);
+    }
+
+    #[test]
+    fn mode_kind_serializes_custom_as_default() {
+        let json = serde_json::to_string(&ModeKind::Custom).expect("serialize mode");
+        assert_eq!("\"default\"", json);
     }
 
     #[test]

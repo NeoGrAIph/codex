@@ -386,8 +386,7 @@
         "plan",
         "default",
         "pair_programming",
-        "execute",
-        "custom"
+        "execute"
       ],
       "type": "string"
     },
