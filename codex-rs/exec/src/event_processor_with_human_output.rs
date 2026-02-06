@@ -593,17 +593,21 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                     view.path.display()
                 );
             }
-            EventMsg::TurnAborted(abort_reason) => match abort_reason.reason {
-                TurnAbortReason::Interrupted => {
-                    ts_msg!(self, "task interrupted");
+            EventMsg::TurnAborted(abort_reason) => {
+                match abort_reason.reason {
+                    TurnAbortReason::Interrupted => {
+                        ts_msg!(self, "task interrupted");
+                    }
+                    TurnAbortReason::Replaced => {
+                        ts_msg!(self, "task aborted: replaced by a new task");
+                    }
+                    TurnAbortReason::ReviewEnded => {
+                        ts_msg!(self, "task aborted: review ended");
+                    }
                 }
-                TurnAbortReason::Replaced => {
-                    ts_msg!(self, "task aborted: replaced by a new task");
-                }
-                TurnAbortReason::ReviewEnded => {
-                    ts_msg!(self, "task aborted: review ended");
-                }
-            },
+
+                return CodexStatus::InitiateShutdown;
+            }
             EventMsg::ContextCompacted(_) => {
                 ts_msg!(self, "context compacted");
             }
@@ -926,5 +930,32 @@ fn format_mcp_invocation(invocation: &McpInvocation) -> String {
         format!("{fq_tool_name}()")
     } else {
         format!("{fq_tool_name}({args_str})")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[tokio::test]
+    async fn turn_aborted_initiates_shutdown() {
+        let codex_home = tempfile::tempdir().expect("temp codex home");
+        let config = codex_core::config::ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await
+            .expect("config");
+
+        let mut processor = EventProcessorWithHumanOutput::create_with_ansi(false, &config, None);
+
+        let status = processor.process_event(Event {
+            id: "e1".to_string(),
+            msg: EventMsg::TurnAborted(codex_core::protocol::TurnAbortedEvent {
+                reason: TurnAbortReason::Interrupted,
+            }),
+        });
+
+        assert_eq!(status, CodexStatus::InitiateShutdown);
     }
 }

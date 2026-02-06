@@ -871,8 +871,29 @@ impl EventProcessor for EventProcessorWithJsonOutput {
                 }
                 CodexStatus::InitiateShutdown
             }
+            protocol::EventMsg::TurnAborted(_) => CodexStatus::InitiateShutdown,
             protocol::EventMsg::ShutdownComplete => CodexStatus::Shutdown,
             _ => CodexStatus::Running,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_core::protocol;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn turn_aborted_initiates_shutdown() {
+        let mut processor = EventProcessorWithJsonOutput::new(None);
+        let status = processor.process_event(protocol::Event {
+            id: "e1".to_string(),
+            msg: protocol::EventMsg::TurnAborted(protocol::TurnAbortedEvent {
+                reason: protocol::TurnAbortReason::Interrupted,
+            }),
+        });
+
+        assert_eq!(status, CodexStatus::InitiateShutdown);
     }
 }
