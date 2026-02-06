@@ -79,7 +79,7 @@ Generated artifacts verification (do not review line-by-line):
 - **NF-CORE-007 / NF-LS-001**: exec-policy читает `.codex/rules` из trust-disabled project layer. ✅ DONE (`73681a6e5`, `5ab253881`).
 - **NF-CORE-008**: ослабление requirements constraints (убран source-tracking + убран fallback дефолтов на required).
   ✅ DONE (`2107dc485`).
-- **NF-TUI-003**: удалён upstream streaming chunking/commit_tick orchestration. Риск заметной деградации UX на длинных стримах.
+- **NF-TUI-003**: удалён upstream streaming chunking/commit_tick orchestration. ✅ DONE (`12cb4ea6b`).
 - **NF-PROTO-001**: удалены remote skills RPC/events. Breaking для клиентов.
 - **NF-PROTO-003**: TS schema optional/nullable правила. ✅ DONE (`89c00611c`).
 - **NF-PROTO-004**: on-wire `ModeKind::Custom`. Риск несовместимости с внешними клиентами/персистентностью.
@@ -131,7 +131,7 @@ Generated artifacts verification (do not review line-by-line):
    - Cards: NF-CORE-008, NF-TUI-009.
 4. **Вернуть upstream streaming chunking/commit_tick.**
    - Target: убрать fork UX-регрессии, снизить риск снапшот-чёрна в будущем апгрейде.
-   - Cards: NF-TUI-003.
+   - Cards: NF-TUI-003 ✅ DONE (`12cb4ea6b`).
 5. **Протокол: зафиксировать breaking изменения и совместимость.**
    - Target: определить стратегию миграции клиентов для remote skills; не сериализовать `ModeKind::Custom` наружу;
      стабилизировать TS nullable/optional правило.
