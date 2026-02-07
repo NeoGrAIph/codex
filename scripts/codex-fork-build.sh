@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="/home/neograiph/repo/AGENTS/codex"
+REPO="/home/neograiph/repo/AGENTS/codex-multi-agent"
 cd "$REPO/codex-rs"
 
 # Build release binary for fast local runs.
