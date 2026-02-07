@@ -8,6 +8,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Weak;
 use tokio::sync::watch;
@@ -154,6 +155,27 @@ impl AgentControl {
         let state = self.upgrade()?;
         let thread = state.get_thread(agent_id).await?;
         Ok(thread.subscribe_status())
+    }
+
+    pub(crate) async fn is_descendant_of(&self, ancestor: ThreadId, candidate: ThreadId) -> bool {
+        let Ok(state) = self.upgrade() else {
+            return false;
+        };
+
+        let mut stack = vec![ancestor];
+        let mut visited = HashSet::new();
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+            for child in state.children_of(current).await {
+                if child == candidate {
+                    return true;
+                }
+                stack.push(child);
+            }
+        }
+        false
     }
 
     fn upgrade(&self) -> CodexResult<Arc<ThreadManagerState>> {

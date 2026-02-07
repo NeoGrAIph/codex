@@ -696,6 +696,7 @@ mod wait {
 
 pub mod close_agent {
     use super::*;
+    use codex_protocol::protocol::SessionSource;
     use std::sync::Arc;
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -722,6 +723,34 @@ pub mod close_agent {
                 .into(),
             )
             .await;
+
+        if matches!(turn.session_source, SessionSource::SubAgent(_))
+            && !session
+                .services
+                .agent_control
+                .is_descendant_of(session.conversation_id, agent_id)
+                .await
+        {
+            let status = AgentStatus::Errored(
+                "not permitted to close agents outside your subtree".to_string(),
+            );
+            session
+                .send_event(
+                    &turn,
+                    CollabCloseEndEvent {
+                        call_id: call_id.clone(),
+                        sender_thread_id: session.conversation_id,
+                        receiver_thread_id: agent_id,
+                        status: status.clone(),
+                    }
+                    .into(),
+                )
+                .await;
+            return Err(FunctionCallError::RespondToModel(
+                "Not permitted to close agents outside your subtree.".to_string(),
+            ));
+        }
+
         let status = match session
             .services
             .agent_control
@@ -1544,6 +1573,125 @@ mod tests {
 
         let status_after = manager.agent_control().get_status(agent_id).await;
         assert_eq!(status_after, AgentStatus::NotFound);
+    }
+
+    #[tokio::test]
+    async fn close_agent_rejects_cross_subtree_shutdown_for_subagents() {
+        let (mut root_session, root_turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        root_session.services.agent_control = manager.agent_control();
+        let config = root_turn.config.as_ref().clone();
+        let root_id = root_session.conversation_id;
+
+        let orchestrator_id = root_session
+            .services
+            .agent_control
+            .spawn_agent(
+                config.clone(),
+                "orchestrator".to_string(),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_id,
+                    depth: 1,
+                    agent_type: Some("orchestrator".to_string()),
+                    agent_name: None,
+                })),
+            )
+            .await
+            .expect("spawn orchestrator");
+
+        let sibling_id = root_session
+            .services
+            .agent_control
+            .spawn_agent(
+                config.clone(),
+                "sibling".to_string(),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_id,
+                    depth: 1,
+                    agent_type: Some("worker".to_string()),
+                    agent_name: None,
+                })),
+            )
+            .await
+            .expect("spawn sibling");
+
+        let child_id = root_session
+            .services
+            .agent_control
+            .spawn_agent(
+                config.clone(),
+                "child".to_string(),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: orchestrator_id,
+                    depth: 2,
+                    agent_type: Some("worker".to_string()),
+                    agent_name: None,
+                })),
+            )
+            .await
+            .expect("spawn child");
+
+        // Sub-agent should not be able to close a sibling.
+        let (mut orch_session, mut orch_turn) = make_session_and_context().await;
+        orch_session.conversation_id = orchestrator_id;
+        orch_session.services.agent_control = manager.agent_control();
+        orch_turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: root_id,
+            depth: 1,
+            agent_type: Some("orchestrator".to_string()),
+            agent_name: None,
+        });
+        let invocation = invocation(
+            Arc::new(orch_session),
+            Arc::new(orch_turn),
+            "close_agent",
+            function_payload(json!({"id": sibling_id.to_string()})),
+        );
+        let err = CollabHandler
+            .handle(invocation)
+            .await
+            .expect_err("close_agent should be rejected for sibling agents");
+        let FunctionCallError::RespondToModel(msg) = err else {
+            panic!("expected RespondToModel error");
+        };
+        assert_eq!(msg, "Not permitted to close agents outside your subtree.");
+
+        let ops = manager.captured_ops();
+        let sibling_shutdown = ops
+            .iter()
+            .any(|(id, op)| *id == sibling_id && matches!(op, Op::Shutdown));
+        assert_eq!(sibling_shutdown, false);
+
+        // Sub-agent should be able to close its own child.
+        let (mut orch_session, mut orch_turn) = make_session_and_context().await;
+        orch_session.conversation_id = orchestrator_id;
+        orch_session.services.agent_control = manager.agent_control();
+        orch_turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: root_id,
+            depth: 1,
+            agent_type: Some("orchestrator".to_string()),
+            agent_name: None,
+        });
+        let invocation = invocation(
+            Arc::new(orch_session),
+            Arc::new(orch_turn),
+            "close_agent",
+            function_payload(json!({"id": child_id.to_string()})),
+        );
+        let output = CollabHandler
+            .handle(invocation)
+            .await
+            .expect("close_agent should succeed for child agents");
+        let ToolOutput::Function { success, .. } = output else {
+            panic!("expected function output");
+        };
+        assert_eq!(success, Some(true));
+
+        let ops = manager.captured_ops();
+        let child_shutdown = ops
+            .iter()
+            .any(|(id, op)| *id == child_id && matches!(op, Op::Shutdown));
+        assert_eq!(child_shutdown, true);
     }
 
     #[tokio::test]
