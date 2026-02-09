@@ -321,10 +321,6 @@
       "default_reasoning_level": "medium",
       "supported_reasoning_levels": [
         {
-          "effort": "minimal",
-          "description": "Fastest responses with little reasoning"
-        },
-        {
           "effort": "low",
           "description": "Balances speed with some reasoning; useful for straightforward queries and short explanations"
         },

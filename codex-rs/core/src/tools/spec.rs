@@ -1321,6 +1321,58 @@ fn shell_alias_allows_tool(
         && (allowlist.allows("shell_command") || allowlist.allows("shell"))
 }
 
+fn create_run_skill_script_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "skill".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Skill reference: either a skill name, or a filesystem path to a skill directory / SKILL.md."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "script".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Relative path to a script within the skill's scripts/ directory (no .. or absolute paths)."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "args".to_string(),
+            JsonSchema::Array {
+                description: Some("Arguments passed to the script.".to_string()),
+                items: Box::new(JsonSchema::String { description: None }),
+            },
+        ),
+        (
+            "timeout_ms".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Optional timeout for the command in milliseconds. Defaults to tool/runtime defaults."
+                        .to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "run_skill_script".to_string(),
+        description:
+            "Run a script from a skill's scripts/ directory. The script runs with workdir set to the skill directory."
+                .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["skill".to_string(), "script".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
 /// Builds the tool registry builder while collecting tool specs for later serialization.
 pub(crate) fn build_specs(
     config: &ToolsConfig,
@@ -1337,6 +1389,7 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::PlanHandler;
     use crate::tools::handlers::ReadFileHandler;
     use crate::tools::handlers::RequestUserInputHandler;
+    use crate::tools::handlers::RunSkillScriptHandler;
     use crate::tools::handlers::ShellCommandHandler;
     use crate::tools::handlers::ShellHandler;
     use crate::tools::handlers::TestSyncHandler;
@@ -1356,6 +1409,7 @@ pub(crate) fn build_specs(
     let mcp_resource_handler = Arc::new(McpResourceHandler);
     let shell_command_handler = Arc::new(ShellCommandHandler);
     let request_user_input_handler = Arc::new(RequestUserInputHandler);
+    let run_skill_script_handler = Arc::new(RunSkillScriptHandler);
 
     match &config.shell_type {
         ConfigShellToolType::Default => {
@@ -1384,6 +1438,19 @@ pub(crate) fn build_specs(
         builder.register_handler("container.exec", shell_handler.clone());
         builder.register_handler("local_shell", shell_handler);
         builder.register_handler("shell_command", shell_command_handler);
+
+        // Convenience wrapper for executing scripts shipped with a skill from any workdir.
+        // Only expose it when a shell-like tool is present (Default/Local/ShellCommand),
+        // matching the rest of the "minimal toolset" expectations.
+        if matches!(
+            config.shell_type,
+            ConfigShellToolType::Default
+                | ConfigShellToolType::Local
+                | ConfigShellToolType::ShellCommand
+        ) {
+            builder.push_spec(create_run_skill_script_tool());
+            builder.register_handler("run_skill_script", run_skill_script_handler);
+        }
     }
 
     builder.push_spec_with_parallel_support(create_list_mcp_resources_tool(), true);
@@ -2017,6 +2084,7 @@ mod tests {
             Some(WebSearchMode::Cached),
             &[
                 "shell_command",
+                "run_skill_script",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
@@ -2039,6 +2107,7 @@ mod tests {
             Some(WebSearchMode::Cached),
             &[
                 "shell_command",
+                "run_skill_script",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
@@ -2109,6 +2178,7 @@ mod tests {
             Some(WebSearchMode::Cached),
             &[
                 "local_shell",
+                "run_skill_script",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
@@ -2130,6 +2200,7 @@ mod tests {
             Some(WebSearchMode::Cached),
             &[
                 "shell_command",
+                "run_skill_script",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
@@ -2152,6 +2223,7 @@ mod tests {
             Some(WebSearchMode::Cached),
             &[
                 "shell",
+                "run_skill_script",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
@@ -2173,6 +2245,7 @@ mod tests {
             Some(WebSearchMode::Cached),
             &[
                 "shell_command",
+                "run_skill_script",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",

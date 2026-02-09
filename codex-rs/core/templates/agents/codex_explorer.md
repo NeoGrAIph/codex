@@ -16,6 +16,7 @@ tools:
   - update_plan
   - send_input
   - wait
+  - web_search
 read_only: true
 ---
 

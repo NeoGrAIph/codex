@@ -423,10 +423,6 @@ fn gpt_5() -> ModelPreset {
         default_reasoning_effort: ReasoningEffort::Medium,
         supported_reasoning_efforts: vec![
             effort(
-                ReasoningEffort::Minimal,
-                "Fastest responses with little reasoning",
-            ),
-            effort(
                 ReasoningEffort::Low,
                 "Balances speed with some reasoning; useful for straightforward queries and short explanations",
             ),
@@ -444,12 +440,12 @@ fn gpt_5() -> ModelPreset {
         upgrade: Some(gpt52_codex_upgrade(
             "gpt-5",
             HashMap::from([
-                (ReasoningEffort::XHigh, ReasoningEffort::High),
-                (ReasoningEffort::Minimal, ReasoningEffort::Minimal),
                 (ReasoningEffort::Low, ReasoningEffort::Low),
-                (ReasoningEffort::None, ReasoningEffort::Minimal),
                 (ReasoningEffort::High, ReasoningEffort::High),
                 (ReasoningEffort::Medium, ReasoningEffort::Medium),
+                (ReasoningEffort::None, ReasoningEffort::Low),
+                (ReasoningEffort::Minimal, ReasoningEffort::Low),
+                (ReasoningEffort::XHigh, ReasoningEffort::High),
             ]),
         )),
         show_in_picker: false,

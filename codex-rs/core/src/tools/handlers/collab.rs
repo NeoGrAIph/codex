@@ -31,8 +31,8 @@ pub struct CollabHandler;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
-pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
-pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 300_000;
+pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 300_000;
+pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 900_000;
 
 #[derive(Debug, Deserialize)]
 struct CloseAgentArgs {
@@ -1641,16 +1641,16 @@ mod tests {
             agent_type: Some("orchestrator".to_string()),
             agent_name: None,
         });
-        let invocation = invocation(
+        let close_sibling_invocation = invocation(
             Arc::new(orch_session),
             Arc::new(orch_turn),
             "close_agent",
             function_payload(json!({"id": sibling_id.to_string()})),
         );
-        let err = CollabHandler
-            .handle(invocation)
-            .await
-            .expect_err("close_agent should be rejected for sibling agents");
+        let err = match CollabHandler.handle(close_sibling_invocation).await {
+            Ok(_) => panic!("close_agent should be rejected for sibling agents"),
+            Err(err) => err,
+        };
         let FunctionCallError::RespondToModel(msg) = err else {
             panic!("expected RespondToModel error");
         };
@@ -1672,14 +1672,14 @@ mod tests {
             agent_type: Some("orchestrator".to_string()),
             agent_name: None,
         });
-        let invocation = invocation(
+        let close_child_invocation = invocation(
             Arc::new(orch_session),
             Arc::new(orch_turn),
             "close_agent",
             function_payload(json!({"id": child_id.to_string()})),
         );
         let output = CollabHandler
-            .handle(invocation)
+            .handle(close_child_invocation)
             .await
             .expect("close_agent should succeed for child agents");
         let ToolOutput::Function { success, .. } = output else {
