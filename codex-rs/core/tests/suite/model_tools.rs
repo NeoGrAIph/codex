@@ -62,6 +62,7 @@ async fn model_selects_expected_tools() {
         codex_tools,
         vec![
             "local_shell".to_string(),
+            "run_skill_script".to_string(),
             "list_mcp_resources".to_string(),
             "list_mcp_resource_templates".to_string(),
             "read_mcp_resource".to_string(),
@@ -78,6 +79,7 @@ async fn model_selects_expected_tools() {
         gpt5_codex_tools,
         vec![
             "shell_command".to_string(),
+            "run_skill_script".to_string(),
             "list_mcp_resources".to_string(),
             "list_mcp_resource_templates".to_string(),
             "read_mcp_resource".to_string(),
@@ -95,6 +97,7 @@ async fn model_selects_expected_tools() {
         gpt51_codex_tools,
         vec![
             "shell_command".to_string(),
+            "run_skill_script".to_string(),
             "list_mcp_resources".to_string(),
             "list_mcp_resource_templates".to_string(),
             "read_mcp_resource".to_string(),
@@ -112,6 +115,7 @@ async fn model_selects_expected_tools() {
         gpt52_codex_tools,
         vec![
             "shell_command".to_string(),
+            "run_skill_script".to_string(),
             "list_mcp_resources".to_string(),
             "list_mcp_resource_templates".to_string(),
             "read_mcp_resource".to_string(),
@@ -132,6 +136,7 @@ async fn model_selects_expected_tools() {
         gpt5_tools,
         vec![
             "shell".to_string(),
+            "run_skill_script".to_string(),
             "list_mcp_resources".to_string(),
             "list_mcp_resource_templates".to_string(),
             "read_mcp_resource".to_string(),
@@ -148,6 +153,7 @@ async fn model_selects_expected_tools() {
         gpt51_tools,
         vec![
             "shell_command".to_string(),
+            "run_skill_script".to_string(),
             "list_mcp_resources".to_string(),
             "list_mcp_resource_templates".to_string(),
             "read_mcp_resource".to_string(),
@@ -165,6 +171,7 @@ async fn model_selects_expected_tools() {
         vec![
             "exec_command".to_string(),
             "write_stdin".to_string(),
+            "run_skill_script".to_string(),
             "list_mcp_resources".to_string(),
             "list_mcp_resource_templates".to_string(),
             "read_mcp_resource".to_string(),

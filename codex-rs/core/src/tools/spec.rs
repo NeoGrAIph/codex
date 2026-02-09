@@ -1440,13 +1440,13 @@ pub(crate) fn build_specs(
         builder.register_handler("shell_command", shell_command_handler);
 
         // Convenience wrapper for executing scripts shipped with a skill from any workdir.
-        // Only expose it when a shell-like tool is present (Default/Local/ShellCommand),
-        // matching the rest of the "minimal toolset" expectations.
+        // Expose it whenever command execution is available (including UnifiedExec).
         if matches!(
             config.shell_type,
             ConfigShellToolType::Default
                 | ConfigShellToolType::Local
                 | ConfigShellToolType::ShellCommand
+                | ConfigShellToolType::UnifiedExec
         ) {
             builder.push_spec(create_run_skill_script_tool());
             builder.register_handler("run_skill_script", run_skill_script_handler);
@@ -1798,6 +1798,7 @@ mod tests {
         for spec in [
             create_exec_command_tool(true),
             create_write_stdin_tool(),
+            create_run_skill_script_tool(),
             create_list_mcp_resources_tool(),
             create_list_mcp_resource_templates_tool(),
             create_read_mcp_resource_tool(),
@@ -2132,6 +2133,7 @@ mod tests {
             &[
                 "exec_command",
                 "write_stdin",
+                "run_skill_script",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
@@ -2156,6 +2158,7 @@ mod tests {
             &[
                 "exec_command",
                 "write_stdin",
+                "run_skill_script",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
@@ -2269,6 +2272,7 @@ mod tests {
             &[
                 "exec_command",
                 "write_stdin",
+                "run_skill_script",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
@@ -2293,6 +2297,7 @@ mod tests {
             &[
                 "exec_command",
                 "write_stdin",
+                "run_skill_script",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",
