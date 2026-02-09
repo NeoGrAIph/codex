@@ -95,7 +95,7 @@ Each response yields:
 - `items` – ordered list of models. A model includes:
   - `id`, `model`, `displayName`, `description`
   - `supportedReasoningEfforts` – array of objects with:
-    - `reasoningEffort` – one of `minimal|low|medium|high`
+    - `reasoningEffort` – one of `low|medium|high`
     - `description` – human-friendly label for the effort
   - `defaultReasoningEffort` – suggested effort for the UI
   - `supportsPersonality` – whether the model supports personality-specific instructions

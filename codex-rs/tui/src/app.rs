@@ -2989,7 +2989,6 @@ impl App {
 
     fn reasoning_label(reasoning_effort: Option<ReasoningEffortConfig>) -> &'static str {
         match reasoning_effort {
-            Some(ReasoningEffortConfig::Minimal) => "minimal",
             Some(ReasoningEffortConfig::Low) => "low",
             Some(ReasoningEffortConfig::Medium) => "medium",
             Some(ReasoningEffortConfig::High) => "high",

@@ -40,7 +40,7 @@ const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
 #[strum(serialize_all = "lowercase")]
 pub enum ReasoningEffort {
     None,
-    Minimal,
+    #[serde(alias = "minimal")]
     Low,
     #[default]
     Medium,
@@ -458,11 +458,10 @@ fn reasoning_effort_mapping_from_presets(
 fn effort_rank(effort: ReasoningEffort) -> i32 {
     match effort {
         ReasoningEffort::None => 0,
-        ReasoningEffort::Minimal => 1,
-        ReasoningEffort::Low => 2,
-        ReasoningEffort::Medium => 3,
-        ReasoningEffort::High => 4,
-        ReasoningEffort::XHigh => 5,
+        ReasoningEffort::Low => 1,
+        ReasoningEffort::Medium => 2,
+        ReasoningEffort::High => 3,
+        ReasoningEffort::XHigh => 4,
     }
 }
 

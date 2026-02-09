@@ -47,7 +47,7 @@ tools: ["read_file", "apply_patch"]
 You are a senior architect...
 ```
 
-`model` must be a valid model slug (no alias mapping is applied). `reasoning_effort` is optional and should be one of: `minimal`, `low`, `medium`, `high`, `xhigh`.
+`model` must be a valid model slug (no alias mapping is applied). `reasoning_effort` is optional and should be one of: `low`, `medium`, `high`, `xhigh`.
 
 `tools` can be a list or a comma-separated string. If present, it acts as an allowlist
 that is intersected with any existing tool allowlist (it never expands beyond the

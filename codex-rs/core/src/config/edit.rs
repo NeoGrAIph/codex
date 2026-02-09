@@ -1149,7 +1149,7 @@ model_reasoning_effort = "low"
             None,
             &[ConfigEdit::SetModel {
                 model: Some("o5-preview".to_string()),
-                effort: Some(ReasoningEffort::Minimal),
+                effort: Some(ReasoningEffort::Low),
             }],
         )
         .expect("persist");
@@ -1159,7 +1159,7 @@ model_reasoning_effort = "low"
         let expected = r#"profile = "team"
 
 [profiles.team]
-model_reasoning_effort = "minimal"
+model_reasoning_effort = "low"
 model = "o5-preview"
 "#;
         assert_eq!(contents, expected);

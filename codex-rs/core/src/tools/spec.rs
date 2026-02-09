@@ -534,7 +534,7 @@ fn create_spawn_agent_tool(
         "reasoning_effort".to_string(),
         JsonSchema::String {
             description: Some(
-                "Optional reasoning effort override for the spawned agent (highest priority). Allowed: none, minimal, low, medium, high, xhigh."
+                "Optional reasoning effort override for the spawned agent (highest priority). Allowed: none, low, medium, high, xhigh."
                     .to_string(),
             ),
         },

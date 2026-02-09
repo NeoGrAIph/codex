@@ -138,7 +138,6 @@ fn gpt_5_1_codex_max() -> ModelPreset {
                 (ReasoningEffort::None, ReasoningEffort::Low),
                 (ReasoningEffort::Medium, ReasoningEffort::Medium),
                 (ReasoningEffort::High, ReasoningEffort::High),
-                (ReasoningEffort::Minimal, ReasoningEffort::Low),
                 (ReasoningEffort::XHigh, ReasoningEffort::XHigh),
             ]),
         )),
@@ -172,7 +171,6 @@ fn gpt_5_1_codex_mini() -> ModelPreset {
             HashMap::from([
                 (ReasoningEffort::High, ReasoningEffort::High),
                 (ReasoningEffort::XHigh, ReasoningEffort::High),
-                (ReasoningEffort::Minimal, ReasoningEffort::Medium),
                 (ReasoningEffort::None, ReasoningEffort::Medium),
                 (ReasoningEffort::Low, ReasoningEffort::Medium),
                 (ReasoningEffort::Medium, ReasoningEffort::Medium),
@@ -218,7 +216,6 @@ fn gpt_5_2() -> ModelPreset {
             HashMap::from([
                 (ReasoningEffort::High, ReasoningEffort::High),
                 (ReasoningEffort::None, ReasoningEffort::Low),
-                (ReasoningEffort::Minimal, ReasoningEffort::Low),
                 (ReasoningEffort::Low, ReasoningEffort::Low),
                 (ReasoningEffort::Medium, ReasoningEffort::Medium),
                 (ReasoningEffort::XHigh, ReasoningEffort::XHigh),
@@ -324,7 +321,6 @@ fn gpt_5_codex() -> ModelPreset {
         upgrade: Some(gpt52_codex_upgrade(
             "gpt-5-codex",
             HashMap::from([
-                (ReasoningEffort::Minimal, ReasoningEffort::Low),
                 (ReasoningEffort::High, ReasoningEffort::High),
                 (ReasoningEffort::Medium, ReasoningEffort::Medium),
                 (ReasoningEffort::XHigh, ReasoningEffort::High),
@@ -365,7 +361,6 @@ fn gpt_5_codex_mini() -> ModelPreset {
                 (ReasoningEffort::High, ReasoningEffort::High),
                 (ReasoningEffort::Low, ReasoningEffort::Medium),
                 (ReasoningEffort::Medium, ReasoningEffort::Medium),
-                (ReasoningEffort::Minimal, ReasoningEffort::Medium),
             ]),
         )),
         show_in_picker: false,
@@ -400,7 +395,6 @@ fn gpt_5_1_codex() -> ModelPreset {
         upgrade: Some(gpt52_codex_upgrade(
             "gpt-5.1-codex",
             HashMap::from([
-                (ReasoningEffort::Minimal, ReasoningEffort::Low),
                 (ReasoningEffort::Low, ReasoningEffort::Low),
                 (ReasoningEffort::Medium, ReasoningEffort::Medium),
                 (ReasoningEffort::None, ReasoningEffort::Low),
@@ -444,7 +438,6 @@ fn gpt_5() -> ModelPreset {
                 (ReasoningEffort::High, ReasoningEffort::High),
                 (ReasoningEffort::Medium, ReasoningEffort::Medium),
                 (ReasoningEffort::None, ReasoningEffort::Low),
-                (ReasoningEffort::Minimal, ReasoningEffort::Low),
                 (ReasoningEffort::XHigh, ReasoningEffort::High),
             ]),
         )),
@@ -485,7 +478,6 @@ fn gpt_5_1() -> ModelPreset {
                 (ReasoningEffort::High, ReasoningEffort::High),
                 (ReasoningEffort::XHigh, ReasoningEffort::High),
                 (ReasoningEffort::Low, ReasoningEffort::Low),
-                (ReasoningEffort::Minimal, ReasoningEffort::Low),
             ]),
         )),
         show_in_picker: false,
