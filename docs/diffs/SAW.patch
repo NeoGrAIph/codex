@@ -1,0 +1,2074 @@
+# Uncommitted changes (excluding codex-rs/Cargo.lock)
+# Repo: ~/repo/AGENTS/codex
+# HEAD: ec9f76ce4f854c7d4f3c78c9b1bacbe128df286e
+# Generated: 2026-02-12T16:00:22+08:00
+
+## git status --porcelain
+ M AGENTS.md
+ M codex-rs/tui/src/app.rs
+ M codex-rs/tui/src/app_backtrack.rs
+ M codex-rs/tui/src/lib.rs
+ M codex-rs/tui/src/pager_overlay.rs
+?? codex-rs/tui/src/agents_overlay.rs
+?? docs/features/
+?? docs/research/
+
+## git diff (unstaged)
+diff --git a/AGENTS.md b/AGENTS.md
+index 292e4c92d..912392e33 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -17,6 +17,67 @@ In the codex-rs folder where the rust code lives:
+ - If you change `ConfigToml` or nested config types, run `just write-config-schema` to update `codex-rs/core/config.schema.json`.
+ - Do not create small helper methods that are referenced only once.
+ 
++## Fork customization requirements
++
++When implementing or refining fork-specific behavior, keep the change contract explicit in code:
++
++- Wrap each introduced fork block with paired markers:
++  - `<CodeName> COMMIT OPEN: ...`
++  - `<CodeName> COMMIT CLOSE: ...`
++- Near the `COMMIT OPEN` marker, include a short comment that explains the role/purpose of the block.
++- If existing logic is replaced, preserve the removed implementation as a nearby commented `legacy` snippet (do not delete it outright).
++- Keep this pattern localized to the touched area and avoid broad refactors.
++
++Example for this repository's current feature (SubAgentsWindow / SAW):
++
++- `SAW COMMIT OPEN: ...`
++- `SAW COMMIT CLOSE: ...`
++
++## Release research documentation
++
++For fork work tied to a specific upstream release/tag, keep a research package in `docs/research/<release>/` (for example `docs/research/0.99/`).
++
++Before implementation starts (or when scope changes), ensure the package contains:
++
++- a `README.md` index with baseline commit/tag and document list;
++- baseline/branch state and min-diff strategy docs;
++- quality gates/checks and open questions checklist;
++- TUI window/overlay behavior notes when the feature touches TUI UX.
++
++For TUI window/overlay notes, document at minimum:
++
++- which hotkeys and handlers own window transitions (`handle_key_event` vs overlay/backtrack routing);
++- alt-screen lifecycle invariants (`enter_alt_screen`/`leave_alt_screen`, and guards like `tui.is_alt_screen_active()`);
++- buffered history/flush behavior while overlay is open and expected return-to-inline-screen behavior on close.
++
++## Feature documentation workflow (`docs/features`)
++
++For every fork feature, keep a dedicated spec in `docs/features/<code-name>.md` and treat it as the single source of truth for that feature.
++
++Minimum structure for each feature document:
++
++- **Feature passport**
++  - code name, current status (`draft` / `in-progress` / `implemented` / `verified`);
++  - goal, scope in/out, API/security/config impact;
++  - upstream baseline reference and links to `docs/research/<release>/...` package.
++- **User contract**
++  - exact user-visible behavior and transitions (hotkeys, overlays, empty states, close behavior);
++  - exact UI strings for critical states (to avoid wording drift between code and docs).
++- **Implementation map**
++  - touched files and key entry points/handlers;
++  - where fork markers (`<CodeName> COMMIT OPEN/CLOSE`) are expected.
++- **Verification matrix**
++  - required checks/commands;
++  - current result and known non-feature failures (if any), explicitly marked as unrelated.
++- **Doc changelog**
++  - concise dated notes when contract or implementation mapping changes.
++
++Working rules:
++
++- Update feature doc in the same change set whenever behavior or implementation mapping changes.
++- If logic is moved to a new file/module, update the file map and algorithm section immediately.
++- Do not create duplicate docs for the same feature code name; evolve the existing file.
++
+ Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, run the tests:
+ 
+ 1. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `cargo test -p codex-tui`.
+diff --git a/codex-rs/tui/src/app.rs b/codex-rs/tui/src/app.rs
+index d30b747eb..685034908 100644
+--- a/codex-rs/tui/src/app.rs
++++ b/codex-rs/tui/src/app.rs
+@@ -1,3 +1,5 @@
++use crate::agents_overlay::AgentSummaryEntry;
++use crate::agents_overlay::build_agents_overlay_lines;
+ use crate::app_backtrack::BacktrackState;
+ use crate::app_event::AppEvent;
+ use crate::app_event::ExitMode;
+@@ -15,6 +17,7 @@ use crate::chatwidget::ChatWidget;
+ use crate::chatwidget::ExternalEditorState;
+ use crate::cwd_prompt::CwdPromptAction;
+ use crate::diff_render::DiffSummary;
++use crate::exec_command::relativize_to_home;
+ use crate::exec_command::strip_bash_lc_and_escape;
+ use crate::external_editor;
+ use crate::file_search::FileSearchManager;
+@@ -25,6 +28,7 @@ use crate::history_cell::UpdateAvailableHistoryCell;
+ use crate::model_migration::ModelMigrationOutcome;
+ use crate::model_migration::migration_copy_for_models;
+ use crate::model_migration::run_model_migration_prompt;
++use crate::pager_overlay::AGENTS_OVERLAY_TITLE;
+ use crate::pager_overlay::Overlay;
+ use crate::render::highlight::highlight_bash_to_lines;
+ use crate::render::renderable::Renderable;
+@@ -47,15 +51,18 @@ use codex_core::features::Feature;
+ use codex_core::models_manager::manager::RefreshStrategy;
+ use codex_core::models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
+ use codex_core::models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
++use codex_core::protocol::AgentStatus;
+ use codex_core::protocol::AskForApproval;
+ use codex_core::protocol::Event;
+ use codex_core::protocol::EventMsg;
++use codex_core::protocol::FileChange;
+ use codex_core::protocol::FinalOutput;
+ use codex_core::protocol::ListSkillsResponseEvent;
+ use codex_core::protocol::Op;
+ use codex_core::protocol::SandboxPolicy;
+ use codex_core::protocol::SessionSource;
+ use codex_core::protocol::SkillErrorInfo;
++use codex_core::protocol::SubAgentSource;
+ use codex_core::protocol::TokenUsage;
+ #[cfg(target_os = "windows")]
+ use codex_core::windows_sandbox::WindowsSandboxLevelExt;
+@@ -66,6 +73,7 @@ use codex_protocol::config_types::Personality;
+ #[cfg(target_os = "windows")]
+ use codex_protocol::config_types::WindowsSandboxLevel;
+ use codex_protocol::items::TurnItem;
++use codex_protocol::models::WebSearchAction;
+ use codex_protocol::openai_models::ModelPreset;
+ use codex_protocol::openai_models::ModelUpgrade;
+ use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+@@ -136,6 +144,17 @@ pub(crate) enum AppRunControl {
+     Exit(ExitReason),
+ }
+ 
++// SAW COMMIT OPEN: state-machine ролей Ctrl+T (Transcript -> SAW -> Close).
++// Назначение: централизовать решение "какой overlay открыть/закрыть на очередном Ctrl+T".
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum CtrlTOverlayAction {
++    OpenTranscript,
++    OpenAgents,
++    CloseAgents,
++    None,
++}
++// SAW COMMIT CLOSE: enum маршрутизации Ctrl+T.
++
+ #[derive(Debug, Clone)]
+ pub enum ExitReason {
+     UserRequested,
+@@ -242,6 +261,9 @@ struct SessionSummary {
+ struct ThreadEventSnapshot {
+     session_configured: Option<Event>,
+     events: Vec<Event>,
++    created_at: Instant,
++    latest_status: AgentStatus,
++    status_changed_at: Instant,
+ }
+ 
+ #[derive(Debug)]
+@@ -251,16 +273,23 @@ struct ThreadEventStore {
+     user_message_ids: HashSet<String>,
+     capacity: usize,
+     active: bool,
++    created_at: Instant,
++    latest_status: AgentStatus,
++    status_changed_at: Instant,
+ }
+ 
+ impl ThreadEventStore {
+     fn new(capacity: usize) -> Self {
++        let now = Instant::now();
+         Self {
+             session_configured: None,
+             buffer: VecDeque::new(),
+             user_message_ids: HashSet::new(),
+             capacity,
+             active: false,
++            created_at: now,
++            latest_status: AgentStatus::PendingInit,
++            status_changed_at: now,
+         }
+     }
+ 
+@@ -273,6 +302,12 @@ impl ThreadEventStore {
+     fn push_event(&mut self, event: Event) {
+         match &event.msg {
+             EventMsg::SessionConfigured(_) => {
++                if self.session_configured.is_none() {
++                    let now = Instant::now();
++                    self.created_at = now;
++                    self.latest_status = AgentStatus::PendingInit;
++                    self.status_changed_at = now;
++                }
+                 self.session_configured = Some(event);
+                 return;
+             }
+@@ -302,6 +337,22 @@ impl ThreadEventStore {
+         {
+             return;
+         }
++        let next_status = match &event.msg {
++            EventMsg::TurnStarted(_) => Some(AgentStatus::Running),
++            EventMsg::TurnComplete(ev) => {
++                Some(AgentStatus::Completed(ev.last_agent_message.clone()))
++            }
++            EventMsg::TurnAborted(ev) => Some(AgentStatus::Errored(format!("{:?}", ev.reason))),
++            EventMsg::Error(ev) => Some(AgentStatus::Errored(ev.message.clone())),
++            EventMsg::ShutdownComplete => Some(AgentStatus::Shutdown),
++            _ => None,
++        };
++        if let Some(next_status) = next_status
++            && next_status != self.latest_status
++        {
++            self.latest_status = next_status;
++            self.status_changed_at = Instant::now();
++        }
+         self.buffer.push_back(event);
+         if self.buffer.len() > self.capacity
+             && let Some(removed) = self.buffer.pop_front()
+@@ -316,6 +367,9 @@ impl ThreadEventStore {
+         ThreadEventSnapshot {
+             session_configured: self.session_configured.clone(),
+             events: self.buffer.iter().cloned().collect(),
++            created_at: self.created_at,
++            latest_status: self.latest_status.clone(),
++            status_changed_at: self.status_changed_at,
+         }
+     }
+ }
+@@ -782,7 +836,10 @@ impl App {
+         Ok(())
+     }
+ 
+-    async fn open_agent_picker(&mut self) {
++    // SAW COMMIT OPEN: вспомогательные методы цикла Ctrl+T и окна / A G E N T S /.
++    // Роль: переиспользуемая выборка агентных thread_id, определение следующего шага цикла,
++    // и построение обзорного overlay по spawned-агентам.
++    async fn available_thread_ids(&mut self) -> Vec<ThreadId> {
+         let thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
+         for thread_id in thread_ids {
+             if self.server.get_thread(thread_id).await.is_err() {
+@@ -790,15 +847,437 @@ impl App {
+             }
+         }
+ 
+-        if self.thread_event_channels.is_empty() {
++        let mut thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
++        thread_ids.sort_by_key(ToString::to_string);
++        thread_ids
++    }
++
++    fn ctrl_t_overlay_action(&self) -> CtrlTOverlayAction {
++        match self.overlay.as_ref() {
++            None => CtrlTOverlayAction::OpenTranscript,
++            Some(overlay) if overlay.is_transcript() => CtrlTOverlayAction::OpenAgents,
++            Some(overlay) if overlay.is_agents() => CtrlTOverlayAction::CloseAgents,
++            Some(_) => CtrlTOverlayAction::None,
++        }
++    }
++
++    async fn collect_agents_overlay_lines(&mut self) -> Vec<Line<'static>> {
++        let thread_ids = self.available_thread_ids().await;
++        let now = Instant::now();
++
++        const SAW_TOOL_DETAIL_MAX_CHARS: usize = 160;
++
++        const SAW_REDACTED: &str = "<redacted>";
++
++        fn saw_truncate_detail(detail: String) -> String {
++            let mut iter = detail.chars();
++            let mut out = String::new();
++
++            for _ in 0..SAW_TOOL_DETAIL_MAX_CHARS {
++                match iter.next() {
++                    Some(ch) => out.push(ch),
++                    None => return out,
++                }
++            }
++
++            if iter.next().is_some() {
++                out.pop();
++                out.push('…');
++            }
++
++            out
++        }
++
++        fn saw_normalize_ws(input: &str) -> String {
++            let mut out = String::new();
++            let mut prev_space = true;
++            for ch in input.chars() {
++                let ch = if ch.is_control() { ' ' } else { ch };
++                let is_space = ch.is_whitespace();
++                if is_space {
++                    if !prev_space {
++                        out.push(' ');
++                    }
++                } else {
++                    out.push(ch);
++                }
++                prev_space = is_space;
++            }
++            out.trim().to_string()
++        }
++
++        fn saw_strip_url_query_fragment(url: &str) -> String {
++            let mut out = url;
++            if let Some((prefix, _)) = out.split_once('#') {
++                out = prefix;
++            }
++            if let Some((prefix, _)) = out.split_once('?') {
++                out = prefix;
++            }
++            out.to_string()
++        }
++
++        fn saw_is_secret_key(key: &str) -> bool {
++            let key = key.to_ascii_lowercase();
++            matches!(
++                key.as_str(),
++                "authorization"
++                    | "api_key"
++                    | "apikey"
++                    | "token"
++                    | "secret"
++                    | "password"
++                    | "cookie"
++                    | "set-cookie"
++                    | "session"
++                    | "private_key"
++                    | "privatekey"
++                    | "bearer"
++            )
++        }
++
++        fn saw_redact_json(value: &serde_json::Value, depth: usize) -> serde_json::Value {
++            if depth >= 3 {
++                return match value {
++                    serde_json::Value::Object(_) => serde_json::Value::String("{…}".to_string()),
++                    serde_json::Value::Array(_) => serde_json::Value::String("[…]".to_string()),
++                    other => other.clone(),
++                };
++            }
++
++            match value {
++                serde_json::Value::Object(map) => {
++                    let mut next = serde_json::Map::new();
++                    for (k, v) in map.iter() {
++                        if saw_is_secret_key(k) {
++                            next.insert(
++                                k.clone(),
++                                serde_json::Value::String(SAW_REDACTED.to_string()),
++                            );
++                        } else {
++                            next.insert(k.clone(), saw_redact_json(v, depth + 1));
++                        }
++                    }
++                    serde_json::Value::Object(next)
++                }
++                serde_json::Value::Array(items) => {
++                    let max_items = 6usize;
++                    let mut next: Vec<serde_json::Value> = items
++                        .iter()
++                        .take(max_items)
++                        .map(|v| saw_redact_json(v, depth + 1))
++                        .collect();
++                    if items.len() > max_items {
++                        next.push(serde_json::Value::String(format!(
++                            "…(+{} more)",
++                            items.len().saturating_sub(max_items)
++                        )));
++                    }
++                    serde_json::Value::Array(next)
++                }
++                serde_json::Value::String(s) => {
++                    let normalized = saw_normalize_ws(s);
++                    if normalized.chars().count() > 80 {
++                        serde_json::Value::String(SAW_REDACTED.to_string())
++                    } else {
++                        serde_json::Value::String(normalized)
++                    }
++                }
++                other => other.clone(),
++            }
++        }
++
++        fn saw_format_json_args(value: &serde_json::Value) -> String {
++            let redacted = saw_redact_json(value, 0);
++            serde_json::to_string(&redacted).unwrap_or_else(|_| redacted.to_string())
++        }
++
++        fn saw_format_patch_changes_detail(
++            changes: &HashMap<PathBuf, FileChange>,
++        ) -> Option<String> {
++            if changes.is_empty() {
++                return None;
++            }
++
++            let mut adds = 0usize;
++            let mut updates = 0usize;
++            let mut deletes = 0usize;
++            for change in changes.values() {
++                match change {
++                    FileChange::Add { .. } => adds += 1,
++                    FileChange::Update { .. } => updates += 1,
++                    FileChange::Delete { .. } => deletes += 1,
++                }
++            }
++
++            let mut paths: Vec<String> = changes
++                .keys()
++                .map(|path| path.display().to_string())
++                .collect();
++            paths.sort();
++
++            let total_files = paths.len();
++            let mut detail = format!(
++                "A:{adds} M:{updates} D:{deletes} ({total_files} {files_label})",
++                files_label = if total_files == 1 { "file" } else { "files" }
++            );
++
++            let max_paths = 3usize;
++            let shown: Vec<&str> = paths.iter().take(max_paths).map(String::as_str).collect();
++            let remaining = total_files.saturating_sub(shown.len());
++            if !shown.is_empty() {
++                detail.push_str(": ");
++                detail.push_str(&shown.join(", "));
++                if remaining > 0 {
++                    detail.push_str(&format!(" (+{remaining} more)"));
++                }
++            }
++
++            Some(detail)
++        }
++
++        let mut agents: Vec<AgentSummaryEntry> = Vec::new();
++        for thread_id in thread_ids {
++            let Some(channel) = self.thread_event_channels.get(&thread_id) else {
++                continue;
++            };
++            let snapshot = {
++                let store = channel.store.lock().await;
++                store.snapshot()
++            };
++
++            let thread = match self.server.get_thread(thread_id).await {
++                Ok(thread) => thread,
++                Err(_) => continue,
++            };
++            let config_snapshot = thread.config_snapshot().await;
++
++            let (parent_thread_id, role) = match config_snapshot.session_source {
++                SessionSource::SubAgent(SubAgentSource::Review) => (None, "review".to_string()),
++                SessionSource::SubAgent(SubAgentSource::Compact) => (None, "compact".to_string()),
++                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++                    parent_thread_id, ..
++                }) => (Some(parent_thread_id), "subagent".to_string()),
++                SessionSource::SubAgent(SubAgentSource::Other(other)) => (None, other),
++                _ => continue,
++            };
++
++            let context_left_percent = snapshot.events.iter().rev().find_map(|event| {
++                if let EventMsg::TokenCount(token) = &event.msg {
++                    token.info.as_ref().and_then(|info| {
++                        info.model_context_window.and_then(|window| {
++                            (window > 0).then(|| {
++                                info.last_token_usage
++                                    .percent_of_context_window_remaining(window)
++                            })
++                        })
++                    })
++                } else {
++                    None
++                }
++            });
++
++            let (last_tool, last_tool_detail) = snapshot
++                .events
++                .iter()
++                .rev()
++                .find_map(|event| match &event.msg {
++                    EventMsg::ExecApprovalRequest(ev) => Some((
++                        "shell".to_string(),
++                        Some(saw_truncate_detail(strip_bash_lc_and_escape(&ev.command))),
++                    )),
++                    EventMsg::ExecCommandBegin(ev) => Some((
++                        "shell".to_string(),
++                        Some(saw_truncate_detail(strip_bash_lc_and_escape(&ev.command))),
++                    )),
++                    EventMsg::ExecCommandEnd(ev) => Some((
++                        "shell".to_string(),
++                        Some(saw_truncate_detail(strip_bash_lc_and_escape(&ev.command))),
++                    )),
++                    EventMsg::ApplyPatchApprovalRequest(ev) => Some((
++                        "apply_patch".to_string(),
++                        saw_format_patch_changes_detail(&ev.changes).map(saw_truncate_detail),
++                    )),
++                    EventMsg::PatchApplyBegin(ev) => Some((
++                        "apply_patch".to_string(),
++                        saw_format_patch_changes_detail(&ev.changes).map(saw_truncate_detail),
++                    )),
++                    EventMsg::PatchApplyEnd(ev) => Some((
++                        "apply_patch".to_string(),
++                        saw_format_patch_changes_detail(&ev.changes).map(saw_truncate_detail),
++                    )),
++                    EventMsg::WebSearchEnd(ev) => Some((
++                        "web_search".to_string(),
++                        Some(saw_truncate_detail(match &ev.action {
++                            WebSearchAction::Search { .. } => {
++                                let query = &ev.query;
++                                let query = saw_normalize_ws(query);
++                                format!("search: {query}")
++                            }
++                            WebSearchAction::OpenPage { url } => url
++                                .as_ref()
++                                .map(|url| {
++                                    let url = saw_strip_url_query_fragment(url);
++                                    format!("open: {url}")
++                                })
++                                .unwrap_or_else(|| {
++                                    let query = &ev.query;
++                                    let query = saw_normalize_ws(query);
++                                    format!("open: {query}")
++                                }),
++                            WebSearchAction::FindInPage { url, pattern } => {
++                                let mut detail = "find".to_string();
++                                if let Some(pattern) = pattern.as_ref() {
++                                    let pattern = saw_normalize_ws(pattern);
++                                    detail.push_str(&format!(": {pattern}"));
++                                }
++                                if let Some(url) = url.as_ref() {
++                                    let url = saw_strip_url_query_fragment(url);
++                                    detail.push_str(&format!(" in {url}"));
++                                } else {
++                                    let query = &ev.query;
++                                    let query = saw_normalize_ws(query);
++                                    detail.push_str(&format!(": {query}"));
++                                }
++                                detail
++                            }
++                            WebSearchAction::Other => saw_normalize_ws(&ev.query),
++                        })),
++                    )),
++                    EventMsg::WebSearchBegin(_) => Some(("web_search".to_string(), None)),
++                    EventMsg::ViewImageToolCall(ev) => Some((
++                        "view_image".to_string(),
++                        Some(saw_truncate_detail({
++                            let display = if let Some(rel) = relativize_to_home(&ev.path) {
++                                format!("~/{}", rel.display())
++                            } else {
++                                ev.path.display().to_string()
++                            };
++                            saw_normalize_ws(&display)
++                        })),
++                    )),
++                    EventMsg::McpToolCallBegin(ev) => {
++                        let server = ev.invocation.server.as_str();
++                        let tool = ev.invocation.tool.as_str();
++                        Some((
++                            format!("{server}.{tool}"),
++                            ev.invocation
++                                .arguments
++                                .as_ref()
++                                .map(|args| saw_truncate_detail(saw_format_json_args(args))),
++                        ))
++                    }
++                    EventMsg::McpToolCallEnd(ev) => {
++                        let server = ev.invocation.server.as_str();
++                        let tool = ev.invocation.tool.as_str();
++                        Some((
++                            format!("{server}.{tool}"),
++                            ev.invocation
++                                .arguments
++                                .as_ref()
++                                .map(|args| saw_truncate_detail(saw_format_json_args(args))),
++                        ))
++                    }
++                    EventMsg::DynamicToolCallRequest(req) => Some((
++                        req.tool.clone(),
++                        Some(saw_truncate_detail(saw_format_json_args(&req.arguments))),
++                    )),
++                    _ => None,
++                })
++                .map_or((None, None), |(tool, detail)| (Some(tool), detail));
++
++            agents.push(AgentSummaryEntry {
++                thread_id,
++                parent_thread_id,
++                role,
++                model: config_snapshot.model,
++                reasoning: Self::reasoning_label(config_snapshot.reasoning_effort).to_string(),
++                status: snapshot.latest_status,
++                created_at: snapshot.created_at,
++                status_changed_at: snapshot.status_changed_at,
++                context_left_percent,
++                last_tool,
++                last_tool_detail,
++            });
++        }
++
++        // SAW legacy (восстановлено как комментарий):
++        // lines.push(format!("Spawned agents: {}", agents.len()).into());
++        // lines.push("* marks the focused thread.".into());
++        // lines.push("".into());
++        // for (thread_id, status, task) in agents { ... flat list ... }
++        build_agents_overlay_lines(&agents, now, self.config.animations)
++    }
++
++    async fn open_agents_overlay(&mut self, tui: &mut tui::Tui) {
++        let lines = self.collect_agents_overlay_lines().await;
++
++        self.backtrack.overlay_preview_active = false;
++        self.reset_backtrack_state();
++        // SAW legacy (восстановлено как комментарий):
++        // let _ = tui.enter_alt_screen();
++        if !tui.is_alt_screen_active() {
++            let _ = tui.enter_alt_screen();
++        }
++        self.overlay = Some(Overlay::new_static_with_lines(
++            lines,
++            AGENTS_OVERLAY_TITLE.to_string(),
++        ));
++        tui.frame_requester().schedule_frame();
++    }
++
++    async fn refresh_agents_overlay_if_active(&mut self, tui: &mut tui::Tui) {
++        if !self.overlay.as_ref().is_some_and(Overlay::is_agents) {
++            return;
++        }
++
++        let lines = self.collect_agents_overlay_lines().await;
++        if let Some(overlay) = self.overlay.as_mut() {
++            overlay.replace_static_lines_if_title(AGENTS_OVERLAY_TITLE, lines);
++        }
++
++        if self.config.animations {
++            tui.frame_requester()
++                .schedule_frame_in(tui::TARGET_FRAME_INTERVAL);
++        } else {
++            tui.frame_requester()
++                .schedule_frame_in(Duration::from_secs(1));
++        }
++    }
++
++    pub(crate) async fn handle_ctrl_t_key(&mut self, tui: &mut tui::Tui) {
++        match self.ctrl_t_overlay_action() {
++            CtrlTOverlayAction::OpenTranscript => self.open_transcript_overlay(tui),
++            CtrlTOverlayAction::OpenAgents => self.open_agents_overlay(tui).await,
++            CtrlTOverlayAction::CloseAgents => {
++                self.close_transcript_overlay(tui);
++                tui.frame_requester().schedule_frame();
++            }
++            CtrlTOverlayAction::None => {}
++        }
++    }
++    // SAW COMMIT CLOSE: вспомогательные методы цикла Ctrl+T и окна / A G E N T S /.
++
++    async fn open_agent_picker(&mut self) {
++        // SAW legacy (восстановлено как комментарий):
++        // до выделения `available_thread_ids()` prune/sort выполнялись inline:
++        // let thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
++        // for thread_id in thread_ids {
++        //     if self.server.get_thread(thread_id).await.is_err() {
++        //         self.thread_event_channels.remove(&thread_id);
++        //     }
++        // }
++        // if self.thread_event_channels.is_empty() { ... }
++        // let mut thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
++        // thread_ids.sort_by_key(ToString::to_string);
++
++        let thread_ids = self.available_thread_ids().await;
++        if thread_ids.is_empty() {
+             self.chat_widget
+                 .add_info_message("No agents available yet.".to_string(), None);
+             return;
+         }
+ 
+-        let mut thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
+-        thread_ids.sort_by_key(ToString::to_string);
+-
+         let mut initial_selected_idx = None;
+         let items: Vec<SelectionItem> = thread_ids
+             .iter()
+@@ -1269,6 +1748,9 @@ impl App {
+         }
+ 
+         if self.overlay.is_some() {
++            if matches!(event, TuiEvent::Draw) {
++                self.refresh_agents_overlay_if_active(tui).await;
++            }
+             let _ = self.handle_backtrack_overlay_event(tui, event).await?;
+         } else {
+             match event {
+@@ -2512,10 +2994,15 @@ impl App {
+                 kind: KeyEventKind::Press,
+                 ..
+             } => {
+-                // Enter alternate screen and set viewport to full size.
+-                let _ = tui.enter_alt_screen();
+-                self.overlay = Some(Overlay::new_transcript(self.transcript_cells.clone()));
+-                tui.frame_requester().schedule_frame();
++                // SAW COMMIT OPEN: Ctrl+T routed through unified cycle handler.
++                // Назначение: обеспечить цикл None -> Transcript -> SAW -> None.
++                // SAW legacy (восстановлено как комментарий):
++                // // Enter alternate screen and set viewport to full size.
++                // let _ = tui.enter_alt_screen();
++                // self.overlay = Some(Overlay::new_transcript(self.transcript_cells.clone()));
++                // tui.frame_requester().schedule_frame();
++                self.handle_ctrl_t_key(tui).await;
++                // SAW COMMIT CLOSE: Ctrl+T unified cycle handler.
+             }
+             KeyEvent {
+                 code: KeyCode::Char('g'),
+@@ -2723,6 +3210,34 @@ mod tests {
+         Ok(())
+     }
+ 
++    #[tokio::test]
++    // SAW COMMIT OPEN: проверка state-machine переходов Ctrl+T.
++    // Роль: зафиксировать контракт цикла overlay-состояний и защитить от регрессий.
++    async fn ctrl_t_overlay_action_cycles_transcript_and_agents_overlays() {
++        let mut app = make_test_app().await;
++
++        assert_eq!(
++            app.ctrl_t_overlay_action(),
++            CtrlTOverlayAction::OpenTranscript
++        );
++
++        app.overlay = Some(Overlay::new_transcript(Vec::new()));
++        assert_eq!(app.ctrl_t_overlay_action(), CtrlTOverlayAction::OpenAgents);
++
++        app.overlay = Some(Overlay::new_static_with_lines(
++            Vec::<Line<'static>>::new(),
++            AGENTS_OVERLAY_TITLE.to_string(),
++        ));
++        assert_eq!(app.ctrl_t_overlay_action(), CtrlTOverlayAction::CloseAgents);
++
++        app.overlay = Some(Overlay::new_static_with_lines(
++            Vec::<Line<'static>>::new(),
++            "D I F F".to_string(),
++        ));
++        assert_eq!(app.ctrl_t_overlay_action(), CtrlTOverlayAction::None);
++    }
++    // SAW COMMIT CLOSE: проверка state-machine переходов Ctrl+T.
++
+     async fn make_test_app() -> App {
+         let (chat_widget, app_event_tx, _rx, _op_rx) = make_chatwidget_manual_with_sender().await;
+         let config = chat_widget.config_ref().clone();
+diff --git a/codex-rs/tui/src/app_backtrack.rs b/codex-rs/tui/src/app_backtrack.rs
+index 22b437ec5..52079d181 100644
+--- a/codex-rs/tui/src/app_backtrack.rs
++++ b/codex-rs/tui/src/app_backtrack.rs
+@@ -44,6 +44,7 @@ use color_eyre::eyre::Result;
+ use crossterm::event::KeyCode;
+ use crossterm::event::KeyEvent;
+ use crossterm::event::KeyEventKind;
++use crossterm::event::KeyModifiers;
+ 
+ /// Aggregates all backtrack-related state used by the App.
+ #[derive(Default)]
+@@ -108,6 +109,26 @@ impl App {
+         tui: &mut tui::Tui,
+         event: TuiEvent,
+     ) -> Result<bool> {
++        // SAW COMMIT OPEN: intercept Ctrl+T on transcript/agents overlay before backtrack routing.
++        // Role: keep steps 2/3 of the Ctrl+T cycle working while events flow via overlay path.
++        if matches!(
++            &event,
++            TuiEvent::Key(KeyEvent {
++                code: KeyCode::Char('t'),
++                modifiers: KeyModifiers::CONTROL,
++                kind: KeyEventKind::Press,
++                ..
++            })
++        ) && self
++            .overlay
++            .as_ref()
++            .is_some_and(|overlay| overlay.is_transcript() || overlay.is_agents())
++        {
++            self.handle_ctrl_t_key(tui).await;
++            return Ok(true);
++        }
++        // SAW COMMIT CLOSE: Ctrl+T overlay intercept.
++
+         if self.backtrack.overlay_preview_active {
+             match event {
+                 TuiEvent::Key(KeyEvent {
+diff --git a/codex-rs/tui/src/lib.rs b/codex-rs/tui/src/lib.rs
+index f457881ed..4cd7d3d56 100644
+--- a/codex-rs/tui/src/lib.rs
++++ b/codex-rs/tui/src/lib.rs
+@@ -53,6 +53,7 @@ use tracing_subscriber::prelude::*;
+ use uuid::Uuid;
+ 
+ mod additional_dirs;
++mod agents_overlay;
+ mod app;
+ mod app_backtrack;
+ mod app_event;
+diff --git a/codex-rs/tui/src/pager_overlay.rs b/codex-rs/tui/src/pager_overlay.rs
+index f04310cd8..ce096b66f 100644
+--- a/codex-rs/tui/src/pager_overlay.rs
++++ b/codex-rs/tui/src/pager_overlay.rs
+@@ -50,6 +50,11 @@ pub(crate) enum Overlay {
+     Static(StaticOverlay),
+ }
+ 
++// SAW COMMIT OPEN: title identifier for the agents overlay.
++// Role: safely distinguish / A G E N T S / from other static overlays.
++pub(crate) const AGENTS_OVERLAY_TITLE: &str = "A G E N T S";
++// SAW COMMIT CLOSE: title identifier for the agents overlay.
++
+ impl Overlay {
+     pub(crate) fn new_transcript(cells: Vec<Arc<dyn HistoryCell>>) -> Self {
+         Self::Transcript(TranscriptOverlay::new(cells))
+@@ -79,6 +84,31 @@ impl Overlay {
+             Overlay::Static(o) => o.is_done(),
+         }
+     }
++
++    // SAW COMMIT OPEN: lightweight predicates for Ctrl+T routing.
++    // Role: detect current overlay type without changing the enum shape.
++    pub(crate) fn is_transcript(&self) -> bool {
++        matches!(self, Overlay::Transcript(_))
++    }
++
++    pub(crate) fn is_agents(&self) -> bool {
++        matches!(self, Overlay::Static(o) if o.view.title == AGENTS_OVERLAY_TITLE)
++    }
++
++    pub(crate) fn replace_static_lines_if_title(
++        &mut self,
++        title: &str,
++        lines: Vec<Line<'static>>,
++    ) -> bool {
++        match self {
++            Overlay::Static(o) if o.view.title == title => {
++                o.replace_lines(lines);
++                true
++            }
++            _ => false,
++        }
++    }
++    // SAW COMMIT CLOSE: lightweight predicates for Ctrl+T routing.
+ }
+ 
+ const KEY_UP: KeyBinding = key_hint::plain(KeyCode::Up);
+@@ -725,6 +755,11 @@ impl StaticOverlay {
+         }
+     }
+ 
++    pub(crate) fn replace_lines(&mut self, lines: Vec<Line<'static>>) {
++        let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
++        self.view.renderables = vec![Box::new(CachedRenderable::new(paragraph))];
++    }
++
+     fn render_hints(&self, area: Rect, buf: &mut Buffer) {
+         let line1 = Rect::new(area.x, area.y, area.width, 1);
+         let line2 = Rect::new(area.x, area.y.saturating_add(1), area.width, 1);
+
+## git diff --cached (staged)
+
+## diffs for untracked files
+
+### codex-rs/tui/src/agents_overlay.rs
+diff --git a/codex-rs/tui/src/agents_overlay.rs b/codex-rs/tui/src/agents_overlay.rs
+new file mode 100644
+index 000000000..b8c20fed1
+--- /dev/null
++++ b/codex-rs/tui/src/agents_overlay.rs
+@@ -0,0 +1,218 @@
++use codex_core::protocol::AgentStatus;
++use codex_protocol::ThreadId;
++use ratatui::style::Stylize;
++use ratatui::text::Line;
++use ratatui::text::Span;
++use std::collections::HashMap;
++use std::time::Instant;
++
++use crate::exec_cell::spinner;
++use crate::shimmer::shimmer_spans;
++use crate::status_indicator_widget::fmt_elapsed_compact;
++
++#[derive(Debug, Clone)]
++pub(crate) struct AgentSummaryEntry {
++    pub(crate) thread_id: ThreadId,
++    pub(crate) parent_thread_id: Option<ThreadId>,
++    pub(crate) role: String,
++    pub(crate) model: String,
++    pub(crate) reasoning: String,
++    pub(crate) status: AgentStatus,
++    pub(crate) created_at: Instant,
++    pub(crate) status_changed_at: Instant,
++    pub(crate) context_left_percent: Option<i64>,
++    // SAW COMMIT OPEN: last tool for SAW summary.
++    // Role: surface the last tool-related event seen on this thread as a single summary line.
++    pub(crate) last_tool: Option<String>,
++    pub(crate) last_tool_detail: Option<String>,
++    // SAW COMMIT CLOSE: last tool for SAW summary.
++}
++
++pub(crate) fn build_agents_overlay_lines(
++    agents: &[AgentSummaryEntry],
++    now: Instant,
++    animations_enabled: bool,
++) -> Vec<Line<'static>> {
++    if agents.is_empty() {
++        return vec!["No active sub-agent threads.".italic().into()];
++    }
++
++    let mut index_by_thread_id: HashMap<ThreadId, usize> = HashMap::new();
++    for (index, entry) in agents.iter().enumerate() {
++        index_by_thread_id.insert(entry.thread_id, index);
++    }
++
++    let mut children: HashMap<usize, Vec<usize>> = HashMap::new();
++    let mut roots: Vec<usize> = Vec::new();
++    for (index, entry) in agents.iter().enumerate() {
++        if let Some(parent_index) = entry
++            .parent_thread_id
++            .and_then(|parent| index_by_thread_id.get(&parent).copied())
++        {
++            children.entry(parent_index).or_default().push(index);
++        } else {
++            roots.push(index);
++        }
++    }
++
++    roots.sort_by(|a, b| {
++        agents[*a]
++            .thread_id
++            .to_string()
++            .cmp(&agents[*b].thread_id.to_string())
++    });
++    for child_indexes in children.values_mut() {
++        child_indexes.sort_by(|a, b| {
++            agents[*a]
++                .thread_id
++                .to_string()
++                .cmp(&agents[*b].thread_id.to_string())
++        });
++    }
++
++    fn push_tree(
++        index: usize,
++        depth: usize,
++        children: &HashMap<usize, Vec<usize>>,
++        out: &mut Vec<(usize, usize)>,
++    ) {
++        out.push((index, depth));
++        if let Some(kids) = children.get(&index) {
++            for kid in kids {
++                push_tree(*kid, depth + 1, children, out);
++            }
++        }
++    }
++
++    let mut ordered: Vec<(usize, usize)> = Vec::new();
++    for root in roots {
++        push_tree(root, 0, &children, &mut ordered);
++    }
++
++    let mut lines: Vec<Line<'static>> = Vec::new();
++    for (index, depth) in ordered {
++        let entry = &agents[index];
++        let indent = "  ".repeat(depth);
++        let spawned_elapsed =
++            fmt_elapsed_compact(now.saturating_duration_since(entry.created_at).as_secs());
++        let activity_elapsed = fmt_elapsed_compact(
++            now.saturating_duration_since(entry.status_changed_at)
++                .as_secs(),
++        );
++        let first_line_spans: Vec<Span<'static>> = vec![
++            format!("{indent}• ").into(),
++            "Role: ".dim(),
++            entry.role.clone().into(),
++            "  ".into(),
++            "Model: ".dim(),
++            entry.model.clone().dim(),
++            "  ".into(),
++            "Reasoning: ".dim(),
++            entry.reasoning.clone().dim(),
++            "  ".into(),
++            "Spawned: ".dim(),
++            spawned_elapsed.dim(),
++        ];
++        lines.push(first_line_spans.into());
++
++        let mut second_line_spans: Vec<Span<'static>> = vec![
++            format!("{indent}  ").into(),
++            entry.thread_id.to_string().dim(),
++            "  ".into(),
++            "Status: ".dim(),
++            status_span(&entry.status),
++            "  ".into(),
++            "Context left: ".dim(),
++        ];
++        second_line_spans.extend(context_left_display_spans(entry.context_left_percent));
++        lines.push(second_line_spans.into());
++
++        let is_active = matches!(
++            entry.status,
++            AgentStatus::PendingInit | AgentStatus::Running
++        );
++        let activity_label = activity_label(&entry.status);
++        let mut third_line_spans: Vec<Span<'static>> = vec![format!("{indent}  ").into()];
++        if is_active {
++            third_line_spans.push(spinner(Some(entry.status_changed_at), animations_enabled));
++        } else {
++            third_line_spans.push("•".dim());
++        }
++        third_line_spans.push(" ".into());
++        if is_active && animations_enabled {
++            third_line_spans.extend(shimmer_spans(activity_label));
++        } else {
++            third_line_spans.push(activity_label_span(activity_label, &entry.status));
++        }
++        third_line_spans.push(" ".into());
++        third_line_spans.push(format!("({activity_elapsed})").dim());
++        lines.push(third_line_spans.into());
++
++        // SAW COMMIT OPEN: render last tool line.
++        // Role: show the most recent tool-related event (or approval request) seen for this agent.
++        let mut fourth_line_spans: Vec<Span<'static>> =
++            vec![format!("{indent}  ").into(), "Last tool: ".dim()];
++        if let Some(tool) = entry.last_tool.as_ref() {
++            fourth_line_spans.push(tool.clone().into());
++        } else {
++            fourth_line_spans.push("—".dim());
++        }
++        lines.push(fourth_line_spans.into());
++
++        if let Some(detail) = entry.last_tool_detail.as_ref() {
++            lines.push(vec![format!("{indent}    └ ").dim(), detail.clone().dim()].into());
++        }
++        // SAW COMMIT CLOSE: render last tool line.
++    }
++
++    lines
++}
++
++fn status_span(status: &AgentStatus) -> Span<'static> {
++    match status {
++        AgentStatus::PendingInit => "pending init".dim(),
++        AgentStatus::Running => "running".cyan(),
++        AgentStatus::Completed(_) => "completed".green(),
++        AgentStatus::Errored(_) => "errored".red(),
++        AgentStatus::Shutdown => "shutdown".dim(),
++        AgentStatus::NotFound => "not found".red(),
++    }
++}
++
++fn context_left_display_spans(percent: Option<i64>) -> Vec<Span<'static>> {
++    match percent {
++        Some(percent) => {
++            let percent = percent.clamp(0, 100);
++            let percent_span = if percent < 15 {
++                format!("{percent}%").red()
++            } else if percent < 30 {
++                format!("{percent}%").magenta()
++            } else {
++                format!("{percent}%").into()
++            };
++            vec![percent_span, " left".dim()]
++        }
++        None => vec!["—".dim()],
++    }
++}
++
++fn activity_label(status: &AgentStatus) -> &'static str {
++    match status {
++        AgentStatus::PendingInit | AgentStatus::Running => "Working",
++        AgentStatus::Completed(_) => "Completed",
++        AgentStatus::Errored(_) => "Errored",
++        AgentStatus::Shutdown => "Shutdown",
++        AgentStatus::NotFound => "Not found",
++    }
++}
++
++fn activity_label_span(label: &'static str, status: &AgentStatus) -> Span<'static> {
++    match status {
++        AgentStatus::PendingInit => label.dim(),
++        AgentStatus::Running => label.into(),
++        AgentStatus::Completed(_) => label.green(),
++        AgentStatus::Errored(_) => label.red(),
++        AgentStatus::Shutdown => label.dim(),
++        AgentStatus::NotFound => label.red(),
++    }
++}
+
+### docs/features/saw.md
+diff --git a/docs/features/saw.md b/docs/features/saw.md
+new file mode 100644
+index 000000000..d12490d17
+--- /dev/null
++++ b/docs/features/saw.md
+@@ -0,0 +1,253 @@
++# SubAgentsWindow (SAW): окно sub-agents и цикл `Ctrl+T`
++
++## Кодовое имя
++
++`SubAgentsWindow` (сокращение: `SAW`) — кодовое имя fork-функции, которая добавляет окно `/ A G E N T S /` (summary по sub-agents) и включает его в цикл `Ctrl+T`.
++
++## Паспорт feature
++
++- Кодовое имя: `SubAgentsWindow (SAW)`.
++- Статус: `implemented` (локально проверено; есть известные version-related падения snapshot/user-agent тестов, не связанные с логикой SAW).
++- Goal: единый цикл `Ctrl+T` для `Transcript -> SubAgentsWindow (SAW) -> Close` с корректным возвратом терминала в inline-screen.
++- Scope in: `codex-rs/tui`.
++- Scope out: API/протоколы/безопасность/конфиги.
++- API impact: отсутствует.
++- Security/policy impact: отсутствует.
++- Config/flags: не добавлялись.
++- Базовый пакет исследований релиза: `docs/research/0.99/README.md`.
++- Связанные исследования:
++  - `docs/research/0.99/BASELINE_AND_BRANCH_STATE.md`
++  - `docs/research/0.99/MIN_DIFF_IMPLEMENTATION_STRATEGY.md`
++  - `docs/research/0.99/QUALITY_GATES_AND_CHECKS.md`
++  - `docs/research/0.99/TUI_WINDOWS_AND_OVERLAYS.md`
++
++## Назначение
++
++`SubAgentsWindow (SAW)` вводит единый пользовательский цикл для быстрого просмотра контекста сессии и состояния заспавненных агентов без выхода из текущей TUI-сессии.
++
++Цель:
++
++- Ускорить переключение между историей диалога и обзором агентной активности.
++- Уменьшить количество разных хоткеев/режимов для операторов, работающих с форком и мульти-агентными сценариями.
++- Сохранить минимальный diff и не менять API/протоколы.
++
++## Пользовательское поведение
++
++Нажатие `Ctrl+T` теперь образует цикл из трёх состояний:
++
++1. `None -> / T R A N S C R I P T /`
++2. `/ T R A N S C R I P T / -> / A G E N T S /` (`SAW`)
++3. `/ A G E N T S /` (`SAW`) `-> None`
++
++При переходе `3` терминал возвращается в обычный режим корректно: без повторного входа в alt-screen и без визуального эффекта "перемотки" окна.
++
++Что видит пользователь в `/ A G E N T S /`:
++
++- дерево sub-agent тредов (иерархия по `parent_thread_id` с отступами depth);
++- для каждого агента первая строка:
++  - `Role`;
++  - `Model`;
++  - `Reasoning`;
++  - `Spawned` (elapsed с момента spawn в формате `fmt_elapsed_compact`);
++- для каждого агента вторая строка:
++  - `thread_id`;
++  - статус (`pending init`, `running`, `completed`, `errored`, `shutdown`, `not found`);
++  - `Context left` (процент или `—`).
++- для каждого агента третья строка:
++  - mini status-indicator в стиле `Working`-строки;
++  - спиннер + activity label (`Working`/`Completed`/`Errored`/`Shutdown`/`Not found`);
++  - elapsed с момента смены статуса в формате `fmt_elapsed_compact` (например `1m 04s`, `1h 00m 00s`).
++- для каждого агента четвертая строка:
++  - `Last tool` (например `shell`, `apply_patch`, `web_search`, `server.tool`, `view_image` или `—`).
++  - `Last tool detail` (опционально): следующей строкой показывается короткая “подпись” последнего вызова инструмента.
++    - `shell`: конкретная команда (как в exec overlay; `strip_bash_lc_and_escape`).
++    - `apply_patch`: агрегат A/M/D + кол-во файлов + первые пути.
++    - `web_search`: `search/open/find` с нормализованным query/url (без query/fragment для url).
++    - `server.tool` (MCP) и `DynamicToolCallRequest`: аргументы в компактном JSON-формате с простым редактированием секретов по ключам (например `token`, `authorization`) и агрессивным truncation.
++    - `view_image`: путь (в виде `~/...`, если под `$HOME`).
++  - для остальных инструментов сейчас выводится только лейбл инструмента (без дополнительной строки с деталями).
++- окно `/ A G E N T S /` обновляется в реальном времени, пока открыто:
++  - при включённых анимациях — с каденсом `TARGET_FRAME_INTERVAL`;
++  - при выключённых анимациях — с каденсом `1s`.
++- цветовая семантика:
++  - `running` — cyan, `completed` — green, `errored`/`not found` — red, `pending init`/`shutdown` — dim;
++  - `Context left`: `<15%` — red, `<30%` — magenta, иначе default; суффикс `left` — dim.
++  - activity label в третьей строке: `completed` — green, `errored`/`not found` — red, `pending init`/`shutdown` — dim; для активных (`pending init`/`running`) используется спиннер и shimmer-стиль (если анимации включены).
++
++Если заспавненных sub-агентов нет, отображается `No active sub-agent threads.`.
++
++## Scope и ограничения
++
++- Scope in: только `codex-rs/tui`.
++- API impact: отсутствует.
++- Security/policy impact: отсутствует.
++- Конфиги и флаги: не добавлялись.
++- Поведение существующих несвязанных overlay (например, diff/static overlays) не меняется.
++
++## Логика реализации
++
++### 1) Маркер типа overlay и распознавание состояния
++
++Файл: `codex-rs/tui/src/pager_overlay.rs`
++
++Добавлено:
++
++- константа заголовка агентного окна: `AGENTS_OVERLAY_TITLE = "A G E N T S"`;
++- методы:
++  - `Overlay::is_transcript()`
++  - `Overlay::is_agents()`
++
++Это нужно, чтобы роутинг `Ctrl+T` принимал решение по текущему типу overlay без изменения существующей архитектуры `Overlay::{Transcript, Static}`.
++
++### 2) Локальная state-machine на уровне `App`
++
++Файл: `codex-rs/tui/src/app.rs`
++
++Добавлено:
++
++- enum `CtrlTOverlayAction`:
++  - `OpenTranscript`
++  - `OpenAgents`
++  - `CloseAgents`
++  - `None`
++- вычисление шага цикла: `ctrl_t_overlay_action()`
++- единая точка входа: `handle_ctrl_t_key()`
++
++Решение по следующему шагу:
++
++- нет overlay -> открыть transcript;
++- открыт transcript -> открыть agents;
++- открыт agents -> закрыть overlay (выход в обычный режим);
++- открыт любой другой static overlay -> не вмешиваться (`None`).
++
++### 3) Построение содержимого `/ A G E N T S /`
++
++Файл: `codex-rs/tui/src/app.rs`
++
++Добавлены:
++
++- `available_thread_ids()` — единый метод prune/sort для `thread_event_channels`;
++- `open_agents_overlay()` — сбор данных для summary;
++- вынесенный модуль `codex-rs/tui/src/agents_overlay.rs` — построение дерева и форматирование строк summary.
++
++Алгоритм `open_agents_overlay()`:
++
++1. Получить актуальные `thread_id` через `available_thread_ids()`.
++2. Для каждого треда:
++   - взять snapshot из `ThreadEventStore`;
++   - взять `config_snapshot` треда и оставить только `SessionSource::SubAgent(_)`;
++   - построить иерархию по `SubAgentSource::ThreadSpawn { parent_thread_id, .. }`;
++   - вычислить `Context left` из последнего `EventMsg::TokenCount` (`last_token_usage` + `model_context_window`);
++   - взять статус из последнего состояния `ThreadEventStore` и время его смены.
++3. Сформировать 4-5 строк на агента:
++   - строка 1: `Role/Model/Reasoning/Spawned`;
++   - строка 2: `thread_id/Status/Context left`;
++   - строка 3: `Working`-совместимый mini status-indicator + elapsed.
++   - строка 4: `Last tool`.
++   - строка 5 (опционально): `Last tool detail` (если доступно для данного события).
++4. Сформировать список строк для `Overlay::new_static_with_lines(..., "A G E N T S")`.
++5. Сбросить backtrack-preview состояние и показать overlay в alt-screen, но вызывать `enter_alt_screen()` только если alt-screen ещё не активен (`if !tui.is_alt_screen_active()`).
++6. Пока overlay активен, на каждом `TuiEvent::Draw` выполняется `refresh_agents_overlay_if_active()`:
++   - пересчёт строк summary;
++   - обновление содержимого static-overlay без его закрытия;
++   - планирование следующего redraw по каденсу анимаций.
++
++### 3.1) Корректный возврат терминала (root cause и fix)
++
++Файлы: `codex-rs/tui/src/app.rs`, `codex-rs/tui/src/tui.rs`
++
++Root cause в ранней реализации SAW:
++
++- на шаге `/ T R A N S C R I P T / -> / A G E N T S /` выполнялся повторный `tui.enter_alt_screen()`;
++- `enter_alt_screen()` сохраняет `alt_saved_viewport`, и повторный вызов в уже активном alt-screen перезаписывал точку восстановления viewport;
++- на третьем `Ctrl+T` (`/ A G E N T S / -> None`) нативный `leave_alt_screen()` восстанавливал уже не исходный inline viewport, что визуально проявлялось как "перемотка" окна терминала.
++
++Финальный fix:
++
++- в `open_agents_overlay()` добавлен guard:
++  - `if !tui.is_alt_screen_active() { let _ = tui.enter_alt_screen(); }`
++- нативная логика `close_transcript_overlay()` не менялась.
++
++Итог:
++
++- сохранено upstream-поведение закрытия transcript overlay;
++- устранён побочный эффект SAW-сценария при цикле `Ctrl+T`.
++
++### 4) Интеграция с существующим потоком событий overlay
++
++Проблема: когда overlay уже открыт, события идут не через обычный `handle_key_event`, а через `handle_backtrack_overlay_event`.
++
++Файл: `codex-rs/tui/src/app_backtrack.rs`
++
++Добавлен ранний перехват `Ctrl+T` в `handle_backtrack_overlay_event()`:
++
++- если активен transcript/agents overlay, вызвать `handle_ctrl_t_key()` и завершить обработку.
++
++Это критично для 2-го и 3-го шага цикла.
++
++### 5) Замена старого прямого открытия transcript
++
++Файл: `codex-rs/tui/src/app.rs`
++
++В `handle_key_event()` ветка `Ctrl+T` теперь вызывает `handle_ctrl_t_key()` вместо прямого `Overlay::new_transcript(...)`.
++
++## Совместимость и минимальный diff
++
++Принципы, сохранённые в реализации:
++
++- не добавлялись новые публичные API;
++- не изменялись wire-структуры и протоколы;
++- не менялась базовая модель `Overlay`;
++- не менялось поведение несвязанных popup/static overlays;
++- переиспользована текущая инфраструктура `thread_event_channels` и `ThreadManager`.
++
++## Верификация (актуальное состояние на 2026-02-12)
++
++Файл: `codex-rs/tui/src/app.rs`
++
++Добавлен тест:
++
++- `ctrl_t_overlay_action_cycles_transcript_and_agents_overlays`
++
++Он проверяет state-machine переходы:
++
++- `None -> OpenTranscript`
++- `Transcript -> OpenAgents`
++- `Agents -> CloseAgents`
++- `Other static overlay -> None`
++
++Ручная проверка:
++
++```bash
++cd codex-rs && cargo build && cargo run --bin codex
++```
++
++Далее в TUI: `Ctrl+T` (Transcript) -> `Ctrl+T` (SAW) -> `Ctrl+T` (Close).
++
++Результаты обязательных проверок:
++
++- `just fmt` — passed.
++- `just fix -p codex-tui` — passed.
++- `cargo test -p codex-tui` — failed только на известных snapshot-тестах статуса (расхождение версии `v0.0.0` vs `v0.99.0`).
++- `cargo test --all-features` — failed только на известном `app-server` тесте `user_agent` (расхождение версии `0.0.0` vs `0.99.0`).
++
++## Операционные заметки
++
++- `SAW` дополняет `/agent` picker, но не заменяет его.
++- `/ A G E N T S /` — обзорное окно состояния; выбор агента для фокуса по-прежнему делается через существующий picker.
++- Summary-рендер дерева и двухстрочного представления вынесен в `codex-rs/tui/src/agents_overlay.rs`.
++
++## Файлы реализации
++
++- `codex-rs/tui/src/pager_overlay.rs`
++- `codex-rs/tui/src/app.rs`
++- `codex-rs/tui/src/app_backtrack.rs`
++- `codex-rs/tui/src/agents_overlay.rs`
++
++## Резюме
++
++`SubAgentsWindow (SAW)` стандартизирует управление двумя ключевыми обзорными окнами TUI по одному хоткею `Ctrl+T`, добавляет быстрый доступ к статусу spawned-агентов и делает это без изменения API и без широкого рефакторинга.
++
++## Журнал изменений документа
++
++- `2026-02-12`: добавлен паспорт feature, ссылки на research-пакет `0.99`, матрица верификации и фиксация known-failures; добавлена секция ручной проверки (`cargo build && cargo run --bin codex`); обновлена операционная часть под текущее вынесение рендера в `agents_overlay.rs`; переименовано кодовое имя фичи в `SubAgentsWindow (SAW)` (fork-маркеры в коде: `SAW COMMIT OPEN/CLOSE`); добавлена 4-я строка `Last tool` и 5-я опциональная строка `Last tool detail` (универсально для `shell/apply_patch/web_search/mcp/dynamic/view_image`, c truncation/redaction).
+
+### docs/research/0.99/ARCHITECTURE_AND_EXTENSION_POINTS.md
+diff --git a/docs/research/0.99/ARCHITECTURE_AND_EXTENSION_POINTS.md b/docs/research/0.99/ARCHITECTURE_AND_EXTENSION_POINTS.md
+new file mode 100644
+index 000000000..471f00606
+--- /dev/null
++++ b/docs/research/0.99/ARCHITECTURE_AND_EXTENSION_POINTS.md
+@@ -0,0 +1,119 @@
++# Архитектура и точки расширения (для minimal diff)
++
++## 1) Каркас системы (на уровне crate-ов)
++
++1. `codex-rs/cli` — входная точка бинаря `codex`, роутинг сабкоманд и запуск `tui/exec/app-server`.
++   - См.: `codex-rs/cli/src/main.rs`.
++2. `codex-rs/core` — бизнес-логика, конфиг, тулы, оркестрация turn/thread, policy/sandbox.
++   - См.: `codex-rs/core/src/lib.rs`.
++3. `codex-rs/protocol` — внутренние/общие wire-типы.
++   - См.: `codex-rs/protocol/src/*`.
++4. `codex-rs/app-server-protocol` + `codex-rs/app-server` — внешнее JSON-RPC API для IDE/интеграций.
++   - См.: `codex-rs/app-server-protocol/src/protocol/v2.rs`, `codex-rs/app-server/README.md`.
++5. `codex-rs/tui` — UI-слой, привязка к core/config, рендер, hotkeys.
++   - См.: `codex-rs/tui/src/lib.rs`.
++6. `codex-rs/exec` — non-interactive сценарии (`codex exec` / review flow).
++
++## 2) Слой конфигурации и ограничений
++
++Критично для любой новой фичи, влияющей на runtime behavior:
++
++1. Типы user config: `codex-rs/core/src/config/mod.rs` (`ConfigToml`, `Config`).
++2. Порядок слоёв и trust/requirements enforcement:
++   - `codex-rs/core/src/config_loader/mod.rs`.
++3. Feature flags:
++   - `codex-rs/core/src/features.rs`.
++
++Ключевой факт: в коде уже есть сложная многоуровневая модель (`system/user/cwd/tree/repo/runtime + requirements`).
++Для минимального diff расширять нужно существующие точки (feature/config fields), а не вводить параллельный механизм.
++
++## 3) Tooling pipeline (куда добавлять новый tool)
++
++Базовые точки:
++
++1. Регистрация/описание tool specs:
++   - `codex-rs/core/src/tools/spec.rs`
++2. Реализация handler:
++   - `codex-rs/core/src/tools/handlers/mod.rs`
++   - конкретный модуль в `codex-rs/core/src/tools/handlers/*`
++3. Если нужен wire/API экспортер:
++   - `codex-rs/app-server-protocol/src/protocol/v2.rs`
++   - с последующей регенерацией схем.
++
++Правило минимального diff: добавить новый handler + подключение в существующую фабрику, не перерабатывая общий `tools/spec` pipeline.
++
++## 4) Skills/Hooks как наименее конфликтные extension точки
++
++1. Skills:
++   - `codex-rs/core/src/skills/mod.rs`
++   - `codex-rs/core/src/skills/loader.rs`
++   - `codex-rs/core/src/skills/manager.rs`
++2. Hooks:
++   - `codex-rs/hooks/src/types.rs`
++   - `codex-rs/hooks/src/registry.rs`
++
++Если фича может быть реализована как skill/hook/обертка над существующими tool calls, это обычно дает наименьший конфликт с upstream.
++
++## 5) API-правила для app-server (обязательно)
++
++По правилам в `AGENTS.md` при изменении API:
++
++1. Весь новый API surface добавляется в `v2`, не в `v1`.
++2. Соблюдать naming и wire-shape (`*Params`, `*Response`, camelCase на wire, ts-rs exports).
++3. Для optional полей в client->server `*Params` соблюдать `#[ts(optional = nullable)]`.
++4. После изменения API обязательно:
++   - обновить docs (`codex-rs/app-server/README.md` минимум),
++   - регенерировать схемы `just write-app-server-schema`,
++   - прогнать `cargo test -p codex-app-server-protocol`.
++
++## 6) Где высокий риск merge-конфликтов
++
++По истории и текущему diff-футпринту форка чаще всего конфликтуют:
++
++1. `codex-rs/core/src/*`
++2. `codex-rs/tui/src/*`
++3. `codex-rs/app-server-protocol/src/*`
++4. `codex-rs/app-server-protocol/schema/*` (generated)
++5. `codex-rs/core/config.schema.json` (generated)
++
++Следствие: планировать изменения так, чтобы не затрагивать одновременно `core + tui + app-server-protocol`, если можно разделить на этапы.
++
++## 7) Практическая матрица: тип фичи -> минимальный набор файлов
++
++### A. Новая команда/флаг CLI
++
++1. `codex-rs/cli/src/main.rs`
++2. при необходимости один модуль в `codex-rs/cli/src/*`
++
++### B. Новый tool без внешнего API
++
++1. `codex-rs/core/src/tools/handlers/<tool>.rs`
++2. `codex-rs/core/src/tools/handlers/mod.rs`
++3. минимальные правки в `codex-rs/core/src/tools/spec.rs`
++4. тесты `codex-rs/core/tests/suite/*`
++
++### C. Новый behavior под feature flag
++
++1. `codex-rs/core/src/features.rs`
++2. точечные изменения в runtime-модуле
++3. тесты на default/off/on
++
++### D. Изменение config.toml surface
++
++1. `codex-rs/core/src/config/mod.rs` (+ при необходимости `types.rs`, `profile.rs`)
++2. `just write-config-schema`
++3. тесты precedence/validation
++
++### E. Изменение app-server контракта
++
++1. `codex-rs/app-server-protocol/src/protocol/common.rs` и/или `v2.rs`
++2. `codex-rs/app-server/src/*`
++3. `just write-app-server-schema`
++4. тесты `codex-rs/app-server-protocol` + `codex-rs/app-server`
++
++## 8) Что не стоит трогать без явной необходимости
++
++1. `vendor/`, sandbox low-level, release workflows, Bazel/CI конфиги.
++2. Большие generated артефакты вручную.
++3. Широкие рефакторы в `core/src/lib.rs` и cross-cutting переименования.
++
+
+### docs/research/0.99/BASELINE_AND_BRANCH_STATE.md
+diff --git a/docs/research/0.99/BASELINE_AND_BRANCH_STATE.md b/docs/research/0.99/BASELINE_AND_BRANCH_STATE.md
+new file mode 100644
+index 000000000..1f03568c9
+--- /dev/null
++++ b/docs/research/0.99/BASELINE_AND_BRANCH_STATE.md
+@@ -0,0 +1,91 @@
++# Baseline и состояние веток
++
++## Зафиксированная база
++
++- Tag: `rust-v0.99.0`
++- Tag object: `cad0bf09f749831b2f1109cf86a122c0a0025075`
++- Peeled commit: `ec9f76ce4f854c7d4f3c78c9b1bacbe128df286e`
++- Tagger/date: `Josh McKinney | 2026-02-11 11:54:42 -0800 | Release 0.99.0`
++- Текущий checkout в рабочем каталоге: `detached HEAD` на `rust-v0.99.0`
++
++## Remotes
++
++- `origin -> https://github.com/NeoGrAIph/codex`
++- `upstream -> https://github.com/openai/codex`
++
++Это корректная схема для форка: `upstream` как источник релизов, `origin` как ваш рабочий репозиторий.
++
++## Расхождение ключевых refs
++
++Команды:
++
++```bash
++git rev-list --left-right --count main...upstream/main
++git rev-list --left-right --count main...rust-v0.99.0
++git rev-list --left-right --count origin/main...rust-v0.99.0
++```
++
++Результаты:
++
++1. `main...upstream/main = 1 217`
++2. `main...rust-v0.99.0 = 1 193`
++3. `origin/main...rust-v0.99.0 = 1 240`
++
++Интерпретация `left right`:
++
++- `left`: уникальные коммиты левого ref.
++- `right`: уникальные коммиты правого ref.
++
++То есть текущий `main` вашего форка заметно отстает от апстрим-ветки и от релизного тега `0.99.0`.
++
++## Состояние fork-веток относительно `rust-v0.99.0`
++
++Команды:
++
++```bash
++git rev-list --count rust-v0.99.0..fork/colab-agents
++git diff --name-only rust-v0.99.0..fork/colab-agents | wc -l
++# аналогично для других веток
++```
++
++Срез:
++
++| Branch | Коммитов поверх `rust-v0.99.0` | Измененных файлов vs `rust-v0.99.0` |
++|---|---:|---:|
++| `fork/colab-agents` | 238 | 1049 |
++| `fork/multi-agent` | 244 | 1057 |
++| `fork/skill-agents` | 1 | 561 |
++| `main` | 1 | 498 |
++
++### Вывод для minimal diff
++
++1. Уже существующие ветки форка несут очень большой patch stack.
++2. Для нового функционала с целью "минимальный diff + легкий future rebase" безопаснее стартовать от чистой базы (`rust-v0.99.0`) в новой ветке.
++3. Если функционал обязательно продолжает `fork/multi-agent` или `fork/colab-agents`, нужно заранее принять стоимость регулярного конфликт-резолва в `core/tui/app-server-protocol`.
++
++## Где сейчас основной churn (по последним 120 коммитам)
++
++Команда:
++
++```bash
++git log --name-only --pretty=format: -n 120 | sed '/^$/d' \
++  | awk -F/ '{print $1"/"$2"/"$3}' | sort | uniq -c | sort -nr | head -n 25
++```
++
++Топ по затрагиванию:
++
++1. `codex-rs/core/src` (271)
++2. `codex-rs/tui/src` (72)
++3. `codex-rs/core/tests` (59)
++4. `codex-rs/app-server-protocol/schema` (56)
++5. `codex-rs/state/src` (32)
++6. `codex-rs/app-server/tests` (31)
++
++Это означает: изменения в этих зонах имеют повышенный риск конфликтов при синхронизации с upstream.
++
++## Рекомендованный baseline для новой работы
++
++1. Отталкиваться от `rust-v0.99.0` (`ec9f76ce4...`).
++2. Создать отдельную рабочую ветку под фичу (без смешивания с текущим большим patch stack).
++3. Держать документированный reference baseline (commit hash + дата + команды построения diff).
++
+
+### docs/research/0.99/MIN_DIFF_IMPLEMENTATION_STRATEGY.md
+diff --git a/docs/research/0.99/MIN_DIFF_IMPLEMENTATION_STRATEGY.md b/docs/research/0.99/MIN_DIFF_IMPLEMENTATION_STRATEGY.md
+new file mode 100644
+index 000000000..d9e8ac30d
+--- /dev/null
++++ b/docs/research/0.99/MIN_DIFF_IMPLEMENTATION_STRATEGY.md
+@@ -0,0 +1,95 @@
++# Стратегия внедрения с минимальным diff
++
++## Цель
++
++Сделать новый функционал в форке так, чтобы:
++
++1. минимизировать расхождение с upstream;
++2. упростить последующие обновления на новые `rust-v*` теги;
++3. не смешивать feature work с историческим техническим долгом.
++
++## 1) Стартовая ветка
++
++Рекомендуемый старт:
++
++```bash
++git switch -c fork/<feature>-0.99 rust-v0.99.0
++```
++
++Почему не брать как основу текущие `fork/*` ветки:
++
++- `fork/colab-agents` и `fork/multi-agent` уже имеют >1000 измененных файлов относительно `rust-v0.99.0`.
++- Любая новая фича поверх такого стека автоматически получает высокий конфликтный хвост.
++
++## 2) Patch stack: разделение на слои
++
++Рекомендуемый порядок коммитов/PR-чанков:
++
++1. `prep`: только инфраструктура фичи (feature flag, wiring, без изменения поведения по умолчанию).
++2. `core`: минимальная бизнес-логика.
++3. `surface`: TUI/CLI/app-server интеграция (только если реально нужна).
++4. `tests`: unit/integration/snapshot.
++5. `docs/schema`: только обязательные регенерации и доки.
++
++Правило: каждый слой должен быть mergeable отдельно и иметь свой набор проверок.
++
++## 3) Upstream-first правила
++
++1. Не менять дефолтное поведение без обязательной причины.
++2. Не вводить fork-only API в `v1`; для app-server использовать только `v2`.
++3. Предпочитать feature flag вместо hard switch.
++4. Если upstream уже имеет похожую возможность, адаптироваться к его форме вместо своей.
++
++## 4) Работа с существующими fork-наработками
++
++Если нужно переиспользовать код из `fork/multi-agent` / `fork/colab-agents`:
++
++1. брать только точечные коммиты (`cherry-pick -n <sha>`),
++2. сразу чистить лишние изменения,
++3. не переносить автоматически документацию/patch artifacts из старых audit-пакетов,
++4. избегать массового копирования generated файлов без регенерации на текущей базе.
++
++## 5) Политика изменения файлов
++
++1. Один логический шаг -> минимальный набор файлов.
++2. Не мешать в один коммит: функционал + массовый рефактор + format churn.
++3. Для generated-файлов:
++   - менять только через генератор (`just write-config-schema`, `just write-app-server-schema`),
++   - в коммите явно отмечать, что файл generated.
++
++## 6) Метрики "минимального diff"
++
++Перед merge по каждой задаче фиксировать:
++
++1. `git diff --name-only rust-v0.99.0..HEAD | wc -l`
++2. число затронутых top-level зон (`core/tui/app-server-protocol/...`)
++3. наличие/отсутствие изменений в CI/release/vendor
++4. долю generated файлов в diff
++
++Если diff начинает расти непропорционально, разбивать задачу на меньшие PR-чанки.
++
++## 7) Режим синхронизации с upstream
++
++Рекомендуемый цикл:
++
++1. Регулярно подтягивать `upstream/main`.
++2. Держать отдельный документ baseline для каждого этапа (`tag`, `commit`, `дата`).
++3. Перед крупным merge делать replay-проверку на свежем upstream:
++
++```bash
++git fetch upstream
++git rebase upstream/main
++```
++
++(или merge-политика команды, если rebase не принят).
++
++## 8) Когда допустим больший diff
++
++Допустимо расширять diff только если это прямо нужно для фичи и заранее согласовано:
++
++1. изменение протокола + регенерация схем;
++2. изменение конфиг-модели + регенерация config schema;
++3. безопасность/sandbox/policy fix с обязательными тестами.
++
++Во всех остальных случаях "большой diff" считается smell и требует декомпозиции.
++
+
+### docs/research/0.99/OPEN_QUESTIONS_CHECKLIST.md
+diff --git a/docs/research/0.99/OPEN_QUESTIONS_CHECKLIST.md b/docs/research/0.99/OPEN_QUESTIONS_CHECKLIST.md
+new file mode 100644
+index 000000000..38615158c
+--- /dev/null
++++ b/docs/research/0.99/OPEN_QUESTIONS_CHECKLIST.md
+@@ -0,0 +1,79 @@
++# Чеклист входной информации перед реализацией
++
++Этот документ нужно заполнить до начала кодинга. Без этих ответов есть риск сделать "технически рабочее", но плохо интегрируемое решение.
++
++## 1) Product scope
++
++1. Какой user-facing результат должен появиться после релиза?
++2. Какие сценарии явно вне scope (non-goals)?
++3. Нужна обратная совместимость с текущим поведением по умолчанию?
++
++## 2) Поверхности и контракты
++
++1. Где фича должна работать:
++   - `tui`
++   - `codex exec`
++   - `app-server`
++   - `sdk/typescript`
++2. Требуется ли изменение wire/API контракта?
++3. Если да, это внутренняя интеграция или внешний публичный контракт?
++
++## 3) Security и policy
++
++1. Нужны ли изменения в approvals/sandbox/exec-policy?
++2. Может ли фича менять доступный набор tools?
++3. Требуются ли дополнительные ограничения через requirements/config policy?
++
++## 4) Конфиг и rollout
++
++1. Нужен ли новый ключ в `config.toml`?
++2. Нужен ли feature flag?
++3. Какое default состояние:
++   - off по умолчанию
++   - on по умолчанию
++4. Нужен ли staged rollout (alpha/beta/stable)?
++
++## 5) UX и операционные ожидания
++
++1. Есть ли требования к hotkeys/командам/label-ам в TUI?
++2. Нужны ли миграции существующих данных/сессий?
++3. Допустимы ли изменения в telemetry/events?
++4. Если добавляются окна/overlay: какие требования к alt-screen lifecycle и возврату терминала после закрытия окна?
++
++## 6) Test strategy (обязательное соглашение)
++
++1. Какие тесты считаются обязательными для приемки?
++2. Нужны ли новые integration/snapshot тесты?
++3. Нужна ли ручная валидация и по какому сценарию?
++
++## 7) Branch/release policy
++
++1. Базовая ветка для фичи:
++   - новая от `rust-v0.99.0`
++   - продолжение существующей `fork/*`
++2. Какой режим синхронизации с upstream:
++   - rebase
++   - merge
++3. Есть ли ограничение на размер PR/diff?
++
++## 8) Критерии успеха
++
++1. Как выглядит успешный результат для команды/продукта?
++2. Какие метрики/сигналы считаем подтверждением качества?
++3. Что считаем blocker для релиза?
++
++---
++
++## Быстрый шаблон для заполнения
++
++```text
++Goal:
++Done criteria:
++Scope in:
++Scope out:
++API impact:
++Config/flags:
++Security impact:
++Required checks:
++Rollout plan:
++```
+
+### docs/research/0.99/QUALITY_GATES_AND_CHECKS.md
+diff --git a/docs/research/0.99/QUALITY_GATES_AND_CHECKS.md b/docs/research/0.99/QUALITY_GATES_AND_CHECKS.md
+new file mode 100644
+index 000000000..176791398
+--- /dev/null
++++ b/docs/research/0.99/QUALITY_GATES_AND_CHECKS.md
+@@ -0,0 +1,146 @@
++# Quality gates и проверки
++
++## 1) Базовые обязательные проверки
++
++Из `justfile` и CI (`.github/workflows/rust-ci.yml`) следует минимальный набор:
++
++1. Форматирование:
++
++```bash
++cd codex-rs
++just fmt
++```
++
++2. Lint/fix (по измененному crate):
++
++```bash
++cd codex-rs
++just fix -p <crate>
++```
++
++3. Тесты по затронутому crate:
++
++```bash
++cd codex-rs
++cargo test -p <crate>
++```
++
++4. При необходимости полный прогон:
++
++```bash
++cd codex-rs
++just test
++# или
++cargo test --all-features
++```
++
++## 2) Что реально проверяет CI
++
++`rust-ci` включает:
++
++1. `cargo fmt --check`
++2. `cargo shear`
++3. `cargo clippy --all-features --tests -D warnings` (матрица таргетов)
++4. `cargo check` по отдельным crate (x86_64-unknown-linux-gnu dev)
++5. `cargo nextest run --all-features --no-fail-fast` (матрица тестов)
++
++Следствие: локально минимум нужно проходить эквивалентные проверки для измененной зоны, иначе риск CI-red высокий.
++
++## 3) Спец-правила для изменений по зонам
++
++### A. Изменяли `core/src/config*` или `ConfigToml`
++
++1. Регенерация schema:
++
++```bash
++cd codex-rs
++just write-config-schema
++```
++
++2. Проверить, что изменился только ожидаемый generated файл:
++
++- `codex-rs/core/config.schema.json`
++
++### B. Изменяли app-server API / protocol
++
++1. Обновить API в `v2` (`common.rs` / `v2.rs`).
++2. Регенерация схем:
++
++```bash
++cd codex-rs
++just write-app-server-schema
++```
++
++3. Обязательные тесты:
++
++```bash
++cd codex-rs
++cargo test -p codex-app-server-protocol
++cargo test -p codex-app-server
++```
++
++4. Обновить документацию API:
++
++- минимум `codex-rs/app-server/README.md`.
++
++### C. Изменяли TUI
++
++1. Тесты:
++
++```bash
++cd codex-rs
++cargo test -p codex-tui
++```
++
++2. Если изменился рендер:
++
++```bash
++cd codex-rs
++cargo insta pending-snapshots -p codex-tui
++# точечный просмотр
++cargo insta show -p codex-tui <path/to/file.snap.new>
++# принимать только если изменение намеренное
++cargo insta accept -p codex-tui
++```
++
++### D. Изменяли `common`, `core` или `protocol`
++
++С точки зрения риска интеграции нужен расширенный прогон:
++
++```bash
++cd codex-rs
++cargo test --all-features
++```
++
++## 4) Проверка чистоты diff перед merge
++
++Минимальный pre-merge checklist:
++
++1. `git diff --stat`
++2. `git diff --name-only`
++3. Нет незапланированных правок в:
++   - `.github/workflows/*`
++   - `vendor/*`
++   - `MODULE.bazel.lock`
++   - массовых generated-файлах вне ожидаемой зоны
++
++## 5) Definition of Done для новой фичи
++
++Фича готова, если:
++
++1. Поведение реализовано и закрыто тестами на затронутом уровне.
++2. Локальные проверки из раздела 1-3 прошли.
++3. Generated файлы обновлены только через штатные команды.
++4. Документация обновлена там, где изменился внешний контракт.
++5. Diff минимален и не содержит несвязанных изменений.
++
++## 6) Команды для воспроизводимого baseline-а
++
++Перед стартом и перед merge полезно фиксировать:
++
++```bash
++git rev-parse HEAD
++git status --short --branch
++git diff --name-only rust-v0.99.0..HEAD
++```
++
+
+### docs/research/0.99/README.md
+diff --git a/docs/research/0.99/README.md b/docs/research/0.99/README.md
+new file mode 100644
+index 000000000..8530c2f85
+--- /dev/null
++++ b/docs/research/0.99/README.md
+@@ -0,0 +1,42 @@
++# Исследование для форка на базе rust-v0.99.0
++
++Дата среза: 2026-02-12
++База: `rust-v0.99.0` (`ec9f76ce4f854c7d4f3c78c9b1bacbe128df286e`)
++
++## Зачем этот пакет
++
++Этот пакет отвечает на вопрос: **какая информация нужна, чтобы внедрять новый функционал в форк корректно, синергично с upstream и с минимальным diff**.
++
++## Короткий ответ: какая информация нужна обязательно
++
++Ниже минимальный набор, без которого нельзя проектировать изменения качественно:
++
++1. Product scope: что именно добавляем, а что явно не делаем.
++2. Поверхности изменения: где фича должна работать (`tui`, `exec`, `app-server`, `sdk`, только локально/и API).
++3. Совместимость: должны ли сохраняться текущие внешние контракты (JSON-RPC v2, config schema, wire behavior).
++4. Security policy: меняются ли approvals/sandbox/exec-policy/requirements.
++5. UX policy: нужны ли новые команды/горячие клавиши/режимы и насколько можно менять существующий UX.
++6. Rollout policy: фича-флаг, дефолтное состояние, критерии включения/отката.
++7. Verification policy: какие тесты/чек-листы считаются обязательными до merge.
++
++## Что уже исследовано в репозитории
++
++1. Базовая архитектура и границы crate-ов (`codex-rs/Cargo.toml`, `codex-rs/core/src/lib.rs`, `codex-rs/tui/src/lib.rs`, `codex-rs/app-server-protocol/src/protocol/v2.rs`).
++2. Слои конфига и requirements enforcement (`codex-rs/core/src/config_loader/mod.rs`, `codex-rs/core/src/config/mod.rs`).
++3. Точки расширения tools/skills/hooks (`codex-rs/core/src/tools/handlers/mod.rs`, `codex-rs/core/src/tools/spec.rs`, `codex-rs/core/src/skills/mod.rs`, `codex-rs/hooks/src/*`).
++4. CI/release quality gates (`.github/workflows/rust-ci.yml`, `.github/workflows/rust-release.yml`, `justfile`).
++5. Текущее состояние веток форка относительно `rust-v0.99.0`.
++6. Поведение TUI окон/overlay и инварианты alt-screen lifecycle для hotkey-циклов (`Ctrl+T` и смежные сценарии).
++
++## Что нужно от команды до начала реализации
++
++См. `OPEN_QUESTIONS_CHECKLIST.md`. Если кратко: надо письменно зафиксировать API/UX/security границы фичи и определить ветку-носитель (новая от `rust-v0.99.0` или продолжение существующего большого patch stack).
++
++## Состав пакета
++
++1. `BASELINE_AND_BRANCH_STATE.md`
++2. `ARCHITECTURE_AND_EXTENSION_POINTS.md`
++3. `MIN_DIFF_IMPLEMENTATION_STRATEGY.md`
++4. `QUALITY_GATES_AND_CHECKS.md`
++5. `OPEN_QUESTIONS_CHECKLIST.md`
++6. `TUI_WINDOWS_AND_OVERLAYS.md`
+
+### docs/research/0.99/TUI_WINDOWS_AND_OVERLAYS.md
+diff --git a/docs/research/0.99/TUI_WINDOWS_AND_OVERLAYS.md b/docs/research/0.99/TUI_WINDOWS_AND_OVERLAYS.md
+new file mode 100644
+index 000000000..e2659e90d
+--- /dev/null
++++ b/docs/research/0.99/TUI_WINDOWS_AND_OVERLAYS.md
+@@ -0,0 +1,86 @@
++# TUI окна и overlay: поведение и инварианты
++
++## Контекст
++
++Этот документ фиксирует поведение окон TUI для сценариев, где фича затрагивает hotkeys/overlay и alt-screen lifecycle.
++
++Цель: не допускать UX-регрессий при переключении окон и держать минимальный diff относительно upstream-логики.
++
++## 1) Основные окна и состояния
++
++Для цикла `SubAgentsWindow (SAW)` (`Ctrl+T`) используются состояния:
++
++1. `None` (обычный inline viewport)
++2. `Overlay::Transcript` (`/ T R A N S C R I P T /`)
++3. `Overlay::Static` с заголовком `A G E N T S` (`/ A G E N T S /`)
++
++Ключевые точки:
++
++- маршрутизация шага цикла: `codex-rs/tui/src/app.rs` (`ctrl_t_overlay_action`, `handle_ctrl_t_key`);
++- распознавание overlay-типа: `codex-rs/tui/src/pager_overlay.rs` (`Overlay::is_transcript`, `Overlay::is_agents`).
++
++## 2) Роутинг событий окна
++
++Нужно учитывать два пути обработки клавиш:
++
++1. обычный путь: `handle_key_event` в `codex-rs/tui/src/app.rs`;
++2. путь активного overlay/backtrack: `handle_backtrack_overlay_event` в `codex-rs/tui/src/app_backtrack.rs`.
++
++Если overlay открыт, переходы по `Ctrl+T` должны быть доступны и в overlay-пути, иначе цикл застрянет на первом шаге.
++
++## 3) Alt-screen lifecycle (критичный инвариант)
++
++Терминальные примитивы:
++
++- `enter_alt_screen`: `codex-rs/tui/src/tui.rs`
++- `leave_alt_screen`: `codex-rs/tui/src/tui.rs`
++
++Инвариант:
++
++- внутри одного overlay-сеанса нельзя делать повторный `enter_alt_screen()` без проверки состояния;
++- перед входом использовать guard `if !tui.is_alt_screen_active()`.
++
++Причина: `enter_alt_screen()` сохраняет `alt_saved_viewport`. Повторный вход в уже активном alt-screen перезаписывает точку восстановления viewport.
++
++## 4) Буфер history при открытом overlay
++
++При `overlay.is_some()` новые history lines не вставляются сразу в terminal scrollback, а буферизуются в `deferred_history_lines`.
++
++- буферизация: `codex-rs/tui/src/app.rs` (ветка `AppEvent::InsertHistoryCell`);
++- flush на закрытии overlay: `close_transcript_overlay` в `codex-rs/tui/src/app_backtrack.rs`.
++
++Это нативная логика transcript overlay и она должна сохраняться, если задача явно не требует другого UX.
++
++## 5) Зафиксированная регрессия и фактический fix
++
++Наблюдавшийся симптом:
++
++- при цикле `Ctrl+T`: `Transcript -> Agents -> close`, окно терминала визуально "перематывалось".
++
++Подтвержденный root cause:
++
++- в `open_agents_overlay()` был безусловный `tui.enter_alt_screen()`;
++- из-за повторного входа в alt-screen портился restore-point viewport;
++- при `leave_alt_screen()` терминал возвращался не в исходное состояние inline viewport.
++
++Финальный минимальный fix:
++
++- в `open_agents_overlay()` использовать guard:
++  - `if !tui.is_alt_screen_active() { let _ = tui.enter_alt_screen(); }`
++- нативный `close_transcript_overlay()` не менять.
++
++## 6) Практический checklist для будущих TUI-фич
++
++Перед merge любой фичи с новыми окнами/overlay:
++
++1. Проверить, кто владеет переходами (`handle_key_event` и overlay-routing).
++2. Проверить, что `enter_alt_screen()` не вызывается повторно в активном alt-screen.
++3. Проверить поведение закрытия окна на третьем/последнем шаге хоткея.
++4. Убедиться, что semantics `deferred_history_lines` и flush не сломаны.
++5. Зафиксировать поведение в `docs/features/<feature>.md` и в release research пакете.
++
++## 7) Что считать признаком корректной работы
++
++1. После закрытия overlay терминал возвращается в ожидаемый inline viewport.
++2. Нет визуального "rewind/перемотки" экрана в сценарии закрытия окна.
++3. Нативный transcript UX (включая flush отложенной history) не регрессирует.
