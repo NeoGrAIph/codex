@@ -44,6 +44,7 @@ use color_eyre::eyre::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
 
 /// Aggregates all backtrack-related state used by the App.
 #[derive(Default)]
@@ -108,6 +109,26 @@ impl App {
         tui: &mut tui::Tui,
         event: TuiEvent,
     ) -> Result<bool> {
+        // SAW COMMIT OPEN: intercept Ctrl+T on transcript/agents overlay before backtrack routing.
+        // Role: keep steps 2/3 of the Ctrl+T cycle working while events flow via overlay path.
+        if matches!(
+            &event,
+            TuiEvent::Key(KeyEvent {
+                code: KeyCode::Char('t'),
+                modifiers: KeyModifiers::CONTROL,
+                kind: KeyEventKind::Press,
+                ..
+            })
+        ) && self
+            .overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.is_transcript() || overlay.is_agents())
+        {
+            self.handle_ctrl_t_key(tui).await;
+            return Ok(true);
+        }
+        // SAW COMMIT CLOSE: Ctrl+T overlay intercept.
+
         if self.backtrack.overlay_preview_active {
             match event {
                 TuiEvent::Key(KeyEvent {

@@ -1,3 +1,5 @@
+use crate::agents_overlay::AgentSummaryEntry;
+use crate::agents_overlay::build_agents_overlay_lines;
 use crate::app_backtrack::BacktrackState;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
@@ -15,6 +17,7 @@ use crate::chatwidget::ChatWidget;
 use crate::chatwidget::ExternalEditorState;
 use crate::cwd_prompt::CwdPromptAction;
 use crate::diff_render::DiffSummary;
+use crate::exec_command::relativize_to_home;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::external_editor;
 use crate::file_search::FileSearchManager;
@@ -25,6 +28,7 @@ use crate::history_cell::UpdateAvailableHistoryCell;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
 use crate::model_migration::run_model_migration_prompt;
+use crate::pager_overlay::AGENTS_OVERLAY_TITLE;
 use crate::pager_overlay::Overlay;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::Renderable;
@@ -47,15 +51,18 @@ use codex_core::features::Feature;
 use codex_core::models_manager::manager::RefreshStrategy;
 use codex_core::models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
 use codex_core::models_manager::model_presets::HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG;
+use codex_core::protocol::AgentStatus;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::Event;
 use codex_core::protocol::EventMsg;
+use codex_core::protocol::FileChange;
 use codex_core::protocol::FinalOutput;
 use codex_core::protocol::ListSkillsResponseEvent;
 use codex_core::protocol::Op;
 use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol::SessionSource;
 use codex_core::protocol::SkillErrorInfo;
+use codex_core::protocol::SubAgentSource;
 use codex_core::protocol::TokenUsage;
 #[cfg(target_os = "windows")]
 use codex_core::windows_sandbox::WindowsSandboxLevelExt;
@@ -66,6 +73,7 @@ use codex_protocol::config_types::Personality;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::items::TurnItem;
+use codex_protocol::models::WebSearchAction;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -135,6 +143,17 @@ pub(crate) enum AppRunControl {
     Continue,
     Exit(ExitReason),
 }
+
+// SAW COMMIT OPEN: state-machine ролей Ctrl+T (Transcript -> SAW -> Close).
+// Назначение: централизовать решение "какой overlay открыть/закрыть на очередном Ctrl+T".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CtrlTOverlayAction {
+    OpenTranscript,
+    OpenAgents,
+    CloseAgents,
+    None,
+}
+// SAW COMMIT CLOSE: enum маршрутизации Ctrl+T.
 
 #[derive(Debug, Clone)]
 pub enum ExitReason {
@@ -242,6 +261,9 @@ struct SessionSummary {
 struct ThreadEventSnapshot {
     session_configured: Option<Event>,
     events: Vec<Event>,
+    created_at: Instant,
+    latest_status: AgentStatus,
+    status_changed_at: Instant,
 }
 
 #[derive(Debug)]
@@ -251,16 +273,23 @@ struct ThreadEventStore {
     user_message_ids: HashSet<String>,
     capacity: usize,
     active: bool,
+    created_at: Instant,
+    latest_status: AgentStatus,
+    status_changed_at: Instant,
 }
 
 impl ThreadEventStore {
     fn new(capacity: usize) -> Self {
+        let now = Instant::now();
         Self {
             session_configured: None,
             buffer: VecDeque::new(),
             user_message_ids: HashSet::new(),
             capacity,
             active: false,
+            created_at: now,
+            latest_status: AgentStatus::PendingInit,
+            status_changed_at: now,
         }
     }
 
@@ -273,6 +302,12 @@ impl ThreadEventStore {
     fn push_event(&mut self, event: Event) {
         match &event.msg {
             EventMsg::SessionConfigured(_) => {
+                if self.session_configured.is_none() {
+                    let now = Instant::now();
+                    self.created_at = now;
+                    self.latest_status = AgentStatus::PendingInit;
+                    self.status_changed_at = now;
+                }
                 self.session_configured = Some(event);
                 return;
             }
@@ -302,6 +337,22 @@ impl ThreadEventStore {
         {
             return;
         }
+        let next_status = match &event.msg {
+            EventMsg::TurnStarted(_) => Some(AgentStatus::Running),
+            EventMsg::TurnComplete(ev) => {
+                Some(AgentStatus::Completed(ev.last_agent_message.clone()))
+            }
+            EventMsg::TurnAborted(ev) => Some(AgentStatus::Errored(format!("{:?}", ev.reason))),
+            EventMsg::Error(ev) => Some(AgentStatus::Errored(ev.message.clone())),
+            EventMsg::ShutdownComplete => Some(AgentStatus::Shutdown),
+            _ => None,
+        };
+        if let Some(next_status) = next_status
+            && next_status != self.latest_status
+        {
+            self.latest_status = next_status;
+            self.status_changed_at = Instant::now();
+        }
         self.buffer.push_back(event);
         if self.buffer.len() > self.capacity
             && let Some(removed) = self.buffer.pop_front()
@@ -316,6 +367,9 @@ impl ThreadEventStore {
         ThreadEventSnapshot {
             session_configured: self.session_configured.clone(),
             events: self.buffer.iter().cloned().collect(),
+            created_at: self.created_at,
+            latest_status: self.latest_status.clone(),
+            status_changed_at: self.status_changed_at,
         }
     }
 }
@@ -782,7 +836,10 @@ impl App {
         Ok(())
     }
 
-    async fn open_agent_picker(&mut self) {
+    // SAW COMMIT OPEN: вспомогательные методы цикла Ctrl+T и окна / A G E N T S /.
+    // Роль: переиспользуемая выборка агентных thread_id, определение следующего шага цикла,
+    // и построение обзорного overlay по spawned-агентам.
+    async fn available_thread_ids(&mut self) -> Vec<ThreadId> {
         let thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
         for thread_id in thread_ids {
             if self.server.get_thread(thread_id).await.is_err() {
@@ -790,14 +847,436 @@ impl App {
             }
         }
 
-        if self.thread_event_channels.is_empty() {
+        let mut thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
+        thread_ids.sort_by_key(ToString::to_string);
+        thread_ids
+    }
+
+    fn ctrl_t_overlay_action(&self) -> CtrlTOverlayAction {
+        match self.overlay.as_ref() {
+            None => CtrlTOverlayAction::OpenTranscript,
+            Some(overlay) if overlay.is_transcript() => CtrlTOverlayAction::OpenAgents,
+            Some(overlay) if overlay.is_agents() => CtrlTOverlayAction::CloseAgents,
+            Some(_) => CtrlTOverlayAction::None,
+        }
+    }
+
+    async fn collect_agents_overlay_lines(&mut self) -> Vec<Line<'static>> {
+        let thread_ids = self.available_thread_ids().await;
+        let now = Instant::now();
+
+        const SAW_TOOL_DETAIL_MAX_CHARS: usize = 160;
+
+        const SAW_REDACTED: &str = "<redacted>";
+
+        fn saw_truncate_detail(detail: String) -> String {
+            let mut iter = detail.chars();
+            let mut out = String::new();
+
+            for _ in 0..SAW_TOOL_DETAIL_MAX_CHARS {
+                match iter.next() {
+                    Some(ch) => out.push(ch),
+                    None => return out,
+                }
+            }
+
+            if iter.next().is_some() {
+                out.pop();
+                out.push('…');
+            }
+
+            out
+        }
+
+        fn saw_normalize_ws(input: &str) -> String {
+            let mut out = String::new();
+            let mut prev_space = true;
+            for ch in input.chars() {
+                let ch = if ch.is_control() { ' ' } else { ch };
+                let is_space = ch.is_whitespace();
+                if is_space {
+                    if !prev_space {
+                        out.push(' ');
+                    }
+                } else {
+                    out.push(ch);
+                }
+                prev_space = is_space;
+            }
+            out.trim().to_string()
+        }
+
+        fn saw_strip_url_query_fragment(url: &str) -> String {
+            let mut out = url;
+            if let Some((prefix, _)) = out.split_once('#') {
+                out = prefix;
+            }
+            if let Some((prefix, _)) = out.split_once('?') {
+                out = prefix;
+            }
+            out.to_string()
+        }
+
+        fn saw_is_secret_key(key: &str) -> bool {
+            let key = key.to_ascii_lowercase();
+            matches!(
+                key.as_str(),
+                "authorization"
+                    | "api_key"
+                    | "apikey"
+                    | "token"
+                    | "secret"
+                    | "password"
+                    | "cookie"
+                    | "set-cookie"
+                    | "session"
+                    | "private_key"
+                    | "privatekey"
+                    | "bearer"
+            )
+        }
+
+        fn saw_redact_json(value: &serde_json::Value, depth: usize) -> serde_json::Value {
+            if depth >= 3 {
+                return match value {
+                    serde_json::Value::Object(_) => serde_json::Value::String("{…}".to_string()),
+                    serde_json::Value::Array(_) => serde_json::Value::String("[…]".to_string()),
+                    other => other.clone(),
+                };
+            }
+
+            match value {
+                serde_json::Value::Object(map) => {
+                    let mut next = serde_json::Map::new();
+                    for (k, v) in map.iter() {
+                        if saw_is_secret_key(k) {
+                            next.insert(
+                                k.clone(),
+                                serde_json::Value::String(SAW_REDACTED.to_string()),
+                            );
+                        } else {
+                            next.insert(k.clone(), saw_redact_json(v, depth + 1));
+                        }
+                    }
+                    serde_json::Value::Object(next)
+                }
+                serde_json::Value::Array(items) => {
+                    let max_items = 6usize;
+                    let mut next: Vec<serde_json::Value> = items
+                        .iter()
+                        .take(max_items)
+                        .map(|v| saw_redact_json(v, depth + 1))
+                        .collect();
+                    if items.len() > max_items {
+                        next.push(serde_json::Value::String(format!(
+                            "…(+{} more)",
+                            items.len().saturating_sub(max_items)
+                        )));
+                    }
+                    serde_json::Value::Array(next)
+                }
+                serde_json::Value::String(s) => {
+                    let normalized = saw_normalize_ws(s);
+                    if normalized.chars().count() > 80 {
+                        serde_json::Value::String(SAW_REDACTED.to_string())
+                    } else {
+                        serde_json::Value::String(normalized)
+                    }
+                }
+                other => other.clone(),
+            }
+        }
+
+        fn saw_format_json_args(value: &serde_json::Value) -> String {
+            let redacted = saw_redact_json(value, 0);
+            serde_json::to_string(&redacted).unwrap_or_else(|_| redacted.to_string())
+        }
+
+        fn saw_format_patch_changes_detail(
+            changes: &HashMap<PathBuf, FileChange>,
+        ) -> Option<String> {
+            if changes.is_empty() {
+                return None;
+            }
+
+            let mut adds = 0usize;
+            let mut updates = 0usize;
+            let mut deletes = 0usize;
+            for change in changes.values() {
+                match change {
+                    FileChange::Add { .. } => adds += 1,
+                    FileChange::Update { .. } => updates += 1,
+                    FileChange::Delete { .. } => deletes += 1,
+                }
+            }
+
+            let mut paths: Vec<String> = changes
+                .keys()
+                .map(|path| path.display().to_string())
+                .collect();
+            paths.sort();
+
+            let total_files = paths.len();
+            let mut detail = format!(
+                "A:{adds} M:{updates} D:{deletes} ({total_files} {files_label})",
+                files_label = if total_files == 1 { "file" } else { "files" }
+            );
+
+            let max_paths = 3usize;
+            let shown: Vec<&str> = paths.iter().take(max_paths).map(String::as_str).collect();
+            let remaining = total_files.saturating_sub(shown.len());
+            if !shown.is_empty() {
+                detail.push_str(": ");
+                detail.push_str(&shown.join(", "));
+                if remaining > 0 {
+                    detail.push_str(&format!(" (+{remaining} more)"));
+                }
+            }
+
+            Some(detail)
+        }
+
+        let mut agents: Vec<AgentSummaryEntry> = Vec::new();
+        for thread_id in thread_ids {
+            let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+                continue;
+            };
+            let snapshot = {
+                let store = channel.store.lock().await;
+                store.snapshot()
+            };
+
+            let thread = match self.server.get_thread(thread_id).await {
+                Ok(thread) => thread,
+                Err(_) => continue,
+            };
+            let config_snapshot = thread.config_snapshot().await;
+
+            let (parent_thread_id, role) = match config_snapshot.session_source {
+                SessionSource::SubAgent(SubAgentSource::Review) => (None, "review".to_string()),
+                SessionSource::SubAgent(SubAgentSource::Compact) => (None, "compact".to_string()),
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id, ..
+                }) => (Some(parent_thread_id), "subagent".to_string()),
+                SessionSource::SubAgent(SubAgentSource::Other(other)) => (None, other),
+                _ => continue,
+            };
+
+            let context_left_percent = snapshot.events.iter().rev().find_map(|event| {
+                if let EventMsg::TokenCount(token) = &event.msg {
+                    token.info.as_ref().and_then(|info| {
+                        info.model_context_window.and_then(|window| {
+                            (window > 0).then(|| {
+                                info.last_token_usage
+                                    .percent_of_context_window_remaining(window)
+                            })
+                        })
+                    })
+                } else {
+                    None
+                }
+            });
+
+            let (last_tool, last_tool_detail) = snapshot
+                .events
+                .iter()
+                .rev()
+                .find_map(|event| match &event.msg {
+                    EventMsg::ExecApprovalRequest(ev) => Some((
+                        "shell".to_string(),
+                        Some(saw_truncate_detail(strip_bash_lc_and_escape(&ev.command))),
+                    )),
+                    EventMsg::ExecCommandBegin(ev) => Some((
+                        "shell".to_string(),
+                        Some(saw_truncate_detail(strip_bash_lc_and_escape(&ev.command))),
+                    )),
+                    EventMsg::ExecCommandEnd(ev) => Some((
+                        "shell".to_string(),
+                        Some(saw_truncate_detail(strip_bash_lc_and_escape(&ev.command))),
+                    )),
+                    EventMsg::ApplyPatchApprovalRequest(ev) => Some((
+                        "apply_patch".to_string(),
+                        saw_format_patch_changes_detail(&ev.changes).map(saw_truncate_detail),
+                    )),
+                    EventMsg::PatchApplyBegin(ev) => Some((
+                        "apply_patch".to_string(),
+                        saw_format_patch_changes_detail(&ev.changes).map(saw_truncate_detail),
+                    )),
+                    EventMsg::PatchApplyEnd(ev) => Some((
+                        "apply_patch".to_string(),
+                        saw_format_patch_changes_detail(&ev.changes).map(saw_truncate_detail),
+                    )),
+                    EventMsg::WebSearchEnd(ev) => Some((
+                        "web_search".to_string(),
+                        Some(saw_truncate_detail(match &ev.action {
+                            WebSearchAction::Search { .. } => {
+                                let query = &ev.query;
+                                let query = saw_normalize_ws(query);
+                                format!("search: {query}")
+                            }
+                            WebSearchAction::OpenPage { url } => url
+                                .as_ref()
+                                .map(|url| {
+                                    let url = saw_strip_url_query_fragment(url);
+                                    format!("open: {url}")
+                                })
+                                .unwrap_or_else(|| {
+                                    let query = &ev.query;
+                                    let query = saw_normalize_ws(query);
+                                    format!("open: {query}")
+                                }),
+                            WebSearchAction::FindInPage { url, pattern } => {
+                                let mut detail = "find".to_string();
+                                if let Some(pattern) = pattern.as_ref() {
+                                    let pattern = saw_normalize_ws(pattern);
+                                    detail.push_str(&format!(": {pattern}"));
+                                }
+                                if let Some(url) = url.as_ref() {
+                                    let url = saw_strip_url_query_fragment(url);
+                                    detail.push_str(&format!(" in {url}"));
+                                } else {
+                                    let query = &ev.query;
+                                    let query = saw_normalize_ws(query);
+                                    detail.push_str(&format!(": {query}"));
+                                }
+                                detail
+                            }
+                            WebSearchAction::Other => saw_normalize_ws(&ev.query),
+                        })),
+                    )),
+                    EventMsg::WebSearchBegin(_) => Some(("web_search".to_string(), None)),
+                    EventMsg::ViewImageToolCall(ev) => Some((
+                        "view_image".to_string(),
+                        Some(saw_truncate_detail({
+                            let display = if let Some(rel) = relativize_to_home(&ev.path) {
+                                format!("~/{}", rel.display())
+                            } else {
+                                ev.path.display().to_string()
+                            };
+                            saw_normalize_ws(&display)
+                        })),
+                    )),
+                    EventMsg::McpToolCallBegin(ev) => {
+                        let server = ev.invocation.server.as_str();
+                        let tool = ev.invocation.tool.as_str();
+                        Some((
+                            format!("{server}.{tool}"),
+                            ev.invocation
+                                .arguments
+                                .as_ref()
+                                .map(|args| saw_truncate_detail(saw_format_json_args(args))),
+                        ))
+                    }
+                    EventMsg::McpToolCallEnd(ev) => {
+                        let server = ev.invocation.server.as_str();
+                        let tool = ev.invocation.tool.as_str();
+                        Some((
+                            format!("{server}.{tool}"),
+                            ev.invocation
+                                .arguments
+                                .as_ref()
+                                .map(|args| saw_truncate_detail(saw_format_json_args(args))),
+                        ))
+                    }
+                    EventMsg::DynamicToolCallRequest(req) => Some((
+                        req.tool.clone(),
+                        Some(saw_truncate_detail(saw_format_json_args(&req.arguments))),
+                    )),
+                    _ => None,
+                })
+                .map_or((None, None), |(tool, detail)| (Some(tool), detail));
+
+            agents.push(AgentSummaryEntry {
+                thread_id,
+                parent_thread_id,
+                role,
+                model: config_snapshot.model,
+                reasoning: Self::reasoning_label(config_snapshot.reasoning_effort).to_string(),
+                status: snapshot.latest_status,
+                created_at: snapshot.created_at,
+                status_changed_at: snapshot.status_changed_at,
+                context_left_percent,
+                last_tool,
+                last_tool_detail,
+            });
+        }
+
+        // SAW legacy (восстановлено как комментарий):
+        // lines.push(format!("Spawned agents: {}", agents.len()).into());
+        // lines.push("* marks the focused thread.".into());
+        // lines.push("".into());
+        // for (thread_id, status, task) in agents { ... flat list ... }
+        build_agents_overlay_lines(&agents, now, self.config.animations)
+    }
+
+    async fn open_agents_overlay(&mut self, tui: &mut tui::Tui) {
+        let lines = self.collect_agents_overlay_lines().await;
+
+        self.backtrack.overlay_preview_active = false;
+        self.reset_backtrack_state();
+        // SAW legacy (восстановлено как комментарий):
+        // let _ = tui.enter_alt_screen();
+        if !tui.is_alt_screen_active() {
+            let _ = tui.enter_alt_screen();
+        }
+        self.overlay = Some(Overlay::new_static_with_lines(
+            lines,
+            AGENTS_OVERLAY_TITLE.to_string(),
+        ));
+        tui.frame_requester().schedule_frame();
+    }
+
+    async fn refresh_agents_overlay_if_active(&mut self, tui: &mut tui::Tui) {
+        if !self.overlay.as_ref().is_some_and(Overlay::is_agents) {
+            return;
+        }
+
+        let lines = self.collect_agents_overlay_lines().await;
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.replace_static_lines_if_title(AGENTS_OVERLAY_TITLE, lines);
+        }
+
+        if self.config.animations {
+            tui.frame_requester()
+                .schedule_frame_in(tui::TARGET_FRAME_INTERVAL);
+        } else {
+            tui.frame_requester()
+                .schedule_frame_in(Duration::from_secs(1));
+        }
+    }
+
+    pub(crate) async fn handle_ctrl_t_key(&mut self, tui: &mut tui::Tui) {
+        match self.ctrl_t_overlay_action() {
+            CtrlTOverlayAction::OpenTranscript => self.open_transcript_overlay(tui),
+            CtrlTOverlayAction::OpenAgents => self.open_agents_overlay(tui).await,
+            CtrlTOverlayAction::CloseAgents => {
+                self.close_transcript_overlay(tui);
+                tui.frame_requester().schedule_frame();
+            }
+            CtrlTOverlayAction::None => {}
+        }
+    }
+    // SAW COMMIT CLOSE: вспомогательные методы цикла Ctrl+T и окна / A G E N T S /.
+
+    async fn open_agent_picker(&mut self) {
+        // SAW legacy (восстановлено как комментарий):
+        // до выделения `available_thread_ids()` prune/sort выполнялись inline:
+        // let thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
+        // for thread_id in thread_ids {
+        //     if self.server.get_thread(thread_id).await.is_err() {
+        //         self.thread_event_channels.remove(&thread_id);
+        //     }
+        // }
+        // if self.thread_event_channels.is_empty() { ... }
+        // let mut thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
+        // thread_ids.sort_by_key(ToString::to_string);
+
+        let thread_ids = self.available_thread_ids().await;
+        if thread_ids.is_empty() {
             self.chat_widget
                 .add_info_message("No agents available yet.".to_string(), None);
             return;
         }
-
-        let mut thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
-        thread_ids.sort_by_key(ToString::to_string);
 
         let mut initial_selected_idx = None;
         let items: Vec<SelectionItem> = thread_ids
@@ -1269,6 +1748,9 @@ impl App {
         }
 
         if self.overlay.is_some() {
+            if matches!(event, TuiEvent::Draw) {
+                self.refresh_agents_overlay_if_active(tui).await;
+            }
             let _ = self.handle_backtrack_overlay_event(tui, event).await?;
         } else {
             match event {
@@ -2512,10 +2994,15 @@ impl App {
                 kind: KeyEventKind::Press,
                 ..
             } => {
-                // Enter alternate screen and set viewport to full size.
-                let _ = tui.enter_alt_screen();
-                self.overlay = Some(Overlay::new_transcript(self.transcript_cells.clone()));
-                tui.frame_requester().schedule_frame();
+                // SAW COMMIT OPEN: Ctrl+T routed through unified cycle handler.
+                // Назначение: обеспечить цикл None -> Transcript -> SAW -> None.
+                // SAW legacy (восстановлено как комментарий):
+                // // Enter alternate screen and set viewport to full size.
+                // let _ = tui.enter_alt_screen();
+                // self.overlay = Some(Overlay::new_transcript(self.transcript_cells.clone()));
+                // tui.frame_requester().schedule_frame();
+                self.handle_ctrl_t_key(tui).await;
+                // SAW COMMIT CLOSE: Ctrl+T unified cycle handler.
             }
             KeyEvent {
                 code: KeyCode::Char('g'),
@@ -2722,6 +3209,34 @@ mod tests {
         assert_eq!(app.thread_event_channels.contains_key(&thread_id), false);
         Ok(())
     }
+
+    #[tokio::test]
+    // SAW COMMIT OPEN: проверка state-machine переходов Ctrl+T.
+    // Роль: зафиксировать контракт цикла overlay-состояний и защитить от регрессий.
+    async fn ctrl_t_overlay_action_cycles_transcript_and_agents_overlays() {
+        let mut app = make_test_app().await;
+
+        assert_eq!(
+            app.ctrl_t_overlay_action(),
+            CtrlTOverlayAction::OpenTranscript
+        );
+
+        app.overlay = Some(Overlay::new_transcript(Vec::new()));
+        assert_eq!(app.ctrl_t_overlay_action(), CtrlTOverlayAction::OpenAgents);
+
+        app.overlay = Some(Overlay::new_static_with_lines(
+            Vec::<Line<'static>>::new(),
+            AGENTS_OVERLAY_TITLE.to_string(),
+        ));
+        assert_eq!(app.ctrl_t_overlay_action(), CtrlTOverlayAction::CloseAgents);
+
+        app.overlay = Some(Overlay::new_static_with_lines(
+            Vec::<Line<'static>>::new(),
+            "D I F F".to_string(),
+        ));
+        assert_eq!(app.ctrl_t_overlay_action(), CtrlTOverlayAction::None);
+    }
+    // SAW COMMIT CLOSE: проверка state-machine переходов Ctrl+T.
 
     async fn make_test_app() -> App {
         let (chat_widget, app_event_tx, _rx, _op_rx) = make_chatwidget_manual_with_sender().await;

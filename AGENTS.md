@@ -17,6 +17,67 @@ In the codex-rs folder where the rust code lives:
 - If you change `ConfigToml` or nested config types, run `just write-config-schema` to update `codex-rs/core/config.schema.json`.
 - Do not create small helper methods that are referenced only once.
 
+## Fork customization requirements
+
+When implementing or refining fork-specific behavior, keep the change contract explicit in code:
+
+- Wrap each introduced fork block with paired markers:
+  - `<CodeName> COMMIT OPEN: ...`
+  - `<CodeName> COMMIT CLOSE: ...`
+- Near the `COMMIT OPEN` marker, include a short comment that explains the role/purpose of the block.
+- If existing logic is replaced, preserve the removed implementation as a nearby commented `legacy` snippet (do not delete it outright).
+- Keep this pattern localized to the touched area and avoid broad refactors.
+
+Example for this repository's current feature (SubAgentsWindow / SAW):
+
+- `SAW COMMIT OPEN: ...`
+- `SAW COMMIT CLOSE: ...`
+
+## Release research documentation
+
+For fork work tied to a specific upstream release/tag, keep a research package in `docs/research/<release>/` (for example `docs/research/0.99/`).
+
+Before implementation starts (or when scope changes), ensure the package contains:
+
+- a `README.md` index with baseline commit/tag and document list;
+- baseline/branch state and min-diff strategy docs;
+- quality gates/checks and open questions checklist;
+- TUI window/overlay behavior notes when the feature touches TUI UX.
+
+For TUI window/overlay notes, document at minimum:
+
+- which hotkeys and handlers own window transitions (`handle_key_event` vs overlay/backtrack routing);
+- alt-screen lifecycle invariants (`enter_alt_screen`/`leave_alt_screen`, and guards like `tui.is_alt_screen_active()`);
+- buffered history/flush behavior while overlay is open and expected return-to-inline-screen behavior on close.
+
+## Feature documentation workflow (`docs/features`)
+
+For every fork feature, keep a dedicated spec in `docs/features/<code-name>.md` and treat it as the single source of truth for that feature.
+
+Minimum structure for each feature document:
+
+- **Feature passport**
+  - code name, current status (`draft` / `in-progress` / `implemented` / `verified`);
+  - goal, scope in/out, API/security/config impact;
+  - upstream baseline reference and links to `docs/research/<release>/...` package.
+- **User contract**
+  - exact user-visible behavior and transitions (hotkeys, overlays, empty states, close behavior);
+  - exact UI strings for critical states (to avoid wording drift between code and docs).
+- **Implementation map**
+  - touched files and key entry points/handlers;
+  - where fork markers (`<CodeName> COMMIT OPEN/CLOSE`) are expected.
+- **Verification matrix**
+  - required checks/commands;
+  - current result and known non-feature failures (if any), explicitly marked as unrelated.
+- **Doc changelog**
+  - concise dated notes when contract or implementation mapping changes.
+
+Working rules:
+
+- Update feature doc in the same change set whenever behavior or implementation mapping changes.
+- If logic is moved to a new file/module, update the file map and algorithm section immediately.
+- Do not create duplicate docs for the same feature code name; evolve the existing file.
+
 Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, run the tests:
 
 1. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `cargo test -p codex-tui`.
