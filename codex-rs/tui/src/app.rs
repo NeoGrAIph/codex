@@ -1150,6 +1150,30 @@ impl App {
                 }
             });
 
+            // FORK COMMIT OPEN [SAW]: extract initial message preview for AGENTS overlay.
+            // Role: display first two lines of user task text in agent cards.
+            let message_preview_lines: Vec<String> = snapshot
+                .events
+                .iter()
+                .find_map(|event| {
+                    if let EventMsg::UserMessage(ev) = &event.msg {
+                        Some(ev.message.clone())
+                    } else {
+                        None
+                    }
+                })
+                .map(|message| {
+                    message
+                        .lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                        .map(|line| saw_truncate_detail(line.to_string()))
+                        .take(2)
+                        .collect()
+                })
+                .unwrap_or_default();
+            // FORK COMMIT CLOSE: extract initial message preview for AGENTS overlay.
+
             let (last_tool, last_tool_detail) = snapshot
                 .events
                 .iter()
@@ -1326,6 +1350,7 @@ impl App {
                 status_detail,
                 plan_update,
                 context_left_percent,
+                message_preview_lines,
                 last_tool,
                 last_tool_detail,
             });

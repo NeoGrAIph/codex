@@ -30,6 +30,10 @@ pub(crate) struct AgentSummaryEntry {
     pub(crate) plan_update: Option<UpdatePlanArgs>,
     // FORK COMMIT CLOSE: plan update for AGENTS overlay.
     pub(crate) context_left_percent: Option<i64>,
+    // FORK COMMIT OPEN [SAW]: initial message preview for AGENTS overlay.
+    // Role: show the first two lines of agent task text between context and tool summary.
+    pub(crate) message_preview_lines: Vec<String>,
+    // FORK COMMIT CLOSE: initial message preview for AGENTS overlay.
     // FORK COMMIT OPEN [SAW]: last tool for SAW summary.
     // Role: surface the last tool-related event seen on this thread as a single summary line.
     pub(crate) last_tool: Option<String>,
@@ -146,14 +150,30 @@ pub(crate) fn build_agents_overlay_lines(
         ]);
         lines.push(first_line_spans.into());
 
-        let mut second_line_spans: Vec<Span<'static>> = vec![
-            format!("{indent}  ").into(),
-            entry.thread_id.to_string().dim(),
-            "  ".into(),
-            "Context left: ".dim(),
-        ];
+        let mut second_line_spans: Vec<Span<'static>> =
+            vec![format!("{indent}  ").into(), "Context left: ".dim()];
         second_line_spans.extend(context_left_display_spans(entry.context_left_percent));
+        second_line_spans.extend(["  ".into(), entry.thread_id.to_string().dim()]);
         lines.push(second_line_spans.into());
+
+        // FORK COMMIT OPEN [SAW]: render initial message preview.
+        // Role: surface first two lines from agent message between context and tool summary.
+        if let Some(first) = entry.message_preview_lines.first() {
+            lines.push(
+                vec![
+                    format!("{indent}  ").into(),
+                    "Prompt: ".dim(),
+                    first.clone().dim(),
+                ]
+                .into(),
+            );
+            if let Some(second) = entry.message_preview_lines.get(1) {
+                // Keep continuation text visually aligned under the first prompt line value.
+                lines
+                    .push(vec![format!("{indent}           ").into(), second.clone().dim()].into());
+            }
+        }
+        // FORK COMMIT CLOSE: render initial message preview.
 
         // FORK COMMIT OPEN [SAW]: render last tool line.
         // Role: show the most recent tool-related event (or approval request) seen for this agent.
