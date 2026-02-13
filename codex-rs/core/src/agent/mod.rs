@@ -1,6 +1,10 @@
 pub(crate) mod control;
 mod guards;
 pub(crate) mod role;
+// [SA] COMMIT OPEN: agent templates module
+// Role: support template-backed roles/personas for `spawn_agent` without bloating upstream modules.
+pub(crate) mod role_templates;
+// [SA] COMMIT CLOSE: agent templates module
 pub(crate) mod status;
 
 pub(crate) use codex_protocol::protocol::AgentStatus;

@@ -99,8 +99,14 @@ pub(crate) fn build_agents_overlay_lines(
             now.saturating_duration_since(entry.status_changed_at)
                 .as_secs(),
         );
+
+        // SAW COMMIT OPEN: colored status bullet
+        // Role: encode agent status in the left bullet for faster scanning in `/ A G E N T S /`.
+        // SAW legacy: the bullet was rendered as plain text via `format!("{indent}• ")`.
         let first_line_spans: Vec<Span<'static>> = vec![
-            format!("{indent}• ").into(),
+            indent.to_string().into(),
+            status_bullet_span(&entry.status),
+            " ".into(),
             "Role: ".dim(),
             entry.role.clone().into(),
             "  ".into(),
@@ -113,6 +119,7 @@ pub(crate) fn build_agents_overlay_lines(
             "Spawned: ".dim(),
             spawned_elapsed.dim(),
         ];
+        // SAW COMMIT CLOSE: colored status bullet
         lines.push(first_line_spans.into());
 
         let mut second_line_spans: Vec<Span<'static>> = vec![
@@ -120,7 +127,7 @@ pub(crate) fn build_agents_overlay_lines(
             entry.thread_id.to_string().dim(),
             "  ".into(),
             "Status: ".dim(),
-            status_span(&entry.status),
+            status_text_span(&entry.status),
             "  ".into(),
             "Context left: ".dim(),
         ];
@@ -168,7 +175,20 @@ pub(crate) fn build_agents_overlay_lines(
     lines
 }
 
-fn status_span(status: &AgentStatus) -> Span<'static> {
+fn status_bullet_span(status: &AgentStatus) -> Span<'static> {
+    match status {
+        AgentStatus::PendingInit => "•".dim(),
+        AgentStatus::Running => "•".cyan(),
+        AgentStatus::Completed(_) => "•".green(),
+        AgentStatus::Errored(_) => "•".red(),
+        AgentStatus::Shutdown => "•".dim(),
+        AgentStatus::NotFound => "•".red(),
+    }
+}
+
+fn status_text_span(status: &AgentStatus) -> Span<'static> {
+    // SAW legacy (preserved): previously this logic was in a single `status_span` helper which was
+    // used as `Status: <status>` on the details line.
     match status {
         AgentStatus::PendingInit => "pending init".dim(),
         AgentStatus::Running => "running".cyan(),

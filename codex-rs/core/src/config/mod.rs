@@ -99,7 +99,11 @@ pub use codex_git::GhostSnapshotConfig;
 /// files are *silently truncated* to this size so we do not take up too much of
 /// the context window.
 pub(crate) const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024; // 32 KiB
-pub(crate) const DEFAULT_AGENT_MAX_THREADS: Option<usize> = Some(6);
+// [SA] COMMIT OPEN: raise default max sub-agent threads
+// Role: allow more parallel sub-agent threads by default in the fork.
+// [SA] legacy: pub(crate) const DEFAULT_AGENT_MAX_THREADS: Option<usize> = Some(6);
+pub(crate) const DEFAULT_AGENT_MAX_THREADS: Option<usize> = Some(12);
+// [SA] COMMIT CLOSE: raise default max sub-agent threads
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
 

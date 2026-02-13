@@ -360,6 +360,17 @@ impl ThreadManagerState {
             .cloned()
             .ok_or_else(|| CodexErr::ThreadNotFound(thread_id))
     }
+    // [SA] COMMIT OPEN
+    pub(crate) async fn list_threads(&self) -> Vec<(ThreadId, Arc<CodexThread>)> {
+        // SA: needed for parent->descendant traversal in AgentControl shutdown/subtree checks.
+        self.threads
+            .read()
+            .await
+            .iter()
+            .map(|(thread_id, thread)| (*thread_id, Arc::clone(thread)))
+            .collect()
+    }
+    // [SA] COMMIT CLOSE
 
     /// Send an operation to a thread by ID.
     pub(crate) async fn send_op(&self, thread_id: ThreadId, op: Op) -> CodexResult<String> {

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -219,6 +220,39 @@ impl ToolRegistryBuilder {
         }
     }
 
+    pub fn retain_tools_by_name(
+        &mut self,
+        allow_list: Option<&[String]>,
+        deny_list: Option<&[String]>,
+    ) {
+        let allow_set = allow_list.and_then(|list| {
+            let set: HashSet<String> = list
+                .iter()
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+                .collect();
+            (!set.is_empty()).then_some(set)
+        });
+        let deny_set: HashSet<String> = deny_list
+            .unwrap_or(&[])
+            .iter()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect();
+
+        let is_enabled = |name: &str| {
+            let allowed = allow_set
+                .as_ref()
+                .map(|set| set.contains(name))
+                .unwrap_or(true);
+            allowed && !deny_set.contains(name)
+        };
+
+        self.specs
+            .retain(|configured| is_enabled(tool_name(&configured.spec)));
+        self.handlers.retain(|name, _| is_enabled(name));
+    }
+
     // TODO(jif) for dynamic tools.
     // pub fn register_many<I>(&mut self, names: I, handler: Arc<dyn ToolHandler>)
     // where
@@ -240,6 +274,15 @@ impl ToolRegistryBuilder {
     pub fn build(self) -> (Vec<ConfiguredToolSpec>, ToolRegistry) {
         let registry = ToolRegistry::new(self.handlers);
         (self.specs, registry)
+    }
+}
+
+fn tool_name(spec: &ToolSpec) -> &str {
+    match spec {
+        ToolSpec::Function(tool) => &tool.name,
+        ToolSpec::LocalShell {} => "local_shell",
+        ToolSpec::WebSearch { .. } => "web_search",
+        ToolSpec::Freeform(tool) => &tool.name,
     }
 }
 

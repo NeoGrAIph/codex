@@ -369,6 +369,12 @@ async fn thread_list_filters_by_source_kind_subagent_thread_spawn() -> Result<()
         CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth: 1,
+            // SAW: optional metadata (agent_type/agent_name) is ignored by thread list filtering.
+            agent_type: None,
+            agent_name: None,
+            // SA: optional tool policy metadata (allow_list/deny_list) is ignored by thread list filtering.
+            allow_list: None,
+            deny_list: None,
         }),
     )?;
 
@@ -428,6 +434,12 @@ async fn thread_list_filters_by_subagent_variant() -> Result<()> {
         CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth: 1,
+            // SAW: optional metadata (agent_type/agent_name) is ignored by thread list filtering.
+            agent_type: None,
+            agent_name: None,
+            // SA: optional tool policy metadata (allow_list/deny_list) is ignored by thread list filtering.
+            allow_list: None,
+            deny_list: None,
         }),
     )?;
     let other_id = create_fake_rollout_with_source(

@@ -46,6 +46,7 @@ use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::edit::ConfigEdit;
 use codex_core::config::edit::ConfigEditsBuilder;
+use codex_core::config::types::Notifications;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::features::Feature;
 use codex_core::models_manager::manager::RefreshStrategy;
@@ -402,6 +403,39 @@ impl ThreadEventChannel {
         }
     }
 }
+
+// [SA] COMMIT OPEN: helper logic for background spawned-agent completion notifications.
+// Role: centralized checks for notification policy and spawned-agent role label rendering.
+fn notifications_allow_agent_turn_complete(settings: &Notifications) -> bool {
+    match settings {
+        Notifications::Enabled(enabled) => *enabled,
+        Notifications::Custom(allowed) => allowed
+            .iter()
+            .any(|allowed| allowed == "agent-turn-complete"),
+    }
+}
+
+fn spawned_agent_completion_label(
+    session_source: &SessionSource,
+    thread_id: ThreadId,
+) -> Option<String> {
+    let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        agent_type,
+        agent_name,
+        ..
+    }) = session_source
+    else {
+        return None;
+    };
+
+    Some(match (agent_type.as_deref(), agent_name.as_deref()) {
+        (Some(agent_type), Some(agent_name)) => format!("{agent_type}/{agent_name}"),
+        (Some(agent_type), None) => agent_type.to_string(),
+        (None, Some(agent_name)) => agent_name.to_string(),
+        (None, None) => format!("subagent {thread_id}"),
+    })
+}
+// [SA] COMMIT CLOSE: helper logic for background spawned-agent completion notifications.
 
 fn should_show_model_migration_prompt(
     current_model: &str,
@@ -786,11 +820,23 @@ impl App {
             (channel.sender.clone(), Arc::clone(&channel.store))
         };
 
-        let should_send = {
+        let (should_send, should_notify_subagent_turn_complete) = {
             let mut guard = store.lock().await;
             guard.push_event(event.clone());
-            guard.active
+            let active = guard.active;
+            (
+                active,
+                !active && matches!(event.msg, EventMsg::TurnComplete(_)),
+            )
         };
+
+        // [SA] COMMIT OPEN: notify completion of inactive spawned sub-agent turns.
+        // Role: surface background spawned-agent completion via existing desktop notifications path.
+        if should_notify_subagent_turn_complete {
+            self.emit_spawned_agent_turn_complete_notification(thread_id)
+                .await;
+        }
+        // [SA] COMMIT CLOSE: notify completion of inactive spawned sub-agent turns.
 
         if should_send {
             // Never await a bounded channel send on the main TUI loop: if the receiver falls behind,
@@ -1056,8 +1102,24 @@ impl App {
                 SessionSource::SubAgent(SubAgentSource::Review) => (None, "review".to_string()),
                 SessionSource::SubAgent(SubAgentSource::Compact) => (None, "compact".to_string()),
                 SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                    parent_thread_id, ..
-                }) => (Some(parent_thread_id), "subagent".to_string()),
+                    parent_thread_id,
+                    agent_type,
+                    agent_name,
+                    ..
+                }) => (
+                    Some(parent_thread_id),
+                    // SAW COMMIT OPEN: show spawned role in SAW.
+                    // Role: display the explicit `agent_type` when available; otherwise keep legacy "subagent".
+                    // SAW legacy (восстановлено как комментарий): "subagent".to_string()
+                    match (agent_type, agent_name) {
+                        (Some(agent_type), Some(agent_name)) => {
+                            format!("{agent_type}/{agent_name}")
+                        }
+                        (Some(agent_type), None) => agent_type,
+                        (None, _) => "subagent".to_string(),
+                    },
+                    // SAW COMMIT CLOSE: show spawned role in SAW.
+                ),
                 SessionSource::SubAgent(SubAgentSource::Other(other)) => (None, other),
                 _ => continue,
             };
@@ -2049,6 +2111,14 @@ impl App {
             AppEvent::CodexEvent(event) => {
                 self.enqueue_primary_event(event).await?;
             }
+            // [SA] COMMIT OPEN: background spawned-agent completion notifications.
+            // Role: reuse existing notifications settings and post desktop notify for inactive spawned-agent completion.
+            AppEvent::NotifySubagentTurnComplete { label } => {
+                if notifications_allow_agent_turn_complete(&self.config.tui_notifications) {
+                    tui.notify(format!("{label} turn complete"));
+                }
+            }
+            // [SA] COMMIT CLOSE: background spawned-agent completion notifications.
             AppEvent::Exit(mode) => match mode {
                 ExitMode::ShutdownFirst => self.chat_widget.submit_op(Op::Shutdown),
                 ExitMode::Immediate => {
@@ -2834,6 +2904,8 @@ impl App {
             }
         };
         let config_snapshot = thread.config_snapshot().await;
+        let subagent_completion_label =
+            spawned_agent_completion_label(&config_snapshot.session_source, thread_id);
         let event = Event {
             id: String::new(),
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
@@ -2857,6 +2929,7 @@ impl App {
             ThreadEventChannel::new_with_session_configured(THREAD_EVENT_CHANNEL_CAPACITY, event);
         let sender = channel.sender.clone();
         let store = Arc::clone(&channel.store);
+        let app_event_tx = self.app_event_tx.clone();
         self.thread_event_channels.insert(thread_id, channel);
         tokio::spawn(async move {
             loop {
@@ -2867,11 +2940,25 @@ impl App {
                         break;
                     }
                 };
-                let should_send = {
+                let (should_send, should_notify_subagent_turn_complete) = {
                     let mut guard = store.lock().await;
                     guard.push_event(event.clone());
-                    guard.active
+                    let active = guard.active;
+                    (
+                        active,
+                        !active && matches!(event.msg, EventMsg::TurnComplete(_)),
+                    )
                 };
+                if should_notify_subagent_turn_complete
+                    && let Some(label) = subagent_completion_label.as_ref()
+                {
+                    // [SA] COMMIT OPEN: emit completion notifications for inactive spawned agents.
+                    // Role: forward completion to main app-loop so desktop notifications can be shown.
+                    app_event_tx.send(AppEvent::NotifySubagentTurnComplete {
+                        label: label.clone(),
+                    });
+                    // [SA] COMMIT CLOSE: emit completion notifications for inactive spawned agents.
+                }
                 if should_send && let Err(err) = sender.send(event).await {
                     tracing::debug!("external thread {thread_id} channel closed: {err}");
                     break;
@@ -2909,6 +2996,22 @@ impl App {
         self.config.model_reasoning_effort = effort;
         self.chat_widget.set_reasoning_effort(effort);
     }
+
+    // [SA] COMMIT OPEN: background spawned-agent completion notification emitter.
+    // Role: resolve thread source metadata and queue app-level notification event only for spawned agents.
+    async fn emit_spawned_agent_turn_complete_notification(&self, thread_id: ThreadId) {
+        let Ok(thread) = self.server.get_thread(thread_id).await else {
+            return;
+        };
+        let config_snapshot = thread.config_snapshot().await;
+        if let Some(label) =
+            spawned_agent_completion_label(&config_snapshot.session_source, thread_id)
+        {
+            self.app_event_tx
+                .send(AppEvent::NotifySubagentTurnComplete { label });
+        }
+    }
+    // [SA] COMMIT CLOSE: background spawned-agent completion notification emitter.
 
     fn on_update_personality(&mut self, personality: Personality) {
         self.config.personality = Some(personality);

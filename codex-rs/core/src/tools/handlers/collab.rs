@@ -36,8 +36,8 @@ pub struct CollabHandler;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
-pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
-pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 300_000;
+pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 300_000;
+pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 1_800_000;
 
 #[derive(Debug, Deserialize)]
 struct CloseAgentArgs {
@@ -86,6 +86,10 @@ impl ToolHandler for CollabHandler {
     }
 }
 
+// [SA] COMMIT OPEN: spawn_agent handler module split
+// Role: keep the upstream collab handler file readable by moving the (fork-extended)
+// `spawn_agent` implementation into a dedicated module.
+/*
 mod spawn {
     use super::*;
     use crate::agent::AgentRole;
@@ -188,6 +192,11 @@ mod spawn {
         })
     }
 }
+*/
+// legacy: `mod spawn { ... }` lived inline in this file.
+// It is now in `core/src/tools/handlers/collab/spawn.rs`.
+// [SA] COMMIT CLOSE: spawn_agent handler module split
+mod spawn;
 
 mod send_input {
     use super::*;
@@ -407,7 +416,7 @@ mod resume_agent {
             .resume_agent_from_rollout(
                 config,
                 rollout_path,
-                thread_spawn_source(session.conversation_id, child_depth),
+                thread_spawn_source(session.conversation_id, child_depth, None, None, None, None),
             )
             .await
             .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
@@ -611,6 +620,7 @@ mod wait {
 
 pub mod close_agent {
     use super::*;
+    use codex_protocol::protocol::SessionSource;
     use std::sync::Arc;
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -637,6 +647,36 @@ pub mod close_agent {
                 .into(),
             )
             .await;
+        // [SA] COMMIT OPEN: close_agent subtree guard for sub-agents
+        // Role: sub-agents may terminate only agents in their own subtree.
+        if matches!(turn.session_source, SessionSource::SubAgent(_))
+            && agent_id != session.conversation_id
+            && !session
+                .services
+                .agent_control
+                .is_descendant_of(session.conversation_id, agent_id)
+                .await
+        {
+            let status = AgentStatus::Errored(
+                "not permitted to close agents outside your subtree".to_string(),
+            );
+            session
+                .send_event(
+                    &turn,
+                    CollabCloseEndEvent {
+                        call_id: call_id.clone(),
+                        sender_thread_id: session.conversation_id,
+                        receiver_thread_id: agent_id,
+                        status,
+                    }
+                    .into(),
+                )
+                .await;
+            return Err(FunctionCallError::RespondToModel(
+                "Not permitted to close agents outside your subtree.".to_string(),
+            ));
+        }
+        // [SA] COMMIT CLOSE: close_agent subtree guard for sub-agents
         let status = match session
             .services
             .agent_control
@@ -661,7 +701,12 @@ pub mod close_agent {
                 return Err(collab_agent_error(agent_id, err));
             }
         };
-        let result = if !matches!(status, AgentStatus::Shutdown) {
+        // [SA] COMMIT OPEN: delegate shutdown cascade to AgentControl
+        // Role: keep handler logic thin while `AgentControl::shutdown_agent` handles descendant cascade.
+        // [SA] legacy: handler performed per-descendant shutdown before terminating the parent.
+        let result = if matches!(status, AgentStatus::Shutdown) {
+            Ok(())
+        } else {
             session
                 .services
                 .agent_control
@@ -669,9 +714,8 @@ pub mod close_agent {
                 .await
                 .map_err(|err| collab_agent_error(agent_id, err))
                 .map(|_| ())
-        } else {
-            Ok(())
         };
+        // [SA] COMMIT CLOSE: delegate shutdown cascade to AgentControl
         session
             .send_event(
                 &turn,
@@ -726,10 +770,23 @@ fn collab_agent_error(agent_id: ThreadId, err: CodexErr) -> FunctionCallError {
     }
 }
 
-fn thread_spawn_source(parent_thread_id: ThreadId, depth: i32) -> SessionSource {
+fn thread_spawn_source(
+    parent_thread_id: ThreadId,
+    depth: i32,
+    agent_type: Option<String>,
+    agent_name: Option<String>,
+    allow_list: Option<Vec<String>>,
+    deny_list: Option<Vec<String>>,
+) -> SessionSource {
     SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id,
         depth,
+        // SAW: optional metadata for the spawned thread (shown in the TUI agents window).
+        agent_type,
+        agent_name,
+        // SA: optional per-agent tool policy metadata.
+        allow_list,
+        deny_list,
     })
 }
 
@@ -1011,6 +1068,12 @@ mod tests {
         turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id: session.conversation_id,
             depth: MAX_THREAD_SPAWN_DEPTH,
+            // SAW: optional metadata is irrelevant for depth/limits; keep it unset in tests.
+            agent_type: None,
+            agent_name: None,
+            // SA: optional tool policy metadata is irrelevant for depth/limits; keep it unset in tests.
+            allow_list: None,
+            deny_list: None,
         });
 
         let invocation = invocation(
@@ -1386,6 +1449,12 @@ mod tests {
         turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id: session.conversation_id,
             depth: MAX_THREAD_SPAWN_DEPTH,
+            // SAW: optional metadata is irrelevant for depth/limits; keep it unset in tests.
+            agent_type: None,
+            agent_name: None,
+            // SA: optional tool policy metadata is irrelevant for depth/limits; keep it unset in tests.
+            allow_list: None,
+            deny_list: None,
         });
 
         let invocation = invocation(
@@ -1686,6 +1755,216 @@ mod tests {
 
         let status_after = manager.agent_control().get_status(agent_id).await;
         assert_eq!(status_after, AgentStatus::NotFound);
+    }
+
+    #[tokio::test]
+    async fn close_agent_cascades_to_descendants() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let config = turn.config.as_ref().clone();
+        let parent = manager
+            .start_thread(config.clone())
+            .await
+            .expect("start parent");
+        let parent_id = parent.thread_id;
+
+        let child_id = manager
+            .agent_control()
+            .spawn_agent(
+                config.clone(),
+                vec![UserInput::Text {
+                    text: "child".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(parent_id, 1, None, None, None, None)),
+            )
+            .await
+            .expect("spawn child");
+        let grandchild_id = manager
+            .agent_control()
+            .spawn_agent(
+                config,
+                vec![UserInput::Text {
+                    text: "grandchild".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(child_id, 2, None, None, None, None)),
+            )
+            .await
+            .expect("spawn grandchild");
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "close_agent",
+            function_payload(json!({"id": parent_id.to_string()})),
+        );
+        let output = CollabHandler
+            .handle(invocation)
+            .await
+            .expect("close_agent should cascade");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(_),
+            success,
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        assert_eq!(success, Some(true));
+
+        let ops = manager.captured_ops();
+        let submitted_parent_shutdown = ops
+            .iter()
+            .any(|(id, op)| *id == parent_id && matches!(op, Op::Shutdown));
+        let submitted_child_shutdown = ops
+            .iter()
+            .any(|(id, op)| *id == child_id && matches!(op, Op::Shutdown));
+        let submitted_grandchild_shutdown = ops
+            .iter()
+            .any(|(id, op)| *id == grandchild_id && matches!(op, Op::Shutdown));
+        assert_eq!(submitted_parent_shutdown, true);
+        assert_eq!(submitted_child_shutdown, true);
+        assert_eq!(submitted_grandchild_shutdown, true);
+
+        assert_eq!(
+            manager.agent_control().get_status(parent_id).await,
+            AgentStatus::NotFound
+        );
+        assert_eq!(
+            manager.agent_control().get_status(child_id).await,
+            AgentStatus::NotFound
+        );
+        assert_eq!(
+            manager.agent_control().get_status(grandchild_id).await,
+            AgentStatus::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn close_agent_rejects_cross_subtree_shutdown_for_subagents() {
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let config = turn.config.as_ref().clone();
+        let parent = manager
+            .start_thread(config.clone())
+            .await
+            .expect("start parent");
+        let parent_id = parent.thread_id;
+
+        let caller_id = manager
+            .agent_control()
+            .spawn_agent(
+                config.clone(),
+                vec![UserInput::Text {
+                    text: "caller".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(parent_id, 1, None, None, None, None)),
+            )
+            .await
+            .expect("spawn caller");
+        let child_id = manager
+            .agent_control()
+            .spawn_agent(
+                config.clone(),
+                vec![UserInput::Text {
+                    text: "child".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(caller_id, 2, None, None, None, None)),
+            )
+            .await
+            .expect("spawn child");
+        let sibling_id = manager
+            .agent_control()
+            .spawn_agent(
+                config,
+                vec![UserInput::Text {
+                    text: "sibling".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(parent_id, 1, None, None, None, None)),
+            )
+            .await
+            .expect("spawn sibling");
+
+        session.conversation_id = caller_id;
+        turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: parent_id,
+            depth: 1,
+            // SAW: optional metadata (agent_type/agent_name) is irrelevant for subtree guard.
+            agent_type: None,
+            agent_name: None,
+            // SA: optional tool policy metadata is irrelevant for subtree guard.
+            allow_list: None,
+            deny_list: None,
+        });
+
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+
+        let sibling_invocation = invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "close_agent",
+            function_payload(json!({"id": sibling_id.to_string()})),
+        );
+        let Err(err) = CollabHandler.handle(sibling_invocation).await else {
+            panic!("close_agent should reject sibling termination");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "Not permitted to close agents outside your subtree.".to_string()
+            )
+        );
+        assert_ne!(
+            manager.agent_control().get_status(sibling_id).await,
+            AgentStatus::NotFound
+        );
+
+        let invocation_child = invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "close_agent",
+            function_payload(json!({"id": child_id.to_string()})),
+        );
+        let output = CollabHandler
+            .handle(invocation_child)
+            .await
+            .expect("close_agent should allow descendant termination");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(_),
+            success,
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        assert_eq!(success, Some(true));
+        assert_eq!(
+            manager.agent_control().get_status(child_id).await,
+            AgentStatus::NotFound
+        );
+
+        let _ = manager
+            .agent_control()
+            .shutdown_agent(sibling_id)
+            .await
+            .expect("shutdown sibling");
+        let _ = manager
+            .agent_control()
+            .shutdown_agent(caller_id)
+            .await
+            .expect("shutdown caller");
+        let _ = manager
+            .agent_control()
+            .shutdown_agent(parent_id)
+            .await
+            .expect("shutdown parent");
     }
 
     #[tokio::test]

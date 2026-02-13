@@ -115,6 +115,7 @@ pub fn is_first_party_originator(originator_value: &str) -> bool {
 }
 
 pub fn get_codex_user_agent() -> String {
+    // SAW+SA (maintenance): keep the user-agent version aligned with the workspace package version.
     let build_version = env!("CARGO_PKG_VERSION");
     let os_info = os_info::get();
     let originator = originator();

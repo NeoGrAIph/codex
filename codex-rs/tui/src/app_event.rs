@@ -56,6 +56,12 @@ pub(crate) enum AppEvent {
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
 
+    // [SA] COMMIT OPEN: background spawned-agent completion notification.
+    // Role: app-loop signal to post desktop notify when an inactive spawned sub-agent finishes a turn.
+    NotifySubagentTurnComplete {
+        label: String,
+    },
+    // [SA] COMMIT CLOSE: background spawned-agent completion notification.
     /// Start a new session.
     NewSession,
 

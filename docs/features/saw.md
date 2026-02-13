@@ -140,7 +140,7 @@
    - вычислить `Context left` из последнего `EventMsg::TokenCount` (`last_token_usage` + `model_context_window`);
    - взять статус из последнего состояния `ThreadEventStore` и время его смены.
 3. Сформировать 4-5 строк на агента:
-   - строка 1: `Role/Model/Reasoning/Spawned`;
+   - строка 1: `Role/Model/Reasoning/Spawned` (маркер `•` слева окрашен по статусу);
    - строка 2: `thread_id/Status/Context left`;
    - строка 3: `Working`-совместимый mini status-indicator + elapsed.
    - строка 4: `Last tool`.

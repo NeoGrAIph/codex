@@ -5,6 +5,8 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+#[cfg(any(test, feature = "test-support"))]
+// SAW+SA (maintenance): this import is only needed by test-support helpers below.
 use std::sync::atomic::Ordering;
 use tokio::sync::Notify;
 use tokio::sync::mpsc;

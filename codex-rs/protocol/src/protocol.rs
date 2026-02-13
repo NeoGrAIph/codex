@@ -1624,6 +1624,21 @@ pub enum SubAgentSource {
     ThreadSpawn {
         parent_thread_id: ThreadId,
         depth: i32,
+        // SAW COMMIT OPEN: persist sub-agent role for SAW.
+        // Role: allow TUI / A G E N T S / to display the spawned `agent_type` (e.g. test/orchestrator),
+        // while remaining backward compatible with older rollouts.
+        #[serde(default)]
+        agent_type: Option<String>,
+        #[serde(default)]
+        agent_name: Option<String>,
+        // SAW COMMIT CLOSE: persist sub-agent role for SAW.
+        // [SA] COMMIT OPEN: persist per-agent tool policy.
+        // Role: carry template-driven allow_list/deny_list from `spawn_agent` into turn runtime.
+        #[serde(default)]
+        allow_list: Option<Vec<String>>,
+        #[serde(default)]
+        deny_list: Option<Vec<String>>,
+        // [SA] COMMIT CLOSE: persist per-agent tool policy.
     },
     Other(String),
 }
@@ -1649,6 +1664,7 @@ impl fmt::Display for SubAgentSource {
             SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,
+                ..
             } => {
                 write!(f, "thread_spawn_{parent_thread_id}_d{depth}")
             }

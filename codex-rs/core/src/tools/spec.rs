@@ -35,6 +35,8 @@ pub(crate) struct ToolsConfig {
     pub collaboration_modes_tools: bool,
     pub request_rule_enabled: bool,
     pub experimental_supported_tools: Vec<String>,
+    pub tool_allow_list: Option<Vec<String>>,
+    pub tool_deny_list: Option<Vec<String>>,
 }
 
 pub(crate) struct ToolsConfigParams<'a> {
@@ -90,8 +92,31 @@ impl ToolsConfig {
             collaboration_modes_tools: include_collaboration_modes_tools,
             request_rule_enabled,
             experimental_supported_tools: model_info.experimental_supported_tools.clone(),
+            tool_allow_list: None,
+            tool_deny_list: None,
         }
     }
+
+    pub fn apply_tool_policy(
+        &mut self,
+        allow_list: Option<Vec<String>>,
+        deny_list: Option<Vec<String>>,
+    ) {
+        self.tool_allow_list = normalize_tool_policy_list(allow_list);
+        self.tool_deny_list = normalize_tool_policy_list(deny_list);
+    }
+}
+
+fn normalize_tool_policy_list(list: Option<Vec<String>>) -> Option<Vec<String>> {
+    let mut out: Vec<String> = list
+        .unwrap_or_default()
+        .into_iter()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect();
+    out.sort();
+    out.dedup();
+    (!out.is_empty()).then_some(out)
 }
 
 /// Generic JSON‑Schema subset needed for our tool definitions
@@ -503,6 +528,14 @@ fn create_collab_input_items_schema() -> JsonSchema {
 }
 
 fn create_spawn_agent_tool() -> ToolSpec {
+    // [SA] COMMIT OPEN: agent templates in tool hint
+    // Role: keep `spawn_agent.agent_type` discoverable by listing template-backed roles.
+    //
+    // legacy: the hint string construction used to be implemented inline here; it is now
+    // centralized in `core/src/agent/role_templates.rs` to keep this upstream file smaller.
+    let templates_hint = crate::agent::role_templates::spawn_agent_templates_hint();
+    // [SA] COMMIT CLOSE: agent templates in tool hint
+
     let properties = BTreeMap::from([
         (
             "message".to_string(),
@@ -518,9 +551,39 @@ fn create_spawn_agent_tool() -> ToolSpec {
             "agent_type".to_string(),
             JsonSchema::String {
                 description: Some(format!(
-                    "Optional agent type ({}). Use an explicit type when delegating.",
+                    "Optional agent type ({}). Use an explicit type when delegating. You can also pass a custom type if `codex-rs/core/templates/agents/<agent_type>.md` exists.{templates_hint}",
                     AgentRole::enum_values().join(", ")
                 )),
+            },
+        ),
+        // SA: optional template-backed personality selection within an agent_type.
+        (
+            "agent_name".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional personality name within the selected agent_type (if the template defines agent_names blocks)."
+                        .to_string(),
+                ),
+            },
+        ),
+        // SA: explicit override for spawned agent model (higher priority than template defaults).
+        (
+            "model".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional model override for the spawned agent. Highest priority over template defaults and inherited turn config."
+                        .to_string(),
+                ),
+            },
+        ),
+        // SA: explicit override for spawned agent reasoning effort (higher priority than template defaults).
+        (
+            "reasoning_effort".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional reasoning effort override for the spawned agent (e.g. none|minimal|low|medium|high|xhigh). Highest priority over template defaults and inherited turn config."
+                        .to_string(),
+                ),
             },
         ),
     ]);
@@ -1546,6 +1609,15 @@ pub(crate) fn build_specs(
         }
     }
 
+    // [SA] COMMIT OPEN: enforce per-agent allow_list/deny_list
+    // Role: apply template-driven tool filtering by tool name for spawned agents.
+    // [SA] legacy: no per-agent tool-name filtering was applied here.
+    builder.retain_tools_by_name(
+        config.tool_allow_list.as_deref(),
+        config.tool_deny_list.as_deref(),
+    );
+    // [SA] COMMIT CLOSE: enforce per-agent allow_list/deny_list
+
     builder
 }
 
@@ -1785,6 +1857,37 @@ mod tests {
                 "wait",
                 "close_agent",
             ],
+        );
+    }
+
+    #[test]
+    fn test_build_specs_respects_tool_allow_and_deny_lists() {
+        let config = test_config();
+        let model_info = ModelsManager::construct_model_info_offline("gpt-5-codex", &config);
+        let mut features = Features::with_defaults();
+        features.enable(Feature::Collab);
+
+        let mut tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+        });
+        tools_config.apply_tool_policy(
+            Some(vec![
+                "spawn_agent".to_string(),
+                "wait".to_string(),
+                "close_agent".to_string(),
+            ]),
+            Some(vec!["wait".to_string()]),
+        );
+
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
+        assert_contains_tool_names(&tools, &["spawn_agent", "close_agent"]);
+        assert!(!tools.iter().any(|tool| tool.spec.name() == "wait"));
+        assert!(
+            !tools
+                .iter()
+                .any(|tool| tool.spec.name() == "list_mcp_resources")
         );
     }
 
