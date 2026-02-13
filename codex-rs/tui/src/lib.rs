@@ -53,6 +53,10 @@ use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 
 mod additional_dirs;
+// FORK COMMIT OPEN [SAW]: agents overlay module extracted from app.rs.
+// Role: keep AGENTS overlay rendering logic isolated from the core App module.
+mod agents_overlay;
+// FORK COMMIT CLOSE: agents overlay module extracted from app.rs.
 mod app;
 mod app_backtrack;
 mod app_event;

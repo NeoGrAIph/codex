@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -242,6 +243,42 @@ impl ToolRegistryBuilder {
         }
     }
 
+    // FORK COMMIT OPEN [UC]: runtime allow/deny filtering for already-registered tool specs/handlers.
+    // Role: keep tool router and handlers in sync with per-thread policy.
+    pub fn retain_tools_by_name(
+        &mut self,
+        allow_list: Option<&[String]>,
+        deny_list: Option<&[String]>,
+    ) {
+        let allow_set = allow_list.and_then(|list| {
+            let set: HashSet<String> = list
+                .iter()
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+                .collect();
+            (!set.is_empty()).then_some(set)
+        });
+        let deny_set: HashSet<String> = deny_list
+            .unwrap_or(&[])
+            .iter()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect();
+
+        let is_enabled = |name: &str| {
+            let allowed = allow_set
+                .as_ref()
+                .map(|set| set.contains(name))
+                .unwrap_or(true);
+            allowed && !deny_set.contains(name)
+        };
+
+        self.specs
+            .retain(|configured| is_enabled(tool_name(&configured.spec)));
+        self.handlers.retain(|name, _| is_enabled(name));
+    }
+    // FORK COMMIT CLOSE: allow/deny filtering for tool registry.
+
     // TODO(jif) for dynamic tools.
     // pub fn register_many<I>(&mut self, names: I, handler: Arc<dyn ToolHandler>)
     // where
@@ -265,6 +302,17 @@ impl ToolRegistryBuilder {
         (self.specs, registry)
     }
 }
+
+// FORK COMMIT OPEN [UC]: map spec variants to canonical tool names used by policy filters.
+fn tool_name(spec: &ToolSpec) -> &str {
+    match spec {
+        ToolSpec::Function(tool) => &tool.name,
+        ToolSpec::Freeform(tool) => &tool.name,
+        ToolSpec::LocalShell {} => "local_shell",
+        ToolSpec::WebSearch { .. } => "web_search",
+    }
+}
+// FORK COMMIT CLOSE: canonical tool name mapping for policy filters.
 
 fn unsupported_tool_call_message(payload: &ToolPayload, tool_name: &str) -> String {
     match payload {

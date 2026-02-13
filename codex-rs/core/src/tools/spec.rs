@@ -38,6 +38,11 @@ pub(crate) struct ToolsConfig {
     pub collaboration_modes_tools: bool,
     pub request_rule_enabled: bool,
     pub experimental_supported_tools: Vec<String>,
+    // FORK COMMIT OPEN [UC]: sub-agent tool policy is carried in TurnContext and applied at build_specs.
+    // Role: keep spawned/review threads on an explicit allow/deny tool contract.
+    pub tool_allow_list: Option<Vec<String>>,
+    pub tool_deny_list: Option<Vec<String>>,
+    // FORK COMMIT CLOSE: sub-agent tool policy fields.
 }
 
 pub(crate) struct ToolsConfigParams<'a> {
@@ -95,8 +100,33 @@ impl ToolsConfig {
             collaboration_modes_tools: include_collaboration_modes_tools,
             request_rule_enabled,
             experimental_supported_tools: model_info.experimental_supported_tools.clone(),
+            tool_allow_list: None,
+            tool_deny_list: None,
         }
     }
+
+    pub fn apply_tool_policy(
+        &mut self,
+        allow_list: Option<Vec<String>>,
+        deny_list: Option<Vec<String>>,
+    ) {
+        // FORK COMMIT OPEN [UC]: normalize policy lists once at assignment point.
+        self.tool_allow_list = normalize_tool_policy_list(allow_list);
+        self.tool_deny_list = normalize_tool_policy_list(deny_list);
+        // FORK COMMIT CLOSE: normalize tool policy lists.
+    }
+}
+
+fn normalize_tool_policy_list(list: Option<Vec<String>>) -> Option<Vec<String>> {
+    let mut out: Vec<String> = list
+        .unwrap_or_default()
+        .into_iter()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect();
+    out.sort();
+    out.dedup();
+    (!out.is_empty()).then_some(out)
 }
 
 pub(crate) fn filter_tools_for_model(tools: Vec<ToolSpec>, _config: &ToolsConfig) -> Vec<ToolSpec> {
@@ -1596,6 +1626,13 @@ pub(crate) fn build_specs(
         }
     }
 
+    // FORK COMMIT OPEN [UC]: enforce spawned-thread allow/deny policy after all tools are assembled.
+    builder.retain_tools_by_name(
+        config.tool_allow_list.as_deref(),
+        config.tool_deny_list.as_deref(),
+    );
+    // FORK COMMIT CLOSE: enforce spawned-thread tool policy.
+
     builder
 }
 
@@ -1838,6 +1875,38 @@ mod tests {
                 "wait",
                 "close_agent",
             ],
+        );
+    }
+
+    #[test]
+    fn test_build_specs_respects_tool_allow_and_deny_lists() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let mut features = Features::with_defaults();
+        features.enable(Feature::Collab);
+
+        let mut tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+        });
+        tools_config.apply_tool_policy(
+            Some(vec![
+                "spawn_agent".to_string(),
+                "wait".to_string(),
+                "close_agent".to_string(),
+            ]),
+            Some(vec!["wait".to_string()]),
+        );
+
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
+        assert_contains_tool_names(&tools, &["spawn_agent", "close_agent"]);
+        assert!(!tools.iter().any(|tool| tool.spec.name() == "wait"));
+        assert!(
+            !tools
+                .iter()
+                .any(|tool| tool.spec.name() == "list_mcp_resources")
         );
     }
 

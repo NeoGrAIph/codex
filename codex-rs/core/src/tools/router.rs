@@ -53,12 +53,33 @@ impl ToolRouter {
     }
 
     pub fn tool_supports_parallel(&self, tool_name: &str) -> bool {
-        self.specs
-            .iter()
-            .filter(|config| config.supports_parallel_tool_calls)
-            .any(|config| config.spec.name() == tool_name)
-    }
+        let supports = |name: &str| {
+            self.specs
+                .iter()
+                .filter(|config| config.supports_parallel_tool_calls)
+                .any(|config| config.spec.name() == name)
+        };
 
+        if supports(tool_name) {
+            return true;
+        }
+
+        // Shell tool aliases can be routed to different concrete specs depending
+        // on model/runtime configuration (shell vs unified exec). Preserve
+        // parallel semantics across aliases so timing-sensitive flows don't
+        // degrade when the backend shell implementation changes.
+        if matches!(
+            tool_name,
+            "shell" | "container.exec" | "local_shell" | "shell_command"
+        ) {
+            return supports("shell")
+                || supports("local_shell")
+                || supports("shell_command")
+                || supports("exec_command");
+        }
+
+        false
+    }
     #[instrument(level = "trace", skip_all, err)]
     pub async fn build_tool_call(
         session: &Session,

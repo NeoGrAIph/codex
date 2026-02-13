@@ -133,6 +133,13 @@ mod tests {
         let spawn = CoreSessionSource::SubAgent(CoreSubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth: 1,
+            // FORK COMMIT OPEN [SAW]: ThreadSpawn defaults include new optional fields.
+            // Role: keep tests stable as SubAgentSource::ThreadSpawn gains optional fields.
+            agent_type: None,
+            agent_name: None,
+            allow_list: None,
+            deny_list: None,
+            // FORK COMMIT CLOSE: ThreadSpawn defaults include new optional fields.
         });
 
         assert!(source_kind_matches(

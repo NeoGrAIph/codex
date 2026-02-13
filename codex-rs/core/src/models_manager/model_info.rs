@@ -18,6 +18,12 @@ const LOCAL_FRIENDLY_TEMPLATE: &str =
     "You optimize for team morale and being a supportive teammate as much as code quality.";
 const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
 const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
+// FORK COMMIT OPEN [SAW]: test-model defaults for experimental tools.
+// Role: ensure test-* model slugs expose local tool coverage in fallback metadata.
+const TEST_MODEL_PREFIX: &str = "test-";
+const TEST_MODEL_EXPERIMENTAL_TOOLS: [&str; 4] =
+    ["test_sync_tool", "read_file", "grep_files", "list_dir"];
+// FORK COMMIT CLOSE: test-model defaults for experimental tools.
 
 pub(crate) fn with_config_overrides(mut model: ModelInfo, config: &Config) -> ModelInfo {
     if let Some(supports_reasoning_summaries) = config.model_supports_reasoning_summaries {
@@ -56,6 +62,10 @@ pub(crate) fn with_config_overrides(mut model: ModelInfo, config: &Config) -> Mo
 /// Build a minimal fallback model descriptor for missing/unknown slugs.
 pub(crate) fn model_info_from_slug(slug: &str) -> ModelInfo {
     warn!("Unknown model {slug} is used. This will use fallback model metadata.");
+    // FORK COMMIT OPEN [SAW]: test models opt into experimental tool metadata.
+    // Role: make fallback metadata reflect test model capabilities.
+    let is_test_model = slug.starts_with(TEST_MODEL_PREFIX);
+    // FORK COMMIT CLOSE: test models opt into experimental tool metadata.
     ModelInfo {
         slug: slug.to_string(),
         display_name: slug.to_string(),
@@ -74,11 +84,24 @@ pub(crate) fn model_info_from_slug(slug: &str) -> ModelInfo {
         default_verbosity: None,
         apply_patch_tool_type: None,
         truncation_policy: TruncationPolicyConfig::bytes(10_000),
-        supports_parallel_tool_calls: false,
+        // FORK COMMIT OPEN [SAW]: test models allow parallel tool calls by default.
+        // Role: align fallback metadata with test-mode expectations.
+        supports_parallel_tool_calls: is_test_model,
+        // FORK COMMIT CLOSE: test models allow parallel tool calls by default.
         context_window: Some(272_000),
         auto_compact_token_limit: None,
         effective_context_window_percent: 95,
-        experimental_supported_tools: Vec::new(),
+        // FORK COMMIT OPEN [SAW]: expose experimental tools for test-* slugs.
+        // Role: keep fallback model metadata in sync with test tooling expectations.
+        experimental_supported_tools: if is_test_model {
+            TEST_MODEL_EXPERIMENTAL_TOOLS
+                .iter()
+                .map(|tool| tool.to_string())
+                .collect()
+        } else {
+            Vec::new()
+        },
+        // FORK COMMIT CLOSE: expose experimental tools for test-* slugs.
         input_modalities: default_input_modalities(),
         prefer_websockets: false,
     }

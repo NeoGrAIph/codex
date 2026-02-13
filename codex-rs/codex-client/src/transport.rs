@@ -117,19 +117,25 @@ impl ReqwestTransport {
             TransportError::Network(err.to_string())
         }
     }
+
+    fn trace_request(req: &Request) {
+        if !enabled!(Level::TRACE) {
+            return;
+        }
+
+        let body_state = if req.body.is_some() {
+            "with body"
+        } else {
+            "without body"
+        };
+        trace!("{} to {} ({body_state})", req.method, req.url);
+    }
 }
 
 #[async_trait]
 impl HttpTransport for ReqwestTransport {
     async fn execute(&self, req: Request) -> Result<Response, TransportError> {
-        if enabled!(Level::TRACE) {
-            trace!(
-                "{} to {}: {}",
-                req.method,
-                req.url,
-                req.body.as_ref().unwrap_or_default()
-            );
-        }
+        Self::trace_request(&req);
 
         let url = req.url.clone();
         let builder = self.build(req)?;
@@ -154,14 +160,7 @@ impl HttpTransport for ReqwestTransport {
     }
 
     async fn stream(&self, req: Request) -> Result<StreamResponse, TransportError> {
-        if enabled!(Level::TRACE) {
-            trace!(
-                "{} to {}: {}",
-                req.method,
-                req.url,
-                req.body.as_ref().unwrap_or_default()
-            );
-        }
+        Self::trace_request(&req);
 
         let url = req.url.clone();
         let builder = self.build(req)?;

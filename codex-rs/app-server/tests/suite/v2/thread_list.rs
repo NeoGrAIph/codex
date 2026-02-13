@@ -359,6 +359,8 @@ async fn thread_list_filters_by_source_kind_subagent_thread_spawn() -> Result<()
     )?;
 
     let parent_thread_id = ThreadId::from_string(&Uuid::new_v4().to_string())?;
+    // FORK COMMIT OPEN [SAW]: ThreadSpawn defaults include new optional fields.
+    // Role: keep tests stable as SubAgentSource::ThreadSpawn gains optional fields.
     let subagent_id = create_fake_rollout_with_source(
         codex_home.path(),
         "2025-02-01T11-00-00",
@@ -369,8 +371,13 @@ async fn thread_list_filters_by_source_kind_subagent_thread_spawn() -> Result<()
         CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth: 1,
+            agent_type: None,
+            agent_name: None,
+            allow_list: None,
+            deny_list: None,
         }),
     )?;
+    // FORK COMMIT CLOSE: ThreadSpawn defaults include new optional fields.
 
     let mut mcp = init_mcp(codex_home.path()).await?;
 
@@ -418,6 +425,8 @@ async fn thread_list_filters_by_subagent_variant() -> Result<()> {
         None,
         CoreSessionSource::SubAgent(SubAgentSource::Compact),
     )?;
+    // FORK COMMIT OPEN [SAW]: ThreadSpawn defaults include new optional fields.
+    // Role: keep tests stable as SubAgentSource::ThreadSpawn gains optional fields.
     let spawn_id = create_fake_rollout_with_source(
         codex_home.path(),
         "2025-02-02T11-00-00",
@@ -428,8 +437,13 @@ async fn thread_list_filters_by_subagent_variant() -> Result<()> {
         CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth: 1,
+            agent_type: None,
+            agent_name: None,
+            allow_list: None,
+            deny_list: None,
         }),
     )?;
+    // FORK COMMIT CLOSE: ThreadSpawn defaults include new optional fields.
     let other_id = create_fake_rollout_with_source(
         codex_home.path(),
         "2025-02-02T12-00-00",

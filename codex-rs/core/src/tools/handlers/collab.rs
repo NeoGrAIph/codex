@@ -87,7 +87,9 @@ impl ToolHandler for CollabHandler {
         }
     }
 }
-
+// FORK COMMIT OPEN [SAW]: spawn handler extracted to spawn.rs.
+// Role: keep collab handler minimal while preserving the legacy inline module.
+/*
 mod spawn {
     use super::*;
     use crate::agent::AgentRole;
@@ -190,6 +192,9 @@ mod spawn {
         })
     }
 }
+*/
+// FORK COMMIT CLOSE: spawn handler extracted to spawn.rs.
+mod spawn;
 
 mod send_input {
     use super::*;
@@ -409,7 +414,8 @@ mod resume_agent {
             .resume_agent_from_rollout(
                 config,
                 rollout_path,
-                thread_spawn_source(session.conversation_id, child_depth),
+                // FORK COMMIT [SAW]: ThreadSpawn source includes tool-policy metadata.
+                thread_spawn_source(session.conversation_id, child_depth, None, None, None, None),
             )
             .await
             .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
@@ -728,12 +734,26 @@ fn collab_agent_error(agent_id: ThreadId, err: CodexErr) -> FunctionCallError {
     }
 }
 
-fn thread_spawn_source(parent_thread_id: ThreadId, depth: i32) -> SessionSource {
+// FORK COMMIT OPEN [SAW]: thread spawn source carries tool policy and role metadata.
+// Role: persist contract knobs in session source for child-turn tool filtering.
+fn thread_spawn_source(
+    parent_thread_id: ThreadId,
+    depth: i32,
+    agent_type: Option<String>,
+    agent_name: Option<String>,
+    allow_list: Option<Vec<String>>,
+    deny_list: Option<Vec<String>>,
+) -> SessionSource {
     SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id,
         depth,
+        agent_type,
+        agent_name,
+        allow_list,
+        deny_list,
     })
 }
+// FORK COMMIT CLOSE: thread spawn source metadata contract.
 
 fn parse_collab_input(
     message: Option<String>,
@@ -1008,6 +1028,13 @@ mod tests {
         turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id: session.conversation_id,
             depth: MAX_THREAD_SPAWN_DEPTH,
+            // FORK COMMIT OPEN [SAW]: ThreadSpawn defaults include new optional fields.
+            // Role: keep tests stable as SubAgentSource::ThreadSpawn gains optional fields.
+            agent_type: None,
+            agent_name: None,
+            allow_list: None,
+            deny_list: None,
+            // FORK COMMIT CLOSE: ThreadSpawn defaults include new optional fields.
         });
 
         let invocation = invocation(
@@ -1383,6 +1410,13 @@ mod tests {
         turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id: session.conversation_id,
             depth: MAX_THREAD_SPAWN_DEPTH,
+            // FORK COMMIT OPEN [SAW]: ThreadSpawn defaults include new optional fields.
+            // Role: keep tests stable as SubAgentSource::ThreadSpawn gains optional fields.
+            agent_type: None,
+            agent_name: None,
+            allow_list: None,
+            deny_list: None,
+            // FORK COMMIT CLOSE: ThreadSpawn defaults include new optional fields.
         });
 
         let invocation = invocation(

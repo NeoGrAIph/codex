@@ -27,6 +27,7 @@ use crate::truncate::TruncationPolicy;
 use crate::truncate::approx_token_count;
 use crate::truncate::formatted_truncate_text;
 use crate::unified_exec::ExecCommandRequest;
+use crate::unified_exec::ExitedProcessEntry;
 use crate::unified_exec::MAX_UNIFIED_EXEC_PROCESSES;
 use crate::unified_exec::MAX_YIELD_TIME_MS;
 use crate::unified_exec::MIN_EMPTY_YIELD_TIME_MS;
@@ -125,6 +126,7 @@ impl UnifiedExecProcessManager {
             }
 
             store.reserved_process_ids.insert(process_id.clone());
+            store.clear_recent_exit(&process_id);
             return process_id;
         }
     }
@@ -268,6 +270,10 @@ impl UnifiedExecProcessManager {
         &self,
         request: WriteStdinRequest<'_>,
     ) -> Result<UnifiedExecResponse, UnifiedExecError> {
+        if let Some(exited) = self.recent_exit(request.process_id).await {
+            return Ok(Self::recent_exit_response(exited));
+        }
+
         let process_id = request.process_id.to_string();
 
         let PreparedProcessHandles {
@@ -336,6 +342,9 @@ impl UnifiedExecProcessManager {
                 (None, exit_code, call_id)
             }
             ProcessStatus::Unknown => {
+                if let Some(exited) = self.recent_exit(request.process_id).await {
+                    return Ok(Self::recent_exit_response(exited));
+                }
                 return Err(UnifiedExecError::UnknownProcessId {
                     process_id: request.process_id.to_string(),
                 });
@@ -370,6 +379,7 @@ impl UnifiedExecProcessManager {
             let Some(entry) = store.remove(&process_id) else {
                 return ProcessStatus::Unknown;
             };
+            store.mark_recent_exit(&entry, exit_code);
             ProcessStatus::Exited {
                 exit_code,
                 entry: Box::new(entry),
@@ -388,6 +398,7 @@ impl UnifiedExecProcessManager {
         process_id: &str,
     ) -> Result<PreparedProcessHandles, UnifiedExecError> {
         let mut store = self.process_store.lock().await;
+        store.prune_recent_exits();
         let entry =
             store
                 .processes
@@ -415,6 +426,25 @@ impl UnifiedExecProcessManager {
             process_id: entry.process_id.clone(),
             tty: entry.tty,
         })
+    }
+
+    async fn recent_exit(&self, process_id: &str) -> Option<ExitedProcessEntry> {
+        let mut store = self.process_store.lock().await;
+        store.recent_exit(process_id)
+    }
+
+    fn recent_exit_response(exited: ExitedProcessEntry) -> UnifiedExecResponse {
+        UnifiedExecResponse {
+            event_call_id: exited.call_id,
+            chunk_id: generate_chunk_id(),
+            wall_time: Duration::ZERO,
+            output: String::new(),
+            raw_output: Vec::new(),
+            process_id: None,
+            exit_code: exited.exit_code,
+            original_token_count: Some(0),
+            session_command: Some(exited.command),
+        }
     }
 
     async fn send_input(

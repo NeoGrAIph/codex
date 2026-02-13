@@ -133,6 +133,13 @@ mod tests {
         let session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id: ThreadId::new(),
             depth: 1,
+            // FORK COMMIT OPEN [SAW]: ThreadSpawn defaults include new optional fields.
+            // Role: keep tests stable as SubAgentSource::ThreadSpawn gains optional fields.
+            agent_type: None,
+            agent_name: None,
+            allow_list: None,
+            deny_list: None,
+            // FORK COMMIT CLOSE: ThreadSpawn defaults include new optional fields.
         });
         let child_depth = next_thread_spawn_depth(&session_source);
         assert_eq!(child_depth, 2);

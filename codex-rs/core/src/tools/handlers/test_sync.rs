@@ -137,11 +137,25 @@ async fn wait_on_barrier(args: BarrierArgs) -> Result<(), FunctionCallError> {
     };
 
     let timeout = Duration::from_millis(args.timeout_ms);
-    let wait_result = tokio::time::timeout(timeout, barrier.wait())
-        .await
-        .map_err(|_| {
-            FunctionCallError::RespondToModel("test_sync_tool barrier wait timed out".to_string())
-        })?;
+    // FORK COMMIT OPEN [SAW]: clear stale barriers on timeout.
+    // Role: prevent a failed rendezvous from poisoning later tests that reuse the same barrier id.
+    let wait_result = match tokio::time::timeout(timeout, barrier.wait()).await {
+        Ok(wait_result) => wait_result,
+        Err(_) => {
+            // Timeout path must clear stale barriers so one failed rendezvous
+            // cannot poison later tests that reuse the same barrier id.
+            let mut map = barrier_map().lock().await;
+            if let Some(state) = map.get(&barrier_id)
+                && Arc::ptr_eq(&state.barrier, &barrier)
+            {
+                map.remove(&barrier_id);
+            }
+            return Err(FunctionCallError::RespondToModel(
+                "test_sync_tool barrier wait timed out".to_string(),
+            ));
+        }
+    };
+    // FORK COMMIT CLOSE: clear stale barriers on timeout.
 
     if wait_result.is_leader() {
         let mut map = barrier_map().lock().await;

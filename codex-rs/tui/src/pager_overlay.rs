@@ -50,6 +50,11 @@ pub(crate) enum Overlay {
     Static(StaticOverlay),
 }
 
+// FORK COMMIT OPEN [SAW]: title identifier for the agents overlay.
+// Role: safely distinguish / A G E N T S / from other static overlays.
+pub(crate) const AGENTS_OVERLAY_TITLE: &str = "A G E N T S";
+// FORK COMMIT CLOSE: title identifier for the agents overlay.
+
 impl Overlay {
     pub(crate) fn new_transcript(cells: Vec<Arc<dyn HistoryCell>>) -> Self {
         Self::Transcript(TranscriptOverlay::new(cells))
@@ -79,6 +84,31 @@ impl Overlay {
             Overlay::Static(o) => o.is_done(),
         }
     }
+
+    // FORK COMMIT OPEN [SAW]: lightweight predicates for Ctrl+T routing.
+    // Role: detect current overlay type without changing the enum shape.
+    pub(crate) fn is_transcript(&self) -> bool {
+        matches!(self, Overlay::Transcript(_))
+    }
+
+    pub(crate) fn is_agents(&self) -> bool {
+        matches!(self, Overlay::Static(o) if o.view.title == AGENTS_OVERLAY_TITLE)
+    }
+
+    pub(crate) fn replace_static_lines_if_title(
+        &mut self,
+        title: &str,
+        lines: Vec<Line<'static>>,
+    ) -> bool {
+        match self {
+            Overlay::Static(o) if o.view.title == title => {
+                o.replace_lines(lines);
+                true
+            }
+            _ => false,
+        }
+    }
+    // FORK COMMIT CLOSE: lightweight predicates for Ctrl+T routing.
 }
 
 const KEY_UP: KeyBinding = key_hint::plain(KeyCode::Up);
@@ -724,6 +754,14 @@ impl StaticOverlay {
             is_done: false,
         }
     }
+
+    // FORK COMMIT OPEN [SAW]: refresh static overlay content for live updates.
+    // Role: allow AGENTS overlay to replace lines without rebuilding the overlay.
+    pub(crate) fn replace_lines(&mut self, lines: Vec<Line<'static>>) {
+        let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+        self.view.renderables = vec![Box::new(CachedRenderable::new(paragraph))];
+    }
+    // FORK COMMIT CLOSE: refresh static overlay content for live updates.
 
     fn render_hints(&self, area: Rect, buf: &mut Buffer) {
         let line1 = Rect::new(area.x, area.y, area.width, 1);

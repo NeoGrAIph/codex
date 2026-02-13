@@ -52,6 +52,10 @@ pub struct ModelsManager {
     etag: RwLock<Option<String>>,
     cache_manager: ModelsCacheManager,
     provider: ModelProviderInfo,
+    // FORK COMMIT OPEN [SAW]: reuse a shared HTTP client for remote model fetches.
+    // Role: avoid rebuilding the reqwest client on every refresh.
+    http_client: reqwest::Client,
+    // FORK COMMIT CLOSE: reuse a shared HTTP client for remote model fetches.
 }
 
 impl ModelsManager {
@@ -68,6 +72,10 @@ impl ModelsManager {
             etag: RwLock::new(None),
             cache_manager,
             provider: ModelProviderInfo::create_openai_provider(),
+            // FORK COMMIT OPEN [SAW]: reuse a shared HTTP client for remote model fetches.
+            // Role: initialize once per manager.
+            http_client: build_reqwest_client(),
+            // FORK COMMIT CLOSE: reuse a shared HTTP client for remote model fetches.
         }
     }
 
@@ -240,7 +248,10 @@ impl ModelsManager {
         let auth_mode = self.auth_manager.auth_mode();
         let api_provider = self.provider.to_api_provider(auth_mode)?;
         let api_auth = auth_provider_from_auth(auth.clone(), &self.provider)?;
-        let transport = ReqwestTransport::new(build_reqwest_client());
+        // FORK COMMIT OPEN [SAW]: reuse a shared HTTP client for remote model fetches.
+        // Role: avoid rebuilding the reqwest client per request.
+        let transport = ReqwestTransport::new(self.http_client.clone());
+        // FORK COMMIT CLOSE: reuse a shared HTTP client for remote model fetches.
         let client = ModelsClient::new(transport, api_provider, api_auth);
 
         let client_version = crate::models_manager::client_version_to_whole();
@@ -366,6 +377,10 @@ impl ModelsManager {
             etag: RwLock::new(None),
             cache_manager,
             provider,
+            // FORK COMMIT OPEN [SAW]: reuse a shared HTTP client for remote model fetches.
+            // Role: initialize once per manager.
+            http_client: build_reqwest_client(),
+            // FORK COMMIT CLOSE: reuse a shared HTTP client for remote model fetches.
         }
     }
 

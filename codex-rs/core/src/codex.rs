@@ -901,11 +901,21 @@ impl Session {
         let otel_manager_for_context = otel_manager;
         let per_turn_config = Arc::new(per_turn_config);
 
-        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        let mut tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &per_turn_config.features,
             web_search_mode: Some(per_turn_config.web_search_mode.value()),
         });
+        // FORK COMMIT OPEN [UC]: inherit tool allow/deny policy from thread spawn source.
+        if let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            allow_list,
+            deny_list,
+            ..
+        }) = &session_source
+        {
+            tools_config.apply_tool_policy(allow_list.clone(), deny_list.clone());
+        }
+        // FORK COMMIT CLOSE: inherit tool policy for session turns.
 
         let cwd = session_configuration.cwd.clone();
         TurnContext {
@@ -3864,7 +3874,7 @@ async fn spawn_review_thread(
         .disable(crate::features::Feature::WebSearchRequest)
         .disable(crate::features::Feature::WebSearchCached);
     let review_web_search_mode = WebSearchMode::Disabled;
-    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+    let mut tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_info: &review_model_info,
         features: &review_features,
         web_search_mode: Some(review_web_search_mode),
@@ -3899,6 +3909,16 @@ async fn spawn_review_thread(
     let reasoning_effort = per_turn_config.model_reasoning_effort;
     let reasoning_summary = per_turn_config.model_reasoning_summary;
     let session_source = parent_turn_context.session_source.clone();
+    // FORK COMMIT OPEN [UC]: preserve parent tool policy when creating review sub-threads.
+    if let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        allow_list,
+        deny_list,
+        ..
+    }) = &session_source
+    {
+        tools_config.apply_tool_policy(allow_list.clone(), deny_list.clone());
+    }
+    // FORK COMMIT CLOSE: preserve parent tool policy for review threads.
 
     let per_turn_config = Arc::new(per_turn_config);
 

@@ -57,6 +57,10 @@ pub(crate) const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
 pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_BYTES: usize = 1024 * 1024; // 1 MiB
 pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_TOKENS: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES / 4;
 pub(crate) const MAX_UNIFIED_EXEC_PROCESSES: usize = 64;
+// FORK COMMIT OPEN [SAW]: retain recently exited process metadata briefly.
+// Role: allow follow-up reads to surface last exit status before pruning.
+pub(crate) const RECENT_EXIT_TOMBSTONE_TTL: Duration = Duration::from_millis(150);
+// FORK COMMIT CLOSE: retain recently exited process metadata briefly.
 
 // Send a warning message to the models when it reaches this number of processes.
 pub(crate) const WARNING_UNIFIED_EXEC_PROCESSES: usize = 60;
@@ -117,12 +121,53 @@ pub(crate) struct UnifiedExecResponse {
 pub(crate) struct ProcessStore {
     processes: HashMap<String, ProcessEntry>,
     reserved_process_ids: HashSet<String>,
+    // FORK COMMIT OPEN [SAW]: track recently exited processes for short-lived queries.
+    // Role: preserve exit info while new process ids are allocated.
+    recently_exited: HashMap<String, ExitedProcessEntry>,
+    // FORK COMMIT CLOSE: track recently exited processes for short-lived queries.
 }
 
 impl ProcessStore {
     fn remove(&mut self, process_id: &str) -> Option<ProcessEntry> {
+        // FORK COMMIT [SAW]: drop any exit tombstone when a process is removed.
+        self.recently_exited.remove(process_id);
         self.reserved_process_ids.remove(process_id);
         self.processes.remove(process_id)
+    }
+
+    // FORK COMMIT OPEN [SAW]: keep a short-lived tombstone for exited processes.
+    // Role: retain exit metadata for follow-up read requests.
+    fn mark_recent_exit(&mut self, entry: &ProcessEntry, exit_code: Option<i32>) {
+        self.recently_exited.insert(
+            entry.process_id.clone(),
+            ExitedProcessEntry {
+                call_id: entry.call_id.clone(),
+                command: entry.command.clone(),
+                exit_code,
+                exited_at: tokio::time::Instant::now(),
+            },
+        );
+    }
+
+    // FORK COMMIT OPEN [SAW]: query recent exit metadata before pruning.
+    // Role: make sure stale entries are removed before use.
+    fn recent_exit(&mut self, process_id: &str) -> Option<ExitedProcessEntry> {
+        self.prune_recent_exits();
+        self.recently_exited.get(process_id).cloned()
+    }
+    // FORK COMMIT CLOSE: query recent exit metadata before pruning.
+
+    // FORK COMMIT [SAW]: clear exit tombstone when explicitly requested.
+    fn clear_recent_exit(&mut self, process_id: &str) {
+        self.recently_exited.remove(process_id);
+    }
+
+    // FORK COMMIT [SAW]: prune exit tombstones past the TTL.
+    fn prune_recent_exits(&mut self) {
+        let now = tokio::time::Instant::now();
+        self.recently_exited.retain(|_, entry| {
+            now.saturating_duration_since(entry.exited_at) <= RECENT_EXIT_TOMBSTONE_TTL
+        });
     }
 }
 
@@ -146,6 +191,17 @@ struct ProcessEntry {
     tty: bool,
     last_used: tokio::time::Instant,
 }
+
+// FORK COMMIT OPEN [SAW]: snapshot of recently exited process metadata.
+// Role: support short-lived queries after process termination.
+#[derive(Clone)]
+pub(crate) struct ExitedProcessEntry {
+    call_id: String,
+    command: Vec<String>,
+    exit_code: Option<i32>,
+    exited_at: tokio::time::Instant,
+}
+// FORK COMMIT CLOSE: snapshot of recently exited process metadata.
 
 pub(crate) fn clamp_yield_time(yield_time_ms: u64) -> u64 {
     yield_time_ms.clamp(MIN_YIELD_TIME_MS, MAX_YIELD_TIME_MS)

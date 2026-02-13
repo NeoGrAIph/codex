@@ -1786,6 +1786,16 @@ pub enum SubAgentSource {
     ThreadSpawn {
         parent_thread_id: ThreadId,
         depth: i32,
+        // FORK COMMIT OPEN [UC]: optional spawn metadata for fork-specific routing/policy without breaking old payloads.
+        #[serde(default)]
+        agent_type: Option<String>,
+        #[serde(default)]
+        agent_name: Option<String>,
+        #[serde(default)]
+        allow_list: Option<Vec<String>>,
+        #[serde(default)]
+        deny_list: Option<Vec<String>>,
+        // FORK COMMIT CLOSE: backward-compatible thread spawn metadata.
     },
     Other(String),
 }
@@ -1811,6 +1821,7 @@ impl fmt::Display for SubAgentSource {
             SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,
+                ..
             } => {
                 write!(f, "thread_spawn_{parent_thread_id}_d{depth}")
             }
