@@ -78,6 +78,7 @@ Valid `personality` values are `friendly`, `pragmatic`, and `none`. When `none` 
 - `EventMsg`
   - `EventMsg::AgentMessage` – Messages from the `Model`
   - `EventMsg::AgentMessageContentDelta` – Streaming assistant text
+  - `EventMsg::BackgroundEvent` – Background status messages (for example sub-agent lifecycle updates)
   - `EventMsg::PlanDelta` – Streaming proposed plan text when the model emits a `<proposed_plan>` block in plan mode
   - `EventMsg::ExecApprovalRequest` – Request approval from user to execute a command
   - `EventMsg::RequestUserInput` – Request user input for a tool call (questions can include options plus `isOther` to add a free-form choice)
@@ -87,6 +88,13 @@ Valid `personality` values are `friendly`, `pragmatic`, and `none`. When `none` 
   - `EventMsg::Warning` – A non-fatal warning that the client should surface to the user
   - `EventMsg::TurnComplete` – Contains a `response_id` bookmark for last `response_id` executed by the turn. This can be used to continue the turn at a later point in time, perhaps with additional user input.
   - `EventMsg::ListSkillsResponse` – Response payload with per-cwd skill entries (`cwd`, `skills`, `errors`)
+
+For sub-agent lifecycle updates emitted via `EventMsg::BackgroundEvent`, status text uses:
+`agent <role> (<agent_id>) <state> ...`
+Examples:
+- `agent explorer (019c...) running (2s)`
+- `agent explorer (019c...) completed in 5s: ...`
+`call_id` is not included in this message text.
 
 ### UserInput items
 

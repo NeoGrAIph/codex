@@ -22,7 +22,11 @@ pub(crate) struct Guards {
 }
 
 /// Initial agent is depth 0.
-pub(crate) const MAX_THREAD_SPAWN_DEPTH: i32 = 1;
+// [SA] COMMIT OPEN: allow one extra thread-spawn hop
+// Role: prevent unbounded recursion while still allowing a small amount of sub-agent chaining.
+// [SA] legacy: pub(crate) const MAX_THREAD_SPAWN_DEPTH: i32 = 1;
+pub(crate) const MAX_THREAD_SPAWN_DEPTH: i32 = 2;
+// [SA] COMMIT CLOSE: allow one extra thread-spawn hop
 
 fn session_depth(session_source: &SessionSource) -> i32 {
     match session_source {
@@ -132,7 +136,7 @@ mod tests {
     fn thread_spawn_depth_increments_and_enforces_limit() {
         let session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id: ThreadId::new(),
-            depth: 1,
+            depth: 2,
             // FORK COMMIT OPEN [SAW]: ThreadSpawn defaults include new optional fields.
             // Role: keep tests stable as SubAgentSource::ThreadSpawn gains optional fields.
             agent_type: None,
@@ -142,7 +146,7 @@ mod tests {
             // FORK COMMIT CLOSE: ThreadSpawn defaults include new optional fields.
         });
         let child_depth = next_thread_spawn_depth(&session_source);
-        assert_eq!(child_depth, 2);
+        assert_eq!(child_depth, 3);
         assert!(exceeds_thread_spawn_depth_limit(child_depth));
     }
 

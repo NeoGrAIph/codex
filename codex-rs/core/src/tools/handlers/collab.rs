@@ -33,13 +33,14 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
 use serde::Deserialize;
 use serde::Serialize;
+use std::path::PathBuf;
 
 pub struct CollabHandler;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
-pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
-pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 300_000;
+pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 300_000;
+pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 1_800_000;
 
 #[derive(Debug, Deserialize)]
 struct CloseAgentArgs {
@@ -78,6 +79,8 @@ impl ToolHandler for CollabHandler {
         match tool_name.as_str() {
             "spawn_agent" => spawn::handle(session, turn, call_id, arguments).await,
             "send_input" => send_input::handle(session, turn, call_id, arguments).await,
+            // FORK COMMIT [SA]: runtime thread note mutation tool routing.
+            "set_thread_note" => set_thread_note::handle(session, turn, call_id, arguments).await,
             "resume_agent" => resume_agent::handle(session, turn, call_id, arguments).await,
             "wait" => wait::handle(session, turn, call_id, arguments).await,
             "close_agent" => close_agent::handle(session, turn, call_id, arguments).await,
@@ -280,6 +283,57 @@ mod send_input {
         })
     }
 }
+
+// FORK COMMIT OPEN [SA]: collab handler module for thread note updates.
+// Role: allow set/clear note operations for spawned agents without touching thread_name.
+mod set_thread_note {
+    use super::*;
+    use std::sync::Arc;
+
+    #[derive(Debug, Deserialize)]
+    struct SetThreadNoteArgs {
+        id: String,
+        note: Option<String>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct SetThreadNoteResult {
+        submission_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thread_note: Option<String>,
+    }
+
+    pub async fn handle(
+        session: Arc<Session>,
+        _turn: Arc<TurnContext>,
+        _call_id: String,
+        arguments: String,
+    ) -> Result<ToolOutput, FunctionCallError> {
+        let args: SetThreadNoteArgs = parse_arguments(&arguments)?;
+        let receiver_thread_id = agent_id(&args.id)?;
+        let note = crate::util::normalize_thread_note(args.note.as_deref());
+        let submission_id = session
+            .services
+            .agent_control
+            .set_thread_note(receiver_thread_id, note.clone())
+            .await
+            .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+
+        let content = serde_json::to_string(&SetThreadNoteResult {
+            submission_id,
+            thread_note: note,
+        })
+        .map_err(|err| {
+            FunctionCallError::Fatal(format!("failed to serialize set_thread_note result: {err}"))
+        })?;
+
+        Ok(ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            success: Some(true),
+        })
+    }
+}
+// FORK COMMIT CLOSE: collab handler module for thread note updates.
 
 mod resume_agent {
     use super::*;
@@ -619,6 +673,7 @@ mod wait {
 
 pub mod close_agent {
     use super::*;
+    use codex_protocol::protocol::SessionSource;
     use std::sync::Arc;
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -645,6 +700,36 @@ pub mod close_agent {
                 .into(),
             )
             .await;
+        // FORK COMMIT OPEN [SA]: close_agent subtree guard for sub-agents.
+        // Role: a sub-agent can terminate only itself or descendants in its own subtree.
+        if matches!(turn.session_source, SessionSource::SubAgent(_))
+            && agent_id != session.conversation_id
+            && !session
+                .services
+                .agent_control
+                .is_descendant_of(session.conversation_id, agent_id)
+                .await
+        {
+            let status = AgentStatus::Errored(
+                "not permitted to close agents outside your subtree".to_string(),
+            );
+            session
+                .send_event(
+                    &turn,
+                    CollabCloseEndEvent {
+                        call_id: call_id.clone(),
+                        sender_thread_id: session.conversation_id,
+                        receiver_thread_id: agent_id,
+                        status,
+                    }
+                    .into(),
+                )
+                .await;
+            return Err(FunctionCallError::RespondToModel(
+                "Not permitted to close agents outside your subtree.".to_string(),
+            ));
+        }
+        // FORK COMMIT CLOSE: close_agent subtree guard for sub-agents.
         let status = match session
             .services
             .agent_control
@@ -810,8 +895,9 @@ fn build_agent_spawn_config(
     base_instructions: &BaseInstructions,
     turn: &TurnContext,
     child_depth: i32,
+    cwd_override: Option<PathBuf>,
 ) -> Result<Config, FunctionCallError> {
-    let mut config = build_agent_shared_config(turn, child_depth)?;
+    let mut config = build_agent_shared_config(turn, child_depth, cwd_override)?;
     config.base_instructions = Some(base_instructions.text.clone());
     Ok(config)
 }
@@ -820,7 +906,7 @@ fn build_agent_resume_config(
     turn: &TurnContext,
     child_depth: i32,
 ) -> Result<Config, FunctionCallError> {
-    let mut config = build_agent_shared_config(turn, child_depth)?;
+    let mut config = build_agent_shared_config(turn, child_depth, None)?;
     // For resume, keep base instructions sourced from rollout/session metadata.
     config.base_instructions = None;
     Ok(config)
@@ -829,6 +915,7 @@ fn build_agent_resume_config(
 fn build_agent_shared_config(
     turn: &TurnContext,
     child_depth: i32,
+    cwd_override: Option<PathBuf>,
 ) -> Result<Config, FunctionCallError> {
     let base_config = turn.config.clone();
     let mut config = (*base_config).clone();
@@ -840,7 +927,9 @@ fn build_agent_shared_config(
     config.compact_prompt = turn.compact_prompt.clone();
     config.shell_environment_policy = turn.shell_environment_policy.clone();
     config.codex_linux_sandbox_exe = turn.codex_linux_sandbox_exe.clone();
-    config.cwd = turn.cwd.clone();
+    config.cwd = cwd_override.unwrap_or_else(|| turn.cwd.clone());
+    // FORK COMMIT [SA]: keep native upstream 0.101.0 approval flow for sub-agents.
+    // Do not relax this to inherited/on-request in this path; nested approval routing is intentionally upstream-native.
     config.approval_policy = Constrained::allow_only(AskForApproval::Never);
     config
         .sandbox_policy
@@ -870,6 +959,7 @@ mod tests {
     use crate::function_tool::FunctionCallError;
     use crate::protocol::AskForApproval;
     use crate::protocol::Op;
+    use crate::protocol::ReviewDecision;
     use crate::protocol::SandboxPolicy;
     use crate::protocol::SessionSource;
     use crate::protocol::SubAgentSource;
@@ -1055,6 +1145,520 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_agent_rejects_agent_name_for_default_role() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "agent_name": "fast"
+            })),
+        );
+        let Err(err) = CollabHandler.handle(invocation).await else {
+            panic!("spawn should fail");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "agent_name requires a non-default agent_type".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_rejects_different_working_directory_without_approval() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let session = Arc::new(session);
+        {
+            let mut active_turn = session.active_turn.lock().await;
+            *active_turn = Some(crate::state::ActiveTurn::default());
+        }
+        let turn = Arc::new(turn);
+        let invocation = invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "working_directory": "nested-dir"
+            })),
+        );
+
+        let handle = tokio::spawn(async move { CollabHandler.handle(invocation).await });
+        for _ in 0..5 {
+            session
+                .notify_approval("call-1", ReviewDecision::Denied)
+                .await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let Err(err) = handle.await.expect("spawn join") else {
+            panic!("spawn should fail");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "spawn_agent in a different working_directory was not approved".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_routes_working_directory_approval_to_parent_thread() {
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let parent = manager
+            .start_thread((*turn.config).clone())
+            .await
+            .expect("parent thread should start");
+        parent.thread.set_active_turn_for_tests().await;
+
+        turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: parent.thread_id,
+            depth: 1,
+            // FORK COMMIT OPEN [SAW]: ThreadSpawn defaults include new optional fields.
+            // Role: keep tests stable as SubAgentSource::ThreadSpawn gains optional fields.
+            agent_type: None,
+            agent_name: None,
+            allow_list: None,
+            deny_list: None,
+            // FORK COMMIT CLOSE: ThreadSpawn defaults include new optional fields.
+        });
+
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let invocation = invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "working_directory": "nested-dir"
+            })),
+        );
+
+        let handle = tokio::spawn(async move { CollabHandler.handle(invocation).await });
+
+        session
+            .notify_approval("call-1", ReviewDecision::Denied)
+            .await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!handle.is_finished());
+
+        parent
+            .thread
+            .notify_approval_for_tests("call-1", ReviewDecision::Denied)
+            .await;
+        let Err(err) = timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("spawn should finish")
+            .expect("spawn join")
+        else {
+            panic!("spawn should fail");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "spawn_agent in a different working_directory was not approved".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_accepts_matching_working_directory_without_approval() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let current_cwd = turn.cwd.display().to_string();
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "working_directory": current_cwd
+            })),
+        );
+        let output = CollabHandler
+            .handle(invocation)
+            .await
+            .expect("spawn should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            success,
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        assert_eq!(success, Some(true));
+        let payload: serde_json::Value = serde_json::from_str(&content).expect("valid json");
+        let agent_id = payload
+            .get("agent_id")
+            .and_then(|value| value.as_str())
+            .expect("agent_id")
+            .to_string();
+        let agent_id = ThreadId::from_string(&agent_id).expect("thread id");
+        let _ = manager
+            .agent_control()
+            .shutdown_agent(agent_id)
+            .await
+            .expect("shutdown agent");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_applies_model_and_reasoning_overrides() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "agent_type": "worker",
+                "model": "gpt-5-codex",
+                "reasoning_effort": "high"
+            })),
+        );
+        let output = CollabHandler
+            .handle(invocation)
+            .await
+            .expect("spawn should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            success,
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        assert_eq!(success, Some(true));
+        let payload: serde_json::Value = serde_json::from_str(&content).expect("valid json");
+        let agent_id = payload
+            .get("agent_id")
+            .and_then(|value| value.as_str())
+            .expect("agent_id")
+            .to_string();
+        let agent_id = ThreadId::from_string(&agent_id).expect("thread id");
+
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("thread exists")
+            .config_snapshot()
+            .await;
+        assert_eq!(snapshot.model, "gpt-5-codex".to_string());
+        assert_eq!(
+            snapshot.reasoning_effort,
+            Some(codex_protocol::openai_models::ReasoningEffort::High)
+        );
+
+        let _ = manager
+            .agent_control()
+            .shutdown_agent(agent_id)
+            .await
+            .expect("shutdown agent");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_rejects_unknown_model_override() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "model": "gpt-5.999-codex-invalid"
+            })),
+        );
+        let Err(err) = CollabHandler.handle(invocation).await else {
+            panic!("spawn should fail");
+        };
+        let FunctionCallError::RespondToModel(message) = err else {
+            panic!("expected RespondToModel");
+        };
+        assert!(
+            message.contains("unknown model"),
+            "expected unknown model message, got: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_rejects_unsupported_reasoning_effort_for_model() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "model": "gpt-5.1-codex-mini",
+                "reasoning_effort": "xhigh"
+            })),
+        );
+        let Err(err) = CollabHandler.handle(invocation).await else {
+            panic!("spawn should fail");
+        };
+        let FunctionCallError::RespondToModel(message) = err else {
+            panic!("expected RespondToModel");
+        };
+        assert!(
+            message.contains("reasoning_effort"),
+            "expected unsupported reasoning message, got: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_rejects_unknown_reasoning_effort_with_model_specific_list() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "model": "gpt-5.3-codex",
+                "reasoning_effort": "ultra"
+            })),
+        );
+        let Err(err) = CollabHandler.handle(invocation).await else {
+            panic!("spawn should fail");
+        };
+        let FunctionCallError::RespondToModel(message) = err else {
+            panic!("expected RespondToModel");
+        };
+        assert!(
+            message.contains("\"gpt-5.3-codex\""),
+            "expected model-specific error, got: {message}"
+        );
+        assert!(
+            message.contains("Supported efforts: none, low, medium, high, xhigh"),
+            "expected model-specific supported list, got: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_accepts_none_reasoning_effort_even_if_not_in_supported_list() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "model": "gpt-5.1-codex-mini",
+                "reasoning_effort": "none"
+            })),
+        );
+        let output = CollabHandler
+            .handle(invocation)
+            .await
+            .expect("spawn should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            success,
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        assert_eq!(success, Some(true));
+        let payload: serde_json::Value = serde_json::from_str(&content).expect("valid json");
+        let agent_id = payload
+            .get("agent_id")
+            .and_then(|value| value.as_str())
+            .expect("agent_id")
+            .to_string();
+        let agent_id = ThreadId::from_string(&agent_id).expect("thread id");
+
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("thread exists")
+            .config_snapshot()
+            .await;
+        assert_eq!(
+            snapshot.reasoning_effort,
+            Some(codex_protocol::openai_models::ReasoningEffort::None)
+        );
+
+        let _ = manager
+            .agent_control()
+            .shutdown_agent(agent_id)
+            .await
+            .expect("shutdown agent");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_applies_agent_name_model_and_reasoning_defaults() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let role_with_named_defaults = crate::agent::role_templates::list_stems()
+            .into_iter()
+            .flat_map(|stem| {
+                crate::agent::role_templates::get_parsed(&stem)
+                    .ok()
+                    .map(|parsed| {
+                        parsed
+                            .meta
+                            .agent_names
+                            .iter()
+                            .filter(|agent| {
+                                agent.model.is_some() && agent.reasoning_effort.is_some()
+                            })
+                            .map(|agent| {
+                                (
+                                    stem.clone(),
+                                    agent.name.clone(),
+                                    agent.model.clone().unwrap_or_default(),
+                                    agent.reasoning_effort,
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            });
+
+        for (agent_type, agent_name, expected_model, expected_reasoning_effort) in
+            role_with_named_defaults
+        {
+            let invocation = invocation(
+                Arc::clone(&session),
+                Arc::clone(&turn),
+                "spawn_agent",
+                function_payload(json!({
+                    "message": "hello",
+                    "agent_type": agent_type,
+                    "agent_name": agent_name
+                })),
+            );
+            let output = match CollabHandler.handle(invocation).await {
+                Ok(output) => output,
+                Err(FunctionCallError::RespondToModel(message))
+                    if message.contains("unknown model") =>
+                {
+                    continue;
+                }
+                Err(err) => panic!("spawn should succeed: {err:?}"),
+            };
+            let ToolOutput::Function {
+                body: FunctionCallOutputBody::Text(content),
+                success,
+                ..
+            } = output
+            else {
+                panic!("expected function output");
+            };
+            assert_eq!(success, Some(true));
+            let payload: serde_json::Value = serde_json::from_str(&content).expect("valid json");
+            let agent_id = payload
+                .get("agent_id")
+                .and_then(|value| value.as_str())
+                .expect("agent_id")
+                .to_string();
+            let agent_id = ThreadId::from_string(&agent_id).expect("thread id");
+
+            let snapshot = manager
+                .get_thread(agent_id)
+                .await
+                .expect("thread exists")
+                .config_snapshot()
+                .await;
+            assert_eq!(snapshot.model, expected_model);
+            assert_eq!(snapshot.reasoning_effort, expected_reasoning_effort);
+
+            let _ = manager
+                .agent_control()
+                .shutdown_agent(agent_id)
+                .await
+                .expect("shutdown agent");
+            return;
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_applies_template_read_only_sandbox() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "agent_type": "explorer"
+            })),
+        );
+        let output = CollabHandler
+            .handle(invocation)
+            .await
+            .expect("spawn should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            success,
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        assert_eq!(success, Some(true));
+        let payload: serde_json::Value = serde_json::from_str(&content).expect("valid json");
+        let agent_id = payload
+            .get("agent_id")
+            .and_then(|value| value.as_str())
+            .expect("agent_id")
+            .to_string();
+        let agent_id = ThreadId::from_string(&agent_id).expect("thread id");
+
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("thread exists")
+            .config_snapshot()
+            .await;
+        assert_eq!(
+            snapshot.sandbox_policy,
+            SandboxPolicy::new_read_only_policy()
+        );
+
+        let _ = manager
+            .agent_control()
+            .shutdown_agent(agent_id)
+            .await
+            .expect("shutdown agent");
+    }
+
+    #[tokio::test]
     async fn send_input_rejects_empty_message() {
         let (session, turn) = make_session_and_context().await;
         let invocation = invocation(
@@ -1219,6 +1823,125 @@ mod tests {
             .into_iter()
             .find(|(id, op)| *id == agent_id && *op == expected);
         assert_eq!(captured, Some((agent_id, expected)));
+
+        let _ = thread
+            .thread
+            .submit(Op::Shutdown {})
+            .await
+            .expect("shutdown should submit");
+    }
+
+    #[tokio::test]
+    async fn set_thread_note_rejects_invalid_id() {
+        let (session, turn) = make_session_and_context().await;
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "set_thread_note",
+            function_payload(json!({"id": "not-a-uuid", "note": "worker"})),
+        );
+        let Err(err) = CollabHandler.handle(invocation).await else {
+            panic!("invalid id should be rejected");
+        };
+        let FunctionCallError::RespondToModel(message) = err else {
+            panic!("expected respond-to-model error");
+        };
+        assert!(message.starts_with("invalid agent id not-a-uuid:"));
+    }
+
+    #[tokio::test]
+    async fn set_thread_note_reports_missing_agent() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let agent_id = ThreadId::new();
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "set_thread_note",
+            function_payload(json!({"id": agent_id.to_string(), "note": "worker"})),
+        );
+        let Err(err) = CollabHandler.handle(invocation).await else {
+            panic!("missing agent should be reported");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(format!("agent with id {agent_id} not found"))
+        );
+    }
+
+    #[tokio::test]
+    async fn set_thread_note_submits_and_can_clear_note() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let config = turn.config.as_ref().clone();
+        let thread = manager.start_thread(config).await.expect("start thread");
+        let agent_id = thread.thread_id;
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+
+        let set_invocation = invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "set_thread_note",
+            function_payload(json!({
+                "id": agent_id.to_string(),
+                "note": "  worker persona  "
+            })),
+        );
+        let output = CollabHandler
+            .handle(set_invocation)
+            .await
+            .expect("set_thread_note should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            success,
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let payload: serde_json::Value = serde_json::from_str(&content).expect("valid json");
+        assert_eq!(
+            payload
+                .get("thread_note")
+                .and_then(serde_json::Value::as_str),
+            Some("worker persona")
+        );
+        assert_eq!(success, Some(true));
+
+        let expected_set = (
+            agent_id,
+            Op::SetThreadNote {
+                note: Some("worker persona".to_string()),
+            },
+        );
+        let captured_set = manager
+            .captured_ops()
+            .into_iter()
+            .find(|entry| *entry == expected_set);
+        assert_eq!(captured_set, Some(expected_set));
+
+        let clear_invocation = invocation(
+            session,
+            turn,
+            "set_thread_note",
+            function_payload(json!({
+                "id": agent_id.to_string(),
+                "note": "   "
+            })),
+        );
+        CollabHandler
+            .handle(clear_invocation)
+            .await
+            .expect("set_thread_note clear should succeed");
+        let expected_clear = (agent_id, Op::SetThreadNote { note: None });
+        let captured_clear = manager
+            .captured_ops()
+            .into_iter()
+            .find(|entry| *entry == expected_clear);
+        assert_eq!(captured_clear, Some(expected_clear));
 
         let _ = thread
             .thread
@@ -1720,6 +2443,214 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn close_agent_cascades_to_descendants() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let config = turn.config.as_ref().clone();
+        let parent = manager
+            .start_thread(config.clone())
+            .await
+            .expect("start parent");
+        let parent_id = parent.thread_id;
+
+        let child_id = manager
+            .agent_control()
+            .spawn_agent(
+                config.clone(),
+                vec![UserInput::Text {
+                    text: "child".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(parent_id, 1, None, None, None, None)),
+            )
+            .await
+            .expect("spawn child");
+        let grandchild_id = manager
+            .agent_control()
+            .spawn_agent(
+                config,
+                vec![UserInput::Text {
+                    text: "grandchild".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(child_id, 2, None, None, None, None)),
+            )
+            .await
+            .expect("spawn grandchild");
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "close_agent",
+            function_payload(json!({"id": parent_id.to_string()})),
+        );
+        let output = CollabHandler
+            .handle(invocation)
+            .await
+            .expect("close_agent should cascade");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(_),
+            success,
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        assert_eq!(success, Some(true));
+
+        let ops = manager.captured_ops();
+        let submitted_parent_shutdown = ops
+            .iter()
+            .any(|(id, op)| *id == parent_id && matches!(op, Op::Shutdown));
+        let submitted_child_shutdown = ops
+            .iter()
+            .any(|(id, op)| *id == child_id && matches!(op, Op::Shutdown));
+        let submitted_grandchild_shutdown = ops
+            .iter()
+            .any(|(id, op)| *id == grandchild_id && matches!(op, Op::Shutdown));
+        assert_eq!(submitted_parent_shutdown, true);
+        assert_eq!(submitted_child_shutdown, true);
+        assert_eq!(submitted_grandchild_shutdown, true);
+
+        assert_eq!(
+            manager.agent_control().get_status(parent_id).await,
+            AgentStatus::NotFound
+        );
+        assert_eq!(
+            manager.agent_control().get_status(child_id).await,
+            AgentStatus::NotFound
+        );
+        assert_eq!(
+            manager.agent_control().get_status(grandchild_id).await,
+            AgentStatus::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn close_agent_rejects_cross_subtree_shutdown_for_subagents() {
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let config = turn.config.as_ref().clone();
+        let parent = manager
+            .start_thread(config.clone())
+            .await
+            .expect("start parent");
+        let parent_id = parent.thread_id;
+
+        let caller_id = manager
+            .agent_control()
+            .spawn_agent(
+                config.clone(),
+                vec![UserInput::Text {
+                    text: "caller".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(parent_id, 1, None, None, None, None)),
+            )
+            .await
+            .expect("spawn caller");
+        let child_id = manager
+            .agent_control()
+            .spawn_agent(
+                config.clone(),
+                vec![UserInput::Text {
+                    text: "child".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(caller_id, 2, None, None, None, None)),
+            )
+            .await
+            .expect("spawn child");
+        let sibling_id = manager
+            .agent_control()
+            .spawn_agent(
+                config,
+                vec![UserInput::Text {
+                    text: "sibling".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(parent_id, 1, None, None, None, None)),
+            )
+            .await
+            .expect("spawn sibling");
+
+        session.conversation_id = caller_id;
+        turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: parent_id,
+            depth: 1,
+            agent_type: None,
+            agent_name: None,
+            allow_list: None,
+            deny_list: None,
+        });
+
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+
+        let sibling_invocation = invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "close_agent",
+            function_payload(json!({"id": sibling_id.to_string()})),
+        );
+        let Err(err) = CollabHandler.handle(sibling_invocation).await else {
+            panic!("close_agent should reject sibling termination");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "Not permitted to close agents outside your subtree.".to_string()
+            )
+        );
+        assert_ne!(
+            manager.agent_control().get_status(sibling_id).await,
+            AgentStatus::NotFound
+        );
+
+        let invocation_child = invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "close_agent",
+            function_payload(json!({"id": child_id.to_string()})),
+        );
+        let output = CollabHandler
+            .handle(invocation_child)
+            .await
+            .expect("close_agent should allow descendant termination");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(_),
+            success,
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        assert_eq!(success, Some(true));
+        assert_eq!(
+            manager.agent_control().get_status(child_id).await,
+            AgentStatus::NotFound
+        );
+
+        let _ = manager
+            .agent_control()
+            .shutdown_agent(sibling_id)
+            .await
+            .expect("shutdown sibling");
+        let _ = manager
+            .agent_control()
+            .shutdown_agent(caller_id)
+            .await
+            .expect("shutdown caller");
+        let _ = manager
+            .agent_control()
+            .shutdown_agent(parent_id)
+            .await
+            .expect("shutdown parent");
+    }
+
+    #[tokio::test]
     async fn build_agent_spawn_config_uses_turn_context_values() {
         fn pick_allowed_sandbox_policy(
             constraint: &crate::config::Constrained<SandboxPolicy>,
@@ -1754,7 +2685,8 @@ mod tests {
             turn.config.sandbox_policy.get().clone(),
         );
 
-        let config = build_agent_spawn_config(&base_instructions, &turn, 0).expect("spawn config");
+        let config =
+            build_agent_spawn_config(&base_instructions, &turn, 0, None).expect("spawn config");
         let mut expected = (*turn.config).clone();
         expected.base_instructions = Some(base_instructions.text);
         expected.model = Some(turn.model_info.slug.clone());
@@ -1788,7 +2720,8 @@ mod tests {
             text: "base".to_string(),
         };
 
-        let config = build_agent_spawn_config(&base_instructions, &turn, 0).expect("spawn config");
+        let config =
+            build_agent_spawn_config(&base_instructions, &turn, 0, None).expect("spawn config");
 
         assert_eq!(config.user_instructions, base_config.user_instructions);
     }

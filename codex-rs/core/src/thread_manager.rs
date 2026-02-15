@@ -387,6 +387,18 @@ impl ThreadManagerState {
             .ok_or_else(|| CodexErr::ThreadNotFound(thread_id))
     }
 
+    // FORK COMMIT OPEN [SA]: enumerate active threads for subtree traversal.
+    // Role: support cascade close and ownership checks in AgentControl.
+    pub(crate) async fn list_threads(&self) -> Vec<(ThreadId, Arc<CodexThread>)> {
+        self.threads
+            .read()
+            .await
+            .iter()
+            .map(|(thread_id, thread)| (*thread_id, Arc::clone(thread)))
+            .collect()
+    }
+    // FORK COMMIT CLOSE: enumerate active threads for subtree traversal.
+
     /// Send an operation to a thread by ID.
     pub(crate) async fn send_op(&self, thread_id: ThreadId, op: Op) -> CodexResult<String> {
         let thread = self.get_thread(thread_id).await?;

@@ -25,6 +25,8 @@ pub use list::rollout_date_parts;
 pub use recorder::RolloutRecorder;
 pub use recorder::RolloutRecorderParams;
 pub use session_index::find_thread_name_by_id;
+// FORK COMMIT [SA]: export batch thread_note lookup for resume/fork picker metadata hydration.
+pub use session_index::find_thread_notes_by_ids;
 pub use session_index::find_thread_path_by_name_str;
 
 #[cfg(test)]

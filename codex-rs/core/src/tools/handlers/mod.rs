@@ -3,6 +3,10 @@ pub(crate) mod collab;
 mod dynamic;
 mod grep_files;
 mod js_repl;
+// FORK COMMIT [SA]: wire template-backed `list_agents` handler module.
+mod list_agents;
+// FORK COMMIT [SA]: dedicated runtime spawned-agent listing handler.
+mod list_active_agents;
 mod list_dir;
 mod mcp;
 mod mcp_resource;
@@ -25,6 +29,9 @@ pub use dynamic::DynamicToolHandler;
 pub use grep_files::GrepFilesHandler;
 pub use js_repl::JsReplHandler;
 pub use js_repl::JsReplResetHandler;
+// FORK COMMIT [SA]: export `list_agents` handler for collab tool registration.
+pub use list_active_agents::ListActiveAgentsHandler;
+pub use list_agents::ListAgentsHandler;
 pub use list_dir::ListDirHandler;
 pub use mcp::McpHandler;
 pub use mcp_resource::McpResourceHandler;

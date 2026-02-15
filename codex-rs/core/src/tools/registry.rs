@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -11,6 +10,9 @@ use crate::sandbox_tags::sandbox_tag;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::tools::policy::build_allow_set;
+use crate::tools::policy::build_deny_set;
+use crate::tools::policy::is_tool_enabled;
 use async_trait::async_trait;
 use codex_hooks::HookEvent;
 use codex_hooks::HookEventAfterToolUse;
@@ -243,35 +245,38 @@ impl ToolRegistryBuilder {
         }
     }
 
-    // FORK COMMIT OPEN [UC]: runtime allow/deny filtering for already-registered tool specs/handlers.
+    // FORK COMMIT OPEN [SA]: runtime allow/deny filtering for already-registered tool specs/handlers.
     // Role: keep tool router and handlers in sync with per-thread policy.
     pub fn retain_tools_by_name(
         &mut self,
         allow_list: Option<&[String]>,
         deny_list: Option<&[String]>,
     ) {
-        let allow_set = allow_list.and_then(|list| {
-            let set: HashSet<String> = list
-                .iter()
-                .map(|name| name.trim().to_string())
-                .filter(|name| !name.is_empty())
-                .collect();
-            (!set.is_empty()).then_some(set)
-        });
-        let deny_set: HashSet<String> = deny_list
-            .unwrap_or(&[])
-            .iter()
-            .map(|name| name.trim().to_string())
-            .filter(|name| !name.is_empty())
-            .collect();
-
-        let is_enabled = |name: &str| {
-            let allowed = allow_set
-                .as_ref()
-                .map(|set| set.contains(name))
-                .unwrap_or(true);
-            allowed && !deny_set.contains(name)
-        };
+        // legacy:
+        // let allow_set = allow_list.and_then(|list| {
+        //     let set: HashSet<String> = list
+        //         .iter()
+        //         .map(|name| name.trim().to_string())
+        //         .filter(|name| !name.is_empty())
+        //         .collect();
+        //     (!set.is_empty()).then_some(set)
+        // });
+        // let deny_set: HashSet<String> = deny_list
+        //     .unwrap_or(&[])
+        //     .iter()
+        //     .map(|name| name.trim().to_string())
+        //     .filter(|name| !name.is_empty())
+        //     .collect();
+        // let is_enabled = |name: &str| {
+        //     let allowed = allow_set
+        //         .as_ref()
+        //         .map(|set| set.contains(name))
+        //         .unwrap_or(true);
+        //     allowed && !deny_set.contains(name)
+        // };
+        let allow_set = build_allow_set(allow_list);
+        let deny_set = build_deny_set(deny_list);
+        let is_enabled = |name: &str| is_tool_enabled(name, allow_set.as_ref(), &deny_set);
 
         self.specs
             .retain(|configured| is_enabled(tool_name(&configured.spec)));
@@ -303,7 +308,7 @@ impl ToolRegistryBuilder {
     }
 }
 
-// FORK COMMIT OPEN [UC]: map spec variants to canonical tool names used by policy filters.
+// FORK COMMIT OPEN [SA]: map spec variants to canonical tool names used by policy filters.
 fn tool_name(spec: &ToolSpec) -> &str {
     match spec {
         ToolSpec::Function(tool) => &tool.name,

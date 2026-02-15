@@ -56,4 +56,14 @@ You can also use Codex with an API key, but this requires [additional setup](htt
 - [**Installing & building**](./docs/install.md)
 - [**Open source fund**](./docs/open-source-fund.md)
 
+## Fork Development Rules
+
+When implementing fork-specific behavior, annotate code blocks with explicit fork markers:
+
+- `FORK COMMIT OPEN [<FEATURE>]: ...`
+- `FORK COMMIT CLOSE: ...`
+- For single-line customizations: `FORK COMMIT [<FEATURE>]: ...`
+
+Near each `OPEN` marker, include a short `Role:` note describing why the customization exists.
+
 This repository is licensed under the [Apache-2.0 License](LICENSE).

@@ -27,8 +27,10 @@ use codex_core::protocol::AgentMessageDeltaEvent;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
+use codex_core::protocol::AgentStatus;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
 use codex_core::protocol::BackgroundEventEvent;
+use codex_core::protocol::CollabWaitingEndEvent;
 use codex_core::protocol::CreditsSnapshot;
 use codex_core::protocol::Event;
 use codex_core::protocol::EventMsg;
@@ -148,6 +150,7 @@ async fn resumed_initial_messages_render_history() {
         session_id: conversation_id,
         forked_from_id: None,
         thread_name: None,
+        thread_note: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         approval_policy: AskForApproval::Never,
@@ -216,6 +219,7 @@ async fn replayed_user_message_preserves_text_elements_and_local_images() {
         session_id: conversation_id,
         forked_from_id: None,
         thread_name: None,
+        thread_note: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         approval_policy: AskForApproval::Never,
@@ -334,6 +338,7 @@ async fn submission_preserves_text_elements_and_local_images() {
         session_id: conversation_id,
         forked_from_id: None,
         thread_name: None,
+        thread_note: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         approval_policy: AskForApproval::Never,
@@ -414,6 +419,7 @@ async fn submission_prefers_selected_duplicate_skill_path() {
         session_id: conversation_id,
         forked_from_id: None,
         thread_name: None,
+        thread_note: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         approval_policy: AskForApproval::Never,
@@ -1098,6 +1104,7 @@ async fn make_chatwidget_manual(
         pending_status_indicator_restore: false,
         thread_id: None,
         thread_name: None,
+        thread_note: None,
         forked_from: None,
         frame_requester: FrameRequester::test_dummy(),
         show_welcome_banner: true,
@@ -3102,6 +3109,7 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
         session_id: ThreadId::new(),
         forked_from_id: None,
         thread_name: None,
+        thread_note: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         approval_policy: AskForApproval::Never,
@@ -5190,6 +5198,7 @@ async fn background_event_updates_status_header() {
         id: "bg-1".into(),
         msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
             message: "Waiting for `vim`".to_string(),
+            is_final: false,
         }),
     });
 
@@ -5855,6 +5864,31 @@ async fn stream_recovery_restores_previous_status_header() {
     assert_eq!(status.header(), "Working");
     assert_eq!(status.details(), None);
     assert!(chat.retry_status_header.is_none());
+}
+
+#[tokio::test]
+async fn collab_waiting_end_does_not_set_pending_notification() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.handle_codex_event(Event {
+        id: "wait-complete".into(),
+        msg: EventMsg::CollabWaitingEnd(CollabWaitingEndEvent {
+            sender_thread_id: ThreadId::new(),
+            call_id: "call-1".to_string(),
+            statuses: HashMap::from([
+                (
+                    ThreadId::new(),
+                    AgentStatus::Completed(Some("done".to_string())),
+                ),
+                (ThreadId::new(), AgentStatus::Errored("boom".to_string())),
+            ]),
+        }),
+    });
+
+    assert!(
+        chat.pending_notification.is_none(),
+        "expected no pending notification for collab wait completion"
+    );
 }
 
 #[tokio::test]

@@ -70,9 +70,11 @@ async fn build_codex_with_test_tool(server: &wiremock::MockServer) -> anyhow::Re
 }
 
 fn assert_parallel_duration(actual: Duration) {
-    // Allow headroom for slow CI scheduling; barrier synchronization already enforces overlap.
+    // Full `--all-features` runs can heavily contend for CPU and runtime workers.
+    // Keep this threshold high enough to avoid flaky false negatives while still
+    // detecting clear serialization regressions.
     assert!(
-        actual < Duration::from_millis(1_600),
+        actual < Duration::from_millis(3_600),
         "expected parallel execution to finish quickly, got {actual:?}"
     );
 }

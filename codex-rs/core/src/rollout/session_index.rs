@@ -14,6 +14,8 @@ use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
 
 const SESSION_INDEX_FILE: &str = "session_index.jsonl";
+// FORK COMMIT [SA]: dedicated append-only index for mutable thread_note metadata.
+const THREAD_NOTE_INDEX_FILE: &str = "thread_note_index.jsonl";
 const READ_CHUNK_SIZE: usize = 8192;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -22,6 +24,17 @@ pub struct SessionIndexEntry {
     pub thread_name: String,
     pub updated_at: String,
 }
+
+// FORK COMMIT OPEN [SA]: thread note index entry contract.
+// Role: persist mutable runtime thread note independently from stable thread_name index.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ThreadNoteIndexEntry {
+    pub id: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_note: Option<String>,
+    pub updated_at: String,
+}
+// FORK COMMIT CLOSE: thread note index entry contract.
 
 /// Append a thread name update to the session index.
 /// The index is append-only; the most recent entry wins when resolving names or ids.
@@ -44,6 +57,29 @@ pub async fn append_thread_name(
     append_session_index_entry(codex_home, &entry).await
 }
 
+// FORK COMMIT OPEN [SA]: append/read helpers for thread_note index.
+// Role: keep thread note updates append-only with latest-entry-wins semantics.
+/// Append a thread note update to the thread note index.
+/// The index is append-only; the most recent entry wins for each thread id.
+pub async fn append_thread_note(
+    codex_home: &Path,
+    thread_id: ThreadId,
+    note: Option<&str>,
+) -> std::io::Result<()> {
+    use time::OffsetDateTime;
+    use time::format_description::well_known::Rfc3339;
+
+    let updated_at = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+    let entry = ThreadNoteIndexEntry {
+        id: thread_id,
+        thread_note: note.map(ToString::to_string),
+        updated_at,
+    };
+    append_thread_note_index_entry(codex_home, &entry).await
+}
+
 /// Append a raw session index entry to `session_index.jsonl`.
 /// The file is append-only; consumers scan from the end to find the newest match.
 pub async fn append_session_index_entry(
@@ -51,6 +87,23 @@ pub async fn append_session_index_entry(
     entry: &SessionIndexEntry,
 ) -> std::io::Result<()> {
     let path = session_index_path(codex_home);
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .await?;
+    let mut line = serde_json::to_string(entry).map_err(std::io::Error::other)?;
+    line.push('\n');
+    file.write_all(line.as_bytes()).await?;
+    file.flush().await?;
+    Ok(())
+}
+
+pub async fn append_thread_note_index_entry(
+    codex_home: &Path,
+    entry: &ThreadNoteIndexEntry,
+) -> std::io::Result<()> {
+    let path = thread_note_index_path(codex_home);
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -78,6 +131,78 @@ pub async fn find_thread_name_by_id(
         .map_err(std::io::Error::other)??;
     Ok(entry.map(|entry| entry.thread_name))
 }
+
+/// Find the latest thread note for a thread id, if any.
+/// Returns `None` when no note exists or the latest note entry clears the note.
+pub async fn find_thread_note_by_id(
+    codex_home: &Path,
+    thread_id: &ThreadId,
+) -> std::io::Result<Option<String>> {
+    let path = thread_note_index_path(codex_home);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let file = tokio::fs::File::open(&path).await?;
+    let reader = tokio::io::BufReader::new(file);
+    let mut lines = reader.lines();
+    let mut latest: Option<Option<String>> = None;
+    while let Some(line) = lines.next_line().await? {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<ThreadNoteIndexEntry>(trimmed) else {
+            continue;
+        };
+        if entry.id != *thread_id {
+            continue;
+        }
+        let normalized = normalize_thread_note_entry(entry.thread_note);
+        latest = Some(normalized);
+    }
+
+    Ok(latest.flatten())
+}
+
+/// Find the latest thread notes for a batch of thread ids.
+/// Returns a map of ids that currently have a non-empty note.
+pub async fn find_thread_notes_by_ids(
+    codex_home: &Path,
+    thread_ids: &HashSet<ThreadId>,
+) -> std::io::Result<HashMap<ThreadId, String>> {
+    let path = thread_note_index_path(codex_home);
+    if thread_ids.is_empty() || !path.exists() {
+        return Ok(HashMap::new());
+    }
+
+    let file = tokio::fs::File::open(&path).await?;
+    let reader = tokio::io::BufReader::new(file);
+    let mut lines = reader.lines();
+    let mut notes = HashMap::with_capacity(thread_ids.len());
+
+    while let Some(line) = lines.next_line().await? {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<ThreadNoteIndexEntry>(trimmed) else {
+            continue;
+        };
+        if !thread_ids.contains(&entry.id) {
+            continue;
+        }
+
+        if let Some(note) = normalize_thread_note_entry(entry.thread_note) {
+            notes.insert(entry.id, note);
+        } else {
+            notes.remove(&entry.id);
+        }
+    }
+
+    Ok(notes)
+}
+// FORK COMMIT CLOSE: append/read helpers for thread_note index.
 
 /// Find the latest thread names for a batch of thread ids.
 pub async fn find_thread_names_by_ids(
@@ -144,6 +269,23 @@ pub async fn find_thread_path_by_name_str(
 
 fn session_index_path(codex_home: &Path) -> PathBuf {
     codex_home.join(SESSION_INDEX_FILE)
+}
+
+// FORK COMMIT [SA]: path helper for thread_note index file.
+fn thread_note_index_path(codex_home: &Path) -> PathBuf {
+    codex_home.join(THREAD_NOTE_INDEX_FILE)
+}
+
+// FORK COMMIT [SA]: shared normalizer for thread_note index entries.
+fn normalize_thread_note_entry(thread_note: Option<String>) -> Option<String> {
+    thread_note.and_then(|note| {
+        let trimmed = note.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 fn scan_index_from_end_by_id(
@@ -236,6 +378,15 @@ mod tests {
     use std::collections::HashSet;
     use tempfile::TempDir;
     fn write_index(path: &Path, lines: &[SessionIndexEntry]) -> std::io::Result<()> {
+        let mut out = String::new();
+        for entry in lines {
+            out.push_str(&serde_json::to_string(entry).unwrap());
+            out.push('\n');
+        }
+        std::fs::write(path, out)
+    }
+
+    fn write_thread_note_index(path: &Path, lines: &[ThreadNoteIndexEntry]) -> std::io::Result<()> {
         let mut out = String::new();
         for entry in lines {
             out.push_str(&serde_json::to_string(entry).unwrap());
@@ -395,6 +546,104 @@ mod tests {
 
         let found_other_by_id = scan_index_from_end_by_id(&path, &id_other)?;
         assert_eq!(found_other_by_id, Some(expected_other));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_thread_note_by_id_prefers_latest_entry() -> std::io::Result<()> {
+        let temp = TempDir::new()?;
+        let path = thread_note_index_path(temp.path());
+        let id = ThreadId::new();
+        let other = ThreadId::new();
+        let lines = vec![
+            ThreadNoteIndexEntry {
+                id,
+                thread_note: Some("first".to_string()),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            ThreadNoteIndexEntry {
+                id: other,
+                thread_note: Some("other".to_string()),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            ThreadNoteIndexEntry {
+                id,
+                thread_note: Some("latest".to_string()),
+                updated_at: "2024-01-02T00:00:00Z".to_string(),
+            },
+        ];
+        write_thread_note_index(&path, &lines)?;
+
+        let found = find_thread_note_by_id(temp.path(), &id).await?;
+        assert_eq!(found, Some("latest".to_string()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_thread_note_by_id_returns_none_after_clear() -> std::io::Result<()> {
+        let temp = TempDir::new()?;
+        let path = thread_note_index_path(temp.path());
+        let id = ThreadId::new();
+        let lines = vec![
+            ThreadNoteIndexEntry {
+                id,
+                thread_note: Some("active".to_string()),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            ThreadNoteIndexEntry {
+                id,
+                thread_note: None,
+                updated_at: "2024-01-02T00:00:00Z".to_string(),
+            },
+        ];
+        write_thread_note_index(&path, &lines)?;
+
+        let found = find_thread_note_by_id(temp.path(), &id).await?;
+        assert_eq!(found, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn find_thread_notes_by_ids_prefers_latest_and_respects_clear() -> std::io::Result<()> {
+        let temp = TempDir::new()?;
+        let path = thread_note_index_path(temp.path());
+        let id1 = ThreadId::new();
+        let id2 = ThreadId::new();
+        let id3 = ThreadId::new();
+        let lines = vec![
+            ThreadNoteIndexEntry {
+                id: id1,
+                thread_note: Some("first".to_string()),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            ThreadNoteIndexEntry {
+                id: id2,
+                thread_note: Some("other".to_string()),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            ThreadNoteIndexEntry {
+                id: id1,
+                thread_note: Some("latest".to_string()),
+                updated_at: "2024-01-02T00:00:00Z".to_string(),
+            },
+            ThreadNoteIndexEntry {
+                id: id2,
+                thread_note: None,
+                updated_at: "2024-01-03T00:00:00Z".to_string(),
+            },
+        ];
+        write_thread_note_index(&path, &lines)?;
+
+        let mut ids = HashSet::new();
+        ids.insert(id1);
+        ids.insert(id2);
+        ids.insert(id3);
+
+        let mut expected = HashMap::new();
+        expected.insert(id1, "latest".to_string());
+
+        let found = find_thread_notes_by_ids(temp.path(), &ids).await?;
+        assert_eq!(found, expected);
         Ok(())
     }
 }

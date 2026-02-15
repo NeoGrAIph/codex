@@ -581,12 +581,18 @@ impl ModelClientSession {
     }
 
     fn get_last_response(&mut self) -> Option<LastResponse> {
-        self.websocket_last_response_rx
-            .take()
-            .and_then(|mut receiver| match receiver.try_recv() {
-                Ok(last_response) => Some(last_response),
-                Err(TryRecvError::Closed) | Err(TryRecvError::Empty) => None,
-            })
+        // FORK COMMIT OPEN [SA]: preserve pending receiver while websocket response is still in flight.
+        // Role: avoid dropping append baseline state on temporary `Empty` poll results.
+        let mut receiver = self.websocket_last_response_rx.take()?;
+        match receiver.try_recv() {
+            Ok(last_response) => Some(last_response),
+            Err(TryRecvError::Closed) => None,
+            Err(TryRecvError::Empty) => {
+                self.websocket_last_response_rx = Some(receiver);
+                None
+            }
+        }
+        // FORK COMMIT CLOSE: preserve pending receiver while websocket response is still in flight.
     }
 
     fn prepare_websocket_request(
@@ -1158,14 +1164,17 @@ impl WebsocketTelemetry for ApiTelemetry {
 
 #[cfg(test)]
 mod tests {
+    use super::LastResponse;
     use super::ModelClient;
     use codex_otel::OtelManager;
     use codex_protocol::ThreadId;
+    use codex_protocol::models::ResponseItem;
     use codex_protocol::openai_models::ModelInfo;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SubAgentSource;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+    use tokio::sync::oneshot;
 
     fn test_model_client(session_source: SessionSource) -> ModelClient {
         let provider = crate::model_provider_info::create_oss_provider_with_base_url(
@@ -1254,4 +1263,53 @@ mod tests {
             .expect("empty summarize request should succeed");
         assert_eq!(output.len(), 0);
     }
+
+    #[test]
+    // FORK COMMIT OPEN [SA]: regression coverage for websocket last-response receiver lifecycle.
+    // Role: pin keep/clear semantics so append state remains stable across polling states.
+    fn get_last_response_keeps_receiver_when_empty() {
+        let client = test_model_client(SessionSource::Cli);
+        let mut session = client.new_session();
+        let (_tx, rx) = oneshot::channel::<LastResponse>();
+        session.websocket_last_response_rx = Some(rx);
+
+        let got = session.get_last_response();
+        assert_eq!(got.is_none(), true);
+        assert_eq!(session.websocket_last_response_rx.is_some(), true);
+    }
+
+    #[test]
+    fn get_last_response_clears_receiver_when_closed() {
+        let client = test_model_client(SessionSource::Cli);
+        let mut session = client.new_session();
+        let (tx, rx) = oneshot::channel::<LastResponse>();
+        drop(tx);
+        session.websocket_last_response_rx = Some(rx);
+
+        let got = session.get_last_response();
+        assert_eq!(got.is_none(), true);
+        assert_eq!(session.websocket_last_response_rx.is_none(), true);
+    }
+
+    #[test]
+    fn get_last_response_returns_value_and_clears_receiver() {
+        let client = test_model_client(SessionSource::Cli);
+        let mut session = client.new_session();
+        let (tx, rx) = oneshot::channel::<LastResponse>();
+        tx.send(LastResponse {
+            response_id: "resp-1".to_string(),
+            items_added: Vec::<ResponseItem>::new(),
+            can_append: true,
+        })
+        .expect("send last response");
+        session.websocket_last_response_rx = Some(rx);
+
+        let got = session.get_last_response();
+        assert_eq!(
+            got.map(|value| value.response_id),
+            Some("resp-1".to_string())
+        );
+        assert_eq!(session.websocket_last_response_rx.is_none(), true);
+    }
+    // FORK COMMIT CLOSE: regression coverage for websocket last-response receiver lifecycle.
 }

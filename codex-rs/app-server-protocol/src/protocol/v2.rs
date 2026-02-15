@@ -1591,6 +1591,17 @@ pub struct ThreadSetNameParams {
     pub name: String,
 }
 
+// FORK COMMIT OPEN [SA]: v2 RPC contract for mutable thread note updates.
+// Role: let clients set/clear runtime thread notes independently from thread names.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSetNoteParams {
+    pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub note: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -1602,6 +1613,12 @@ pub struct ThreadUnarchiveParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadSetNameResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSetNoteResponse {}
+// FORK COMMIT CLOSE: v2 RPC contract for mutable thread note updates.
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -2769,6 +2786,19 @@ pub struct ThreadNameUpdatedNotification {
     #[ts(optional)]
     pub thread_name: Option<String>,
 }
+
+// FORK COMMIT OPEN [SA]: v2 notification payload for thread note changes.
+// Role: propagate runtime note mutations to connected clients.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadNoteUpdatedNotification {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_note: Option<String>,
+}
+// FORK COMMIT CLOSE: v2 notification payload for thread note changes.
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]

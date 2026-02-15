@@ -14,6 +14,10 @@ export type SessionConfiguredEvent = { session_id: ThreadId, forked_from_id: Thr
  */
 thread_name?: string, 
 /**
+ * Optional dynamic thread note for operational labeling.
+ */
+thread_note?: string, 
+/**
  * Tell the client what model is being queried.
  */
 model: string, model_provider_id: string, 

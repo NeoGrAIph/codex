@@ -130,6 +130,8 @@ use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadRollbackParams;
 use codex_app_server_protocol::ThreadSetNameParams;
 use codex_app_server_protocol::ThreadSetNameResponse;
+use codex_app_server_protocol::ThreadSetNoteParams;
+use codex_app_server_protocol::ThreadSetNoteResponse;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadStartParams;
@@ -495,6 +497,11 @@ impl CodexMessageProcessor {
             }
             ClientRequest::ThreadSetName { request_id, params } => {
                 self.thread_set_name(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            // FORK COMMIT [SA]: route thread_note set/clear RPC to codex-core op pipeline.
+            ClientRequest::ThreadSetNote { request_id, params } => {
+                self.thread_set_note(to_connection_request_id(request_id), params)
                     .await;
             }
             ClientRequest::ThreadUnarchive { request_id, params } => {
@@ -2104,6 +2111,32 @@ impl CodexMessageProcessor {
             .send_response(request_id, ThreadSetNameResponse {})
             .await;
     }
+
+    // FORK COMMIT OPEN [SA]: app-server handler for thread_note mutations.
+    // Role: normalize optional notes and submit Op::SetThreadNote for the target thread.
+    async fn thread_set_note(&self, request_id: ConnectionRequestId, params: ThreadSetNoteParams) {
+        let ThreadSetNoteParams { thread_id, note } = params;
+        let note = codex_core::util::normalize_thread_note(note.as_deref());
+
+        let (_, thread) = match self.load_thread(&thread_id).await {
+            Ok(v) => v,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        if let Err(err) = thread.submit(Op::SetThreadNote { note }).await {
+            self.send_internal_error(request_id, format!("failed to set thread note: {err}"))
+                .await;
+            return;
+        }
+
+        self.outgoing
+            .send_response(request_id, ThreadSetNoteResponse {})
+            .await;
+    }
+    // FORK COMMIT CLOSE: app-server handler for thread_note mutations.
 
     async fn thread_unarchive(
         &mut self,

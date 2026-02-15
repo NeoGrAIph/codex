@@ -13,6 +13,7 @@ use crate::tools::handlers::collab::DEFAULT_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::collab::MAX_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::collab::MIN_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::request_user_input_tool_description;
+use crate::tools::policy::normalize_tool_policy_list;
 use crate::tools::registry::ToolRegistryBuilder;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -38,7 +39,7 @@ pub(crate) struct ToolsConfig {
     pub collaboration_modes_tools: bool,
     pub request_rule_enabled: bool,
     pub experimental_supported_tools: Vec<String>,
-    // FORK COMMIT OPEN [UC]: sub-agent tool policy is carried in TurnContext and applied at build_specs.
+    // FORK COMMIT OPEN [SA]: sub-agent tool policy is carried in TurnContext and applied at build_specs.
     // Role: keep spawned/review threads on an explicit allow/deny tool contract.
     pub tool_allow_list: Option<Vec<String>>,
     pub tool_deny_list: Option<Vec<String>>,
@@ -110,23 +111,11 @@ impl ToolsConfig {
         allow_list: Option<Vec<String>>,
         deny_list: Option<Vec<String>>,
     ) {
-        // FORK COMMIT OPEN [UC]: normalize policy lists once at assignment point.
+        // FORK COMMIT OPEN [SA]: normalize policy lists once at assignment point.
         self.tool_allow_list = normalize_tool_policy_list(allow_list);
         self.tool_deny_list = normalize_tool_policy_list(deny_list);
         // FORK COMMIT CLOSE: normalize tool policy lists.
     }
-}
-
-fn normalize_tool_policy_list(list: Option<Vec<String>>) -> Option<Vec<String>> {
-    let mut out: Vec<String> = list
-        .unwrap_or_default()
-        .into_iter()
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty())
-        .collect();
-    out.sort();
-    out.dedup();
-    (!out.is_empty()).then_some(out)
 }
 
 pub(crate) fn filter_tools_for_model(tools: Vec<ToolSpec>, _config: &ToolsConfig) -> Vec<ToolSpec> {
@@ -541,7 +530,96 @@ fn create_collab_input_items_schema() -> JsonSchema {
     }
 }
 
+fn create_list_agents_tool() -> ToolSpec {
+    // FORK COMMIT OPEN [SA]: list_agents schema supports filter and expanded mode.
+    // Role: keep default payload compact while enabling focused/verbose inspection on demand.
+    let properties = BTreeMap::from([
+        (
+            "agent_type".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional agent type filter (e.g. worker, explorer, orchestrator).".to_string(),
+                ),
+            },
+        ),
+        (
+            "expanded".to_string(),
+            JsonSchema::Boolean {
+                description: Some(
+                    "When true, include extended role/persona fields (models, reasoning levels, and prompts)."
+                        .to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "list_agents".to_string(),
+        description:
+            "List available agent profiles from local templates, including optional agent_name variants and tool policy. Use agent_type/expanded for focused or detailed output."
+                .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+    })
+    // FORK COMMIT CLOSE: list_agents schema supports filter and expanded mode.
+}
+
+fn create_list_active_agents_tool() -> ToolSpec {
+    // FORK COMMIT OPEN [SA]: list_active_agents schema for runtime spawned-thread inspection.
+    // Role: expose scope-aware active sub-agent metadata with optional tree and closed-status views.
+    let properties = BTreeMap::from([
+        (
+            "scope".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional scope filter: children (default), descendants, or all.".to_string(),
+                ),
+            },
+        ),
+        (
+            "include_tree".to_string(),
+            JsonSchema::Boolean {
+                description: Some(
+                    "When true, include parent_thread_id and depth for each result.".to_string(),
+                ),
+            },
+        ),
+        (
+            "include_closed".to_string(),
+            JsonSchema::Boolean {
+                description: Some(
+                    "When true, include agents in final statuses (completed, errored, shutdown)."
+                        .to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "list_active_agents".to_string(),
+        description:
+            "List currently spawned thread agents with scope filters and runtime metadata (status, model, names/notes)."
+                .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+    })
+    // FORK COMMIT CLOSE: list_active_agents schema for runtime spawned-thread inspection.
+}
+
 fn create_spawn_agent_tool() -> ToolSpec {
+    // FORK COMMIT OPEN [SA]: template-backed role discovery hint.
+    // Role: surface available roles/personas from runtime template sources.
+    let templates_hint = crate::agent::role_templates::spawn_agent_templates_hint();
+    // FORK COMMIT CLOSE: template-backed role discovery hint.
+
     let properties = BTreeMap::from([
         (
             "message".to_string(),
@@ -557,9 +635,56 @@ fn create_spawn_agent_tool() -> ToolSpec {
             "agent_type".to_string(),
             JsonSchema::String {
                 description: Some(format!(
-                    "Optional agent type ({}). Use an explicit type when delegating.",
+                    "Optional agent type ({}). Use an explicit type when delegating. Custom templates are loaded from `.codex/.agents` (project, nearest first), then `~/.codex/.agents`, then embedded `codex-rs/core/templates/agents` fallback.{templates_hint}",
                     AgentRole::enum_values().join(", ")
                 )),
+            },
+        ),
+        (
+            "agent_name".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional personality name within the selected agent_type (if the template defines agent_names blocks)."
+                        .to_string(),
+                ),
+            },
+        ),
+        // FORK COMMIT [SA]: optional spawned-thread cwd override.
+        (
+            "working_directory".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional working directory override for the spawned agent thread. When it differs from the current session working directory, user approval is required."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "model".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional model override for the spawned agent. Highest priority over template defaults and inherited turn config."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "reasoning_effort".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional reasoning effort override for the spawned agent (e.g. minimal|low|medium|high|xhigh). Highest priority over template defaults and inherited turn config."
+                        .to_string(),
+                ),
+            },
+        ),
+        // FORK COMMIT [SA]: optional spawn-time runtime note annotation.
+        (
+            "thread_note".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional runtime note for the spawned agent thread. If omitted, Codex auto-fills role/persona metadata."
+                        .to_string(),
+                ),
             },
         ),
     ]);
@@ -780,6 +905,39 @@ fn create_close_agent_tool() -> ToolSpec {
         },
     })
 }
+
+// FORK COMMIT OPEN [SA]: collab tool schema for runtime thread note updates.
+// Role: expose set/clear note operation without renaming the thread.
+fn create_set_thread_note_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "id".to_string(),
+            JsonSchema::String {
+                description: Some("Agent id to annotate.".to_string()),
+            },
+        ),
+        (
+            "note".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional runtime thread note. Empty/whitespace clears the note.".to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "set_thread_note".to_string(),
+        description: "Set or clear a runtime note for an existing agent thread.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["id".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+// FORK COMMIT CLOSE: collab tool schema for runtime thread note updates.
 
 fn create_test_sync_tool() -> ToolSpec {
     let barrier_properties = BTreeMap::from([
@@ -1417,6 +1575,8 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::JsReplHandler;
     use crate::tools::handlers::JsReplResetHandler;
+    use crate::tools::handlers::ListActiveAgentsHandler;
+    use crate::tools::handlers::ListAgentsHandler;
     use crate::tools::handlers::ListDirHandler;
     use crate::tools::handlers::McpHandler;
     use crate::tools::handlers::McpResourceHandler;
@@ -1579,17 +1739,26 @@ pub(crate) fn build_specs(
     builder.register_handler("view_image", view_image_handler);
 
     if config.collab_tools {
+        let list_active_agents_handler = Arc::new(ListActiveAgentsHandler);
+        let list_agents_handler = Arc::new(ListAgentsHandler);
         let collab_handler = Arc::new(CollabHandler);
+        builder.push_spec(create_list_agents_tool());
+        builder.push_spec(create_list_active_agents_tool());
         builder.push_spec(create_spawn_agent_tool());
         builder.push_spec(create_send_input_tool());
         builder.push_spec(create_resume_agent_tool());
         builder.push_spec(create_wait_tool());
         builder.push_spec(create_close_agent_tool());
+        // FORK COMMIT [SA]: register runtime thread note mutation tool in collab set.
+        builder.push_spec(create_set_thread_note_tool());
+        builder.register_handler("list_agents", list_agents_handler);
+        builder.register_handler("list_active_agents", list_active_agents_handler);
         builder.register_handler("spawn_agent", collab_handler.clone());
         builder.register_handler("send_input", collab_handler.clone());
         builder.register_handler("resume_agent", collab_handler.clone());
         builder.register_handler("wait", collab_handler.clone());
-        builder.register_handler("close_agent", collab_handler);
+        builder.register_handler("close_agent", collab_handler.clone());
+        builder.register_handler("set_thread_note", collab_handler);
     }
 
     if let Some(mcp_tools) = mcp_tools {
@@ -1626,7 +1795,7 @@ pub(crate) fn build_specs(
         }
     }
 
-    // FORK COMMIT OPEN [UC]: enforce spawned-thread allow/deny policy after all tools are assembled.
+    // FORK COMMIT OPEN [SA]: enforce spawned-thread allow/deny policy after all tools are assembled.
     builder.retain_tools_by_name(
         config.tool_allow_list.as_deref(),
         config.tool_deny_list.as_deref(),
@@ -1869,12 +2038,83 @@ mod tests {
         assert_contains_tool_names(
             &tools,
             &[
+                "list_agents",
+                "list_active_agents",
                 "spawn_agent",
                 "send_input",
                 "resume_agent",
                 "wait",
                 "close_agent",
+                "set_thread_note",
             ],
+        );
+    }
+
+    #[test]
+    fn spawn_agent_schema_exposes_template_and_override_fields() {
+        let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = create_spawn_agent_tool()
+        else {
+            panic!("spawn_agent must be a function tool");
+        };
+        let JsonSchema::Object { properties, .. } = parameters else {
+            panic!("spawn_agent parameters must be an object schema");
+        };
+
+        assert!(properties.contains_key("agent_type"));
+        assert!(properties.contains_key("agent_name"));
+        assert!(properties.contains_key("working_directory"));
+        assert!(properties.contains_key("model"));
+        assert!(properties.contains_key("reasoning_effort"));
+        assert!(properties.contains_key("thread_note"));
+    }
+
+    #[test]
+    fn list_agents_schema_supports_filter_and_expanded_options() {
+        let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = create_list_agents_tool()
+        else {
+            panic!("list_agents must be a function tool");
+        };
+        let JsonSchema::Object {
+            properties,
+            required,
+            additional_properties,
+        } = parameters
+        else {
+            panic!("list_agents parameters must be an object schema");
+        };
+
+        assert!(properties.contains_key("agent_type"));
+        assert!(properties.contains_key("expanded"));
+        assert_eq!(required, None);
+        assert_eq!(
+            additional_properties,
+            Some(AdditionalProperties::Boolean(false))
+        );
+    }
+
+    #[test]
+    fn list_active_agents_schema_supports_scope_and_visibility_flags() {
+        let ToolSpec::Function(ResponsesApiTool { parameters, .. }) =
+            create_list_active_agents_tool()
+        else {
+            panic!("list_active_agents must be a function tool");
+        };
+        let JsonSchema::Object {
+            properties,
+            required,
+            additional_properties,
+        } = parameters
+        else {
+            panic!("list_active_agents parameters must be an object schema");
+        };
+
+        assert!(properties.contains_key("scope"));
+        assert!(properties.contains_key("include_tree"));
+        assert!(properties.contains_key("include_closed"));
+        assert_eq!(required, None);
+        assert_eq!(
+            additional_properties,
+            Some(AdditionalProperties::Boolean(false))
         );
     }
 
@@ -1908,6 +2148,29 @@ mod tests {
                 .iter()
                 .any(|tool| tool.spec.name() == "list_mcp_resources")
         );
+    }
+
+    #[test]
+    fn test_build_specs_respects_glob_tool_policy_lists() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let mut features = Features::with_defaults();
+        features.enable(Feature::Collab);
+
+        let mut tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+        });
+        tools_config.apply_tool_policy(
+            Some(vec!["*agent".to_string(), "w?it".to_string()]),
+            Some(vec!["close_*".to_string()]),
+        );
+
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
+        assert_contains_tool_names(&tools, &["spawn_agent", "wait"]);
+        assert!(!tools.iter().any(|tool| tool.spec.name() == "close_agent"));
     }
 
     #[test]

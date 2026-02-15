@@ -70,12 +70,16 @@ struct StatusHistoryCell {
     model_provider: Option<String>,
     account: Option<StatusAccountDisplay>,
     thread_name: Option<String>,
+    // FORK COMMIT [SA]: runtime thread annotation shown in /status output.
+    thread_note: Option<String>,
     session_id: Option<String>,
     forked_from: Option<String>,
     token_usage: StatusTokenUsageData,
     rate_limits: StatusRateLimitData,
 }
 
+// FORK COMMIT OPEN [SA]: /status output wiring for thread_note.
+// Role: expose runtime thread annotations alongside thread_name/session metadata.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn new_status_output(
@@ -85,6 +89,7 @@ pub(crate) fn new_status_output(
     total_usage: &TokenUsage,
     session_id: &Option<ThreadId>,
     thread_name: Option<String>,
+    thread_note: Option<String>,
     forked_from: Option<ThreadId>,
     rate_limits: Option<&RateLimitSnapshotDisplay>,
     plan_type: Option<PlanType>,
@@ -101,6 +106,7 @@ pub(crate) fn new_status_output(
         total_usage,
         session_id,
         thread_name,
+        thread_note,
         forked_from,
         snapshots,
         plan_type,
@@ -119,6 +125,7 @@ pub(crate) fn new_status_output_with_rate_limits(
     total_usage: &TokenUsage,
     session_id: &Option<ThreadId>,
     thread_name: Option<String>,
+    thread_note: Option<String>,
     forked_from: Option<ThreadId>,
     rate_limits: &[RateLimitSnapshotDisplay],
     plan_type: Option<PlanType>,
@@ -135,6 +142,7 @@ pub(crate) fn new_status_output_with_rate_limits(
         total_usage,
         session_id,
         thread_name,
+        thread_note,
         forked_from,
         rate_limits,
         plan_type,
@@ -146,6 +154,7 @@ pub(crate) fn new_status_output_with_rate_limits(
 
     CompositeHistoryCell::new(vec![Box::new(command), Box::new(card)])
 }
+// FORK COMMIT CLOSE: /status output wiring for thread_note.
 
 impl StatusHistoryCell {
     #[allow(clippy::too_many_arguments)]
@@ -156,6 +165,7 @@ impl StatusHistoryCell {
         total_usage: &TokenUsage,
         session_id: &Option<ThreadId>,
         thread_name: Option<String>,
+        thread_note: Option<String>,
         forked_from: Option<ThreadId>,
         rate_limits: &[RateLimitSnapshotDisplay],
         plan_type: Option<PlanType>,
@@ -256,6 +266,7 @@ impl StatusHistoryCell {
             model_provider,
             account,
             thread_name,
+            thread_note,
             session_id,
             forked_from,
             token_usage,
@@ -436,6 +447,8 @@ impl HistoryCell for StatusHistoryCell {
             .collect();
         let mut seen: BTreeSet<String> = labels.iter().cloned().collect();
         let thread_name = self.thread_name.as_deref().filter(|name| !name.is_empty());
+        // FORK COMMIT [SA]: include runtime thread note in conditional status rows.
+        let thread_note = self.thread_note.as_deref().filter(|note| !note.is_empty());
 
         if self.model_provider.is_some() {
             push_label(&mut labels, &mut seen, "Model provider");
@@ -445,6 +458,10 @@ impl HistoryCell for StatusHistoryCell {
         }
         if thread_name.is_some() {
             push_label(&mut labels, &mut seen, "Thread name");
+        }
+        // FORK COMMIT [SA]: add label only when note is non-empty.
+        if thread_note.is_some() {
+            push_label(&mut labels, &mut seen, "Thread note");
         }
         if self.session_id.is_some() {
             push_label(&mut labels, &mut seen, "Session");
@@ -505,6 +522,10 @@ impl HistoryCell for StatusHistoryCell {
 
         if let Some(thread_name) = thread_name {
             lines.push(formatter.line("Thread name", vec![Span::from(thread_name.to_string())]));
+        }
+        // FORK COMMIT [SA]: render runtime thread note value in /status details.
+        if let Some(thread_note) = thread_note {
+            lines.push(formatter.line("Thread note", vec![Span::from(thread_note.to_string())]));
         }
         if let Some(collab_mode) = self.collaboration_mode.as_ref() {
             lines.push(formatter.line("Collaboration mode", vec![Span::from(collab_mode.clone())]));

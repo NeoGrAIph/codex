@@ -123,6 +123,12 @@ While a conversation runs, the server sends notifications:
 
 Clients should render events and, when present, surface approval requests (see next section).
 
+For sub-agent lifecycle updates inside `codex/event` background messages, the human-readable text format is:
+- `agent <role> (<agent_id>) running (<elapsed>)`
+- `agent <role> (<agent_id>) completed in <elapsed>: <preview>`
+
+The message text does not include `call_id`.
+
 ## Tool responses
 
 The `codex` and `codex-reply` tools return standard MCP `CallToolResult` payloads. For

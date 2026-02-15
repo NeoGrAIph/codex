@@ -301,6 +301,10 @@ async fn run_codex_tool_session_inner(
                     EventMsg::ThreadNameUpdated(_) => {
                         // Ignore session metadata updates in MCP tool runner.
                     }
+                    // FORK COMMIT [SA]: ignore runtime thread note metadata in MCP tool runner.
+                    EventMsg::ThreadNoteUpdated(_) => {
+                        // Ignore session metadata updates in MCP tool runner.
+                    }
                     EventMsg::AgentMessageDelta(_) => {
                         // TODO: think how we want to support this in the MCP
                     }

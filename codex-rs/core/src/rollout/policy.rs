@@ -83,6 +83,8 @@ pub(crate) fn should_persist_event_msg(ev: &EventMsg) -> bool {
         | EventMsg::RawResponseItem(_)
         | EventMsg::SessionConfigured(_)
         | EventMsg::ThreadNameUpdated(_)
+        // FORK COMMIT [SA]: thread note metadata is non-rollout state, skip persistence.
+        | EventMsg::ThreadNoteUpdated(_)
         | EventMsg::McpToolCallBegin(_)
         | EventMsg::McpToolCallEnd(_)
         | EventMsg::WebSearchBegin(_)

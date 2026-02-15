@@ -251,14 +251,19 @@ pub enum Op {
     },
 
     /// Request a single history entry identified by `log_id` + `offset`.
-    GetHistoryEntryRequest { offset: usize, log_id: u64 },
+    GetHistoryEntryRequest {
+        offset: usize,
+        log_id: u64,
+    },
 
     /// Request the list of MCP tools available across all configured servers.
     /// Reply is delivered via `EventMsg::McpListToolsResponse`.
     ListMcpTools,
 
     /// Request MCP servers to reinitialize and refresh cached tool lists.
-    RefreshMcpServers { config: McpServerRefreshConfig },
+    RefreshMcpServers {
+        config: McpServerRefreshConfig,
+    },
 
     /// Request the list of available custom prompts.
     ListCustomPrompts,
@@ -299,7 +304,14 @@ pub enum Op {
     /// Set a user-facing thread name in the persisted rollout metadata.
     /// This is a local-only operation handled by codex-core; it does not
     /// involve the model.
-    SetThreadName { name: String },
+    SetThreadName {
+        name: String,
+    },
+
+    // FORK COMMIT [SA]: update thread note metadata separately from stable thread_name.
+    SetThreadNote {
+        note: Option<String>,
+    },
 
     /// Request Codex to undo a turn (turn are stacked so it is the same effect as CMD + Z).
     Undo,
@@ -308,10 +320,14 @@ pub enum Op {
     ///
     /// This does not attempt to revert local filesystem changes. Clients are
     /// responsible for undoing any edits on disk.
-    ThreadRollback { num_turns: u32 },
+    ThreadRollback {
+        num_turns: u32,
+    },
 
     /// Request a code review from the agent.
-    Review { review_request: ReviewRequest },
+    Review {
+        review_request: ReviewRequest,
+    },
 
     /// Request to shut down codex instance.
     Shutdown,
@@ -921,6 +937,8 @@ pub enum EventMsg {
 
     /// Updated session metadata (e.g., thread name changes).
     ThreadNameUpdated(ThreadNameUpdatedEvent),
+    // FORK COMMIT [SA]: updated session metadata for dynamic thread note.
+    ThreadNoteUpdated(ThreadNoteUpdatedEvent),
 
     /// Incremental MCP startup progress updates.
     McpStartupUpdate(McpStartupUpdateEvent),
@@ -1786,7 +1804,7 @@ pub enum SubAgentSource {
     ThreadSpawn {
         parent_thread_id: ThreadId,
         depth: i32,
-        // FORK COMMIT OPEN [UC]: optional spawn metadata for fork-specific routing/policy without breaking old payloads.
+        // FORK COMMIT OPEN [SA]: optional spawn metadata for fork-specific routing/policy without breaking old payloads.
         #[serde(default)]
         agent_type: Option<String>,
         #[serde(default)]
@@ -2168,6 +2186,11 @@ pub struct TerminalInteractionEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct BackgroundEventEvent {
     pub message: String,
+    /// When true the background task that emitted this event has reached a
+    /// terminal state (completed / errored / shutdown).  The TUI uses this to
+    /// fire a desktop notification so the user knows the sub-agent finished.
+    #[serde(default)]
+    pub is_final: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -2461,6 +2484,12 @@ pub struct SessionConfiguredEvent {
     #[ts(optional)]
     pub thread_name: Option<String>,
 
+    // FORK COMMIT [SA]: expose mutable runtime thread note in session bootstrap payload.
+    /// Optional dynamic thread note for operational labeling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_note: Option<String>,
+
     /// Tell the client what model is being queried.
     pub model: String,
 
@@ -2508,6 +2537,17 @@ pub struct ThreadNameUpdatedEvent {
     #[ts(optional)]
     pub thread_name: Option<String>,
 }
+
+// FORK COMMIT OPEN [SA]: event payload for thread note updates.
+// Role: deliver dynamic per-thread annotations without mutating thread_name.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct ThreadNoteUpdatedEvent {
+    pub thread_id: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_note: Option<String>,
+}
+// FORK COMMIT CLOSE: event payload for thread note updates.
 
 /// User's decision in response to an ExecApprovalRequest.
 #[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq, Eq, Display, JsonSchema, TS)]
@@ -2928,6 +2968,7 @@ mod tests {
                 session_id: conversation_id,
                 forked_from_id: None,
                 thread_name: None,
+                thread_note: None,
                 model: "codex-mini-latest".to_string(),
                 model_provider_id: "openai".to_string(),
                 approval_policy: AskForApproval::Never,

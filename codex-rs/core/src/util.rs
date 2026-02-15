@@ -85,6 +85,21 @@ pub fn normalize_thread_name(name: &str) -> Option<String> {
     }
 }
 
+// FORK COMMIT OPEN [SA]: normalize optional runtime thread notes.
+// Role: keep note trimming/empty semantics consistent across spawn, collab tools, and app-server.
+/// Trim a thread note and return `None` when omitted or empty after trimming.
+pub fn normalize_thread_note(note: Option<&str>) -> Option<String> {
+    note.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+// FORK COMMIT CLOSE: normalize optional runtime thread notes.
+
 pub fn resume_command(thread_name: Option<&str>, thread_id: Option<ThreadId>) -> Option<String> {
     let resume_target = thread_name
         .filter(|name| !name.is_empty())
@@ -143,6 +158,16 @@ mod tests {
         assert_eq!(
             normalize_thread_name("  my thread  "),
             Some("my thread".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_thread_note_trims_and_rejects_empty() {
+        assert_eq!(normalize_thread_note(None), None);
+        assert_eq!(normalize_thread_note(Some("   ")), None);
+        assert_eq!(
+            normalize_thread_note(Some("  worker note  ")),
+            Some("worker note".to_string())
         );
     }
 

@@ -195,6 +195,7 @@ export type { TerminalInteractionEvent } from "./TerminalInteractionEvent";
 export type { TextElement } from "./TextElement";
 export type { ThreadId } from "./ThreadId";
 export type { ThreadNameUpdatedEvent } from "./ThreadNameUpdatedEvent";
+export type { ThreadNoteUpdatedEvent } from "./ThreadNoteUpdatedEvent";
 export type { ThreadRolledBackEvent } from "./ThreadRolledBackEvent";
 export type { TokenCountEvent } from "./TokenCountEvent";
 export type { TokenUsage } from "./TokenUsage";

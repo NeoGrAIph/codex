@@ -234,7 +234,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 };
                 ts_msg!(self, "{} {}", "mcp startup:".style(self.cyan), joined);
             }
-            EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
+            EventMsg::BackgroundEvent(BackgroundEventEvent { message, .. }) => {
                 ts_msg!(self, "{}", message.style(self.dimmed));
             }
             EventMsg::StreamError(StreamErrorEvent {
@@ -770,6 +770,8 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             }
             EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
             EventMsg::ThreadNameUpdated(_)
+            // FORK COMMIT [SA]: thread note updates are metadata-only for human exec output.
+            | EventMsg::ThreadNoteUpdated(_)
             | EventMsg::ExecApprovalRequest(_)
             | EventMsg::ApplyPatchApprovalRequest(_)
             | EventMsg::TerminalInteraction(_)

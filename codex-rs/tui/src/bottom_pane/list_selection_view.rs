@@ -29,6 +29,7 @@ use super::selection_popup_common::measure_rows_height;
 use super::selection_popup_common::measure_rows_height_stable_col_widths;
 use super::selection_popup_common::measure_rows_height_with_col_width_mode;
 use super::selection_popup_common::render_rows;
+use super::selection_popup_common::render_rows_single_line;
 use super::selection_popup_common::render_rows_stable_col_widths;
 use super::selection_popup_common::render_rows_with_col_width_mode;
 use unicode_width::UnicodeWidthStr;
@@ -328,6 +329,10 @@ impl ListSelectionView {
         total_width.saturating_sub(2)
     }
 
+    fn use_single_line_rows(&self) -> bool {
+        self.view_id == Some("agents_picker")
+    }
+
     fn skip_disabled_down(&mut self) {
         let len = self.visible_len();
         for _ in 0..len {
@@ -480,26 +485,30 @@ impl Renderable for ListSelectionView {
         // Build the same display rows used by the renderer so wrapping math matches.
         let rows = self.build_rows();
         let rows_width = Self::rows_width(width);
-        let rows_height = match self.col_width_mode {
-            ColumnWidthMode::AutoVisible => measure_rows_height(
-                &rows,
-                &self.state,
-                MAX_POPUP_ROWS,
-                rows_width.saturating_add(1),
-            ),
-            ColumnWidthMode::AutoAllRows => measure_rows_height_stable_col_widths(
-                &rows,
-                &self.state,
-                MAX_POPUP_ROWS,
-                rows_width.saturating_add(1),
-            ),
-            ColumnWidthMode::Fixed => measure_rows_height_with_col_width_mode(
-                &rows,
-                &self.state,
-                MAX_POPUP_ROWS,
-                rows_width.saturating_add(1),
-                ColumnWidthMode::Fixed,
-            ),
+        let rows_height = if self.use_single_line_rows() {
+            MAX_POPUP_ROWS.min(rows.len().max(1)) as u16
+        } else {
+            match self.col_width_mode {
+                ColumnWidthMode::AutoVisible => measure_rows_height(
+                    &rows,
+                    &self.state,
+                    MAX_POPUP_ROWS,
+                    rows_width.saturating_add(1),
+                ),
+                ColumnWidthMode::AutoAllRows => measure_rows_height_stable_col_widths(
+                    &rows,
+                    &self.state,
+                    MAX_POPUP_ROWS,
+                    rows_width.saturating_add(1),
+                ),
+                ColumnWidthMode::Fixed => measure_rows_height_with_col_width_mode(
+                    &rows,
+                    &self.state,
+                    MAX_POPUP_ROWS,
+                    rows_width.saturating_add(1),
+                    ColumnWidthMode::Fixed,
+                ),
+            }
         };
 
         // Subtract 4 for the padding on the left and right of the header.
@@ -605,33 +614,44 @@ impl Renderable for ListSelectionView {
                 width: rows_width.max(1),
                 height: list_area.height,
             };
-            match self.col_width_mode {
-                ColumnWidthMode::AutoVisible => render_rows(
+            if self.use_single_line_rows() {
+                render_rows_single_line(
                     render_area,
                     buf,
                     &rows,
                     &self.state,
                     render_area.height as usize,
                     "no matches",
-                ),
-                ColumnWidthMode::AutoAllRows => render_rows_stable_col_widths(
-                    render_area,
-                    buf,
-                    &rows,
-                    &self.state,
-                    render_area.height as usize,
-                    "no matches",
-                ),
-                ColumnWidthMode::Fixed => render_rows_with_col_width_mode(
-                    render_area,
-                    buf,
-                    &rows,
-                    &self.state,
-                    render_area.height as usize,
-                    "no matches",
-                    ColumnWidthMode::Fixed,
-                ),
-            };
+                );
+            } else {
+                match self.col_width_mode {
+                    ColumnWidthMode::AutoVisible => render_rows(
+                        render_area,
+                        buf,
+                        &rows,
+                        &self.state,
+                        render_area.height as usize,
+                        "no matches",
+                    ),
+                    ColumnWidthMode::AutoAllRows => render_rows_stable_col_widths(
+                        render_area,
+                        buf,
+                        &rows,
+                        &self.state,
+                        render_area.height as usize,
+                        "no matches",
+                    ),
+                    ColumnWidthMode::Fixed => render_rows_with_col_width_mode(
+                        render_area,
+                        buf,
+                        &rows,
+                        &self.state,
+                        render_area.height as usize,
+                        "no matches",
+                        ColumnWidthMode::Fixed,
+                    ),
+                };
+            }
         }
 
         if footer_area.height > 0 {

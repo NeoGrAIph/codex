@@ -550,6 +550,8 @@ pub(crate) struct ChatWidget {
     pending_status_indicator_restore: bool,
     thread_id: Option<ThreadId>,
     thread_name: Option<String>,
+    // FORK COMMIT [SA]: cached runtime thread note for status rendering and overlays.
+    thread_note: Option<String>,
     forked_from: Option<ThreadId>,
     frame_requester: FrameRequester,
     // Whether to include the initial welcome banner on session configured
@@ -1014,6 +1016,8 @@ impl ChatWidget {
         self.session_network_proxy = event.network_proxy.clone();
         self.thread_id = Some(event.session_id);
         self.thread_name = event.thread_name.clone();
+        // FORK COMMIT [SA]: bootstrap thread_note from SessionConfigured payload.
+        self.thread_note = event.thread_note.clone();
         self.forked_from = event.forked_from_id;
         self.current_rollout_path = event.rollout_path.clone();
         self.current_cwd = Some(event.cwd.clone());
@@ -1112,6 +1116,16 @@ impl ChatWidget {
             self.request_redraw();
         }
     }
+
+    // FORK COMMIT OPEN [SA]: live thread_note update handler.
+    // Role: react to EventMsg::ThreadNoteUpdated and refresh UI metadata row.
+    fn on_thread_note_updated(&mut self, event: codex_core::protocol::ThreadNoteUpdatedEvent) {
+        if self.thread_id == Some(event.thread_id) {
+            self.thread_note = event.thread_note;
+            self.request_redraw();
+        }
+    }
+    // FORK COMMIT CLOSE: live thread_note update handler.
 
     fn set_skills(&mut self, skills: Option<Vec<SkillMetadata>>) {
         self.bottom_pane.set_skills(skills);
@@ -2117,12 +2131,27 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    fn on_background_event(&mut self, message: String) {
-        debug!("BackgroundEvent: {message}");
+    // FORK COMMIT OPEN [SA]: background-event finality handling for sub-agent notifications.
+    // Role: use `is_final` to emit desktop notification only when sub-agent run is complete.
+    fn on_background_event(&mut self, event: BackgroundEventEvent) {
+        // legacy:
+        // fn on_background_event(&mut self, message: String) {
+        //     debug!("BackgroundEvent: {message}");
+        //     self.bottom_pane.ensure_status_indicator();
+        //     self.bottom_pane.set_interrupt_hint_visible(true);
+        //     self.set_status_header(message);
+        // }
+        debug!("BackgroundEvent: {}", event.message);
         self.bottom_pane.ensure_status_indicator();
         self.bottom_pane.set_interrupt_hint_visible(true);
-        self.set_status_header(message);
+        if event.is_final {
+            self.notify(Notification::SubAgentComplete {
+                message: event.message.clone(),
+            });
+        }
+        self.set_status_header(event.message);
     }
+    // FORK COMMIT CLOSE: background-event finality handling for sub-agent notifications.
 
     fn on_undo_started(&mut self, event: UndoStartedEvent) {
         self.bottom_pane.ensure_status_indicator();
@@ -2640,6 +2669,7 @@ impl ChatWidget {
             pending_status_indicator_restore: false,
             thread_id: None,
             thread_name: None,
+            thread_note: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: is_first_run,
@@ -2805,6 +2835,7 @@ impl ChatWidget {
             pending_status_indicator_restore: false,
             thread_id: None,
             thread_name: None,
+            thread_note: None,
             forked_from: None,
             saw_plan_update_this_turn: false,
             saw_plan_item_this_turn: false,
@@ -2959,6 +2990,7 @@ impl ChatWidget {
             pending_status_indicator_restore: false,
             thread_id: None,
             thread_name: None,
+            thread_note: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: false,
@@ -3878,7 +3910,9 @@ impl ChatWidget {
         for msg in events {
             if matches!(
                 msg,
-                EventMsg::SessionConfigured(_) | EventMsg::ThreadNameUpdated(_)
+                EventMsg::SessionConfigured(_)
+                    | EventMsg::ThreadNameUpdated(_)
+                    | EventMsg::ThreadNoteUpdated(_)
             ) {
                 continue;
             }
@@ -3925,6 +3959,7 @@ impl ChatWidget {
         match msg {
             EventMsg::SessionConfigured(e) => self.on_session_configured(e),
             EventMsg::ThreadNameUpdated(e) => self.on_thread_name_updated(e),
+            EventMsg::ThreadNoteUpdated(e) => self.on_thread_note_updated(e),
             EventMsg::AgentMessage(AgentMessageEvent { message }) => self.on_agent_message(message),
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
                 self.on_agent_message_delta(delta)
@@ -4020,9 +4055,7 @@ impl ChatWidget {
             EventMsg::ShutdownComplete => self.on_shutdown_complete(),
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => self.on_turn_diff(unified_diff),
             EventMsg::DeprecationNotice(ev) => self.on_deprecation_notice(ev),
-            EventMsg::BackgroundEvent(BackgroundEventEvent { message }) => {
-                self.on_background_event(message)
-            }
+            EventMsg::BackgroundEvent(ev) => self.on_background_event(ev),
             EventMsg::UndoStarted(ev) => self.on_undo_started(ev),
             EventMsg::UndoCompleted(ev) => self.on_undo_completed(ev),
             EventMsg::StreamError(StreamErrorEvent {
@@ -4251,6 +4284,8 @@ impl ChatWidget {
             total_usage,
             &self.thread_id,
             self.thread_name.clone(),
+            // FORK COMMIT [SA]: pass runtime thread_note into /status card renderer.
+            self.thread_note.clone(),
             self.forked_from,
             rate_limit_snapshots.as_slice(),
             self.plan_type,
@@ -6990,6 +7025,8 @@ impl Renderable for ChatWidget {
 
 enum Notification {
     AgentTurnComplete { response: String },
+    // FORK COMMIT [SA]: dedicated notification kind for completed sub-agent runs.
+    SubAgentComplete { message: String },
     ExecApprovalRequested { command: String },
     EditApprovalRequested { cwd: PathBuf, changes: Vec<PathBuf> },
     ElicitationRequested { server_name: String },
@@ -7001,6 +7038,10 @@ impl Notification {
             Notification::AgentTurnComplete { response } => {
                 Notification::agent_turn_preview(response)
                     .unwrap_or_else(|| "Agent turn complete".to_string())
+            }
+            // FORK COMMIT [SA]: render sub-agent completion message in desktop notification.
+            Notification::SubAgentComplete { message } => {
+                truncate_text(message, AGENT_NOTIFICATION_PREVIEW_GRAPHEMES)
             }
             Notification::ExecApprovalRequested { command } => {
                 format!("Approval requested: {}", truncate_text(command, 30))
@@ -7025,6 +7066,8 @@ impl Notification {
     fn type_name(&self) -> &str {
         match self {
             Notification::AgentTurnComplete { .. } => "agent-turn-complete",
+            // FORK COMMIT [SA]: separate notification type for per-kind filtering.
+            Notification::SubAgentComplete { .. } => "sub-agent-complete",
             Notification::ExecApprovalRequested { .. }
             | Notification::EditApprovalRequested { .. }
             | Notification::ElicitationRequested { .. } => "approval-requested",

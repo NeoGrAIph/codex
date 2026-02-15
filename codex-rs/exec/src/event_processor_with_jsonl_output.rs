@@ -120,6 +120,8 @@ impl EventProcessorWithJsonOutput {
         match &event.msg {
             protocol::EventMsg::SessionConfigured(ev) => self.handle_session_configured(ev),
             protocol::EventMsg::ThreadNameUpdated(_) => Vec::new(),
+            // FORK COMMIT [SA]: thread note updates do not emit transcript records in JSONL mode.
+            protocol::EventMsg::ThreadNoteUpdated(_) => Vec::new(),
             protocol::EventMsg::AgentMessage(ev) => self.handle_agent_message(ev),
             protocol::EventMsg::ItemCompleted(protocol::ItemCompletedEvent {
                 item: codex_protocol::items::TurnItem::Plan(item),

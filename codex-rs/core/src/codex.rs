@@ -393,6 +393,8 @@ impl Codex {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            // FORK COMMIT [SA]: initialize runtime thread note for new sessions.
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             session_source,
             dynamic_tools,
@@ -727,6 +729,9 @@ pub(crate) struct SessionConfiguration {
     codex_home: PathBuf,
     /// Optional user-facing name for the thread, updated during the session.
     thread_name: Option<String>,
+    // FORK COMMIT [SA]: mutable runtime note stored separately from stable thread_name.
+    /// Optional dynamic note for the thread, updated during the session.
+    thread_note: Option<String>,
 
     // TODO(pakrym): Remove config from here
     original_config_do_not_use: Arc<Config>,
@@ -906,7 +911,7 @@ impl Session {
             features: &per_turn_config.features,
             web_search_mode: Some(per_turn_config.web_search_mode.value()),
         });
-        // FORK COMMIT OPEN [UC]: inherit tool allow/deny policy from thread spawn source.
+        // FORK COMMIT OPEN [SA]: inherit tool allow/deny policy from thread spawn source.
         if let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             allow_list,
             deny_list,
@@ -1158,7 +1163,20 @@ impl Session {
                     None
                 }
             };
+        // FORK COMMIT OPEN [SA]: hydrate thread_note from append-only index.
+        // Role: restore runtime thread annotations when resuming existing sessions.
+        let thread_note =
+            match session_index::find_thread_note_by_id(&config.codex_home, &conversation_id).await
+            {
+                Ok(note) => note,
+                Err(err) => {
+                    warn!("Failed to read session index for thread note: {err}");
+                    None
+                }
+            };
         session_configuration.thread_name = thread_name.clone();
+        session_configuration.thread_note = thread_note.clone();
+        // FORK COMMIT CLOSE: hydrate thread_note from append-only index.
         let mut state = SessionState::new(session_configuration.clone());
         let network_proxy =
             match config.network.as_ref() {
@@ -1259,6 +1277,8 @@ impl Session {
                 session_id: conversation_id,
                 forked_from_id,
                 thread_name: session_configuration.thread_name.clone(),
+                // FORK COMMIT [SA]: bootstrap runtime thread note for UI/app-server consumers.
+                thread_note: session_configuration.thread_note.clone(),
                 model: session_configuration.collaboration_mode.model().to_string(),
                 model_provider_id: config.model_provider_id.clone(),
                 approval_policy: session_configuration.approval_policy.value(),
@@ -2090,6 +2110,51 @@ impl Session {
         rx_approve.await.unwrap_or_default()
     }
 
+    // FORK COMMIT OPEN [SA]: parent-session approval routing helper for delegated sub-agent calls.
+    // Role: request approval on the parent thread's current turn so prompts are shown in the caller session.
+    pub(crate) async fn request_command_approval_for_current_turn(
+        &self,
+        call_id: String,
+        command: Vec<String>,
+        cwd: PathBuf,
+        reason: Option<String>,
+        proposed_execpolicy_amendment: Option<ExecPolicyAmendment>,
+    ) -> CodexResult<ReviewDecision> {
+        let (has_active_turn, turn_context_from_task) = {
+            let active = self.active_turn.lock().await;
+            match active.as_ref() {
+                Some(active_turn) => {
+                    let turn_context = active_turn
+                        .tasks
+                        .first()
+                        .map(|(_, task)| Arc::clone(&task.turn_context));
+                    (true, turn_context)
+                }
+                None => (false, None),
+            }
+        };
+        if !has_active_turn {
+            return Err(CodexErr::UnsupportedOperation(
+                "cannot request approval without an active turn".to_string(),
+            ));
+        }
+        let turn_context = match turn_context_from_task {
+            Some(turn_context) => turn_context,
+            None => self.new_default_turn().await,
+        };
+        Ok(self
+            .request_command_approval(
+                turn_context.as_ref(),
+                call_id,
+                command,
+                cwd,
+                reason,
+                proposed_execpolicy_amendment,
+            )
+            .await)
+    }
+    // FORK COMMIT CLOSE: parent-session approval routing helper for delegated sub-agent calls.
+
     pub async fn request_patch_approval(
         &self,
         turn_context: &TurnContext,
@@ -2608,16 +2673,25 @@ impl Session {
         self.ensure_rollout_materialized().await;
     }
 
+    // FORK COMMIT OPEN [SA]: background event metadata for sub-agent completion notifications.
+    // Role: propagate final/non-final state so TUI can decide when to trigger desktop notifications.
     pub(crate) async fn notify_background_event(
         &self,
         turn_context: &TurnContext,
         message: impl Into<String>,
+        is_final: bool,
     ) {
+        // legacy:
+        // let event = EventMsg::BackgroundEvent(BackgroundEventEvent {
+        //     message: message.into(),
+        // });
         let event = EventMsg::BackgroundEvent(BackgroundEventEvent {
             message: message.into(),
+            is_final,
         });
         self.send_event(turn_context, event).await;
     }
+    // FORK COMMIT CLOSE: background event metadata for sub-agent completion notifications.
 
     pub(crate) async fn notify_stream_error(
         &self,
@@ -3055,6 +3129,10 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             Op::SetThreadName { name } => {
                 handlers::set_thread_name(&sess, sub.id.clone(), name).await;
             }
+            // FORK COMMIT [SA]: support runtime thread note updates from tools/app-server.
+            Op::SetThreadNote { note } => {
+                handlers::set_thread_note(&sess, sub.id.clone(), note).await;
+            }
             Op::RunUserShellCommand { command } => {
                 handlers::run_user_shell_command(
                     &sess,
@@ -3121,6 +3199,7 @@ mod handlers {
     use codex_protocol::protocol::ReviewRequest;
     use codex_protocol::protocol::SkillsListEntry;
     use codex_protocol::protocol::ThreadNameUpdatedEvent;
+    use codex_protocol::protocol::ThreadNoteUpdatedEvent;
     use codex_protocol::protocol::ThreadRolledBackEvent;
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::WarningEvent;
@@ -3771,6 +3850,69 @@ mod handlers {
         .await;
     }
 
+    // FORK COMMIT OPEN [SA]: runtime thread note mutation handler.
+    // Role: persist note updates and emit dedicated ThreadNoteUpdated events.
+    /// Persists the thread note in the session index, updates in-memory state, and emits
+    /// a `ThreadNoteUpdated` event on success.
+    ///
+    /// This appends the note to `CODEX_HOME/thread_note_index.jsonl` via `session_index::append_thread_note` for the
+    /// current `thread_id`, then updates `SessionConfiguration::thread_note`.
+    ///
+    /// Passing `None` or an empty note clears the note.
+    pub async fn set_thread_note(sess: &Arc<Session>, sub_id: String, note: Option<String>) {
+        let normalized = crate::util::normalize_thread_note(note.as_deref());
+        let persistence_enabled = {
+            let rollout = sess.services.rollout.lock().await;
+            rollout.is_some()
+        };
+        if !persistence_enabled {
+            let event = Event {
+                id: sub_id,
+                msg: EventMsg::Error(ErrorEvent {
+                    message: "Session persistence is disabled; cannot update thread note."
+                        .to_string(),
+                    codex_error_info: Some(CodexErrorInfo::Other),
+                }),
+            };
+            sess.send_event_raw(event).await;
+            return;
+        };
+
+        let codex_home = sess.codex_home().await;
+        if let Err(e) = session_index::append_thread_note(
+            &codex_home,
+            sess.conversation_id,
+            normalized.as_deref(),
+        )
+        .await
+        {
+            let event = Event {
+                id: sub_id,
+                msg: EventMsg::Error(ErrorEvent {
+                    message: format!("Failed to set thread note: {e}"),
+                    codex_error_info: Some(CodexErrorInfo::Other),
+                }),
+            };
+            sess.send_event_raw(event).await;
+            return;
+        }
+
+        {
+            let mut state = sess.state.lock().await;
+            state.session_configuration.thread_note = normalized.clone();
+        }
+
+        sess.send_event_raw(Event {
+            id: sub_id,
+            msg: EventMsg::ThreadNoteUpdated(ThreadNoteUpdatedEvent {
+                thread_id: sess.conversation_id,
+                thread_note: normalized,
+            }),
+        })
+        .await;
+    }
+    // FORK COMMIT CLOSE: runtime thread note mutation handler.
+
     pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
         sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
         sess.services
@@ -3909,7 +4051,7 @@ async fn spawn_review_thread(
     let reasoning_effort = per_turn_config.model_reasoning_effort;
     let reasoning_summary = per_turn_config.model_reasoning_summary;
     let session_source = parent_turn_context.session_source.clone();
-    // FORK COMMIT OPEN [UC]: preserve parent tool policy when creating review sub-threads.
+    // FORK COMMIT OPEN [SA]: preserve parent tool policy when creating review sub-threads.
     if let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         allow_list,
         deny_list,
@@ -6171,6 +6313,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             session_source: SessionSource::Exec,
             dynamic_tools: Vec::new(),
@@ -6261,6 +6404,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             session_source: SessionSource::Exec,
             dynamic_tools: Vec::new(),
@@ -6570,6 +6714,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             session_source: SessionSource::Exec,
             dynamic_tools: Vec::new(),
@@ -6622,6 +6767,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             session_source: SessionSource::Exec,
             dynamic_tools: Vec::new(),
@@ -6767,6 +6913,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             session_source: SessionSource::Exec,
             dynamic_tools: Vec::new(),

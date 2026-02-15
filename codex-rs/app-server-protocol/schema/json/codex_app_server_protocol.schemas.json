@@ -587,6 +587,30 @@
             },
             "method": {
               "enum": [
+                "thread/note/set"
+              ],
+              "title": "Thread/note/setRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadSetNoteParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/note/setRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/unarchive"
               ],
               "title": "Thread/unarchiveRequestMethod",
@@ -2927,6 +2951,13 @@
                 "null"
               ]
             },
+            "thread_note": {
+              "description": "Optional dynamic thread note for operational labeling.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "session_configured"
@@ -2974,6 +3005,32 @@
             "type"
           ],
           "title": "ThreadNameUpdatedEventMsg",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "thread_id": {
+              "$ref": "#/definitions/v2/ThreadId"
+            },
+            "thread_note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "thread_note_updated"
+              ],
+              "title": "ThreadNoteUpdatedEventMsgType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "thread_id",
+            "type"
+          ],
+          "title": "ThreadNoteUpdatedEventMsg",
           "type": "object"
         },
         {
@@ -3657,6 +3714,11 @@
         },
         {
           "properties": {
+            "is_final": {
+              "default": false,
+              "description": "When true the background task that emitted this event has reached a terminal state (completed / errored / shutdown).  The TUI uses this to fire a desktop notification so the user knows the sub-agent finished.",
+              "type": "boolean"
+            },
             "message": {
               "type": "string"
             },
@@ -7940,6 +8002,26 @@
             "params"
           ],
           "title": "Thread/name/updatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/note/updated"
+              ],
+              "title": "Thread/note/updatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadNoteUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/note/updatedNotification",
           "type": "object"
         },
         {
@@ -15452,6 +15534,25 @@
         "title": "ThreadNameUpdatedNotification",
         "type": "object"
       },
+      "ThreadNoteUpdatedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          },
+          "threadNote": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadNoteUpdatedNotification",
+        "type": "object"
+      },
       "ThreadReadParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -15666,6 +15767,30 @@
       "ThreadSetNameResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "ThreadSetNameResponse",
+        "type": "object"
+      },
+      "ThreadSetNoteParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadSetNoteParams",
+        "type": "object"
+      },
+      "ThreadSetNoteResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "ThreadSetNoteResponse",
         "type": "object"
       },
       "ThreadSortKey": {

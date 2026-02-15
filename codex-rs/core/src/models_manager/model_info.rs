@@ -96,7 +96,7 @@ pub(crate) fn model_info_from_slug(slug: &str) -> ModelInfo {
         experimental_supported_tools: if is_test_model {
             TEST_MODEL_EXPERIMENTAL_TOOLS
                 .iter()
-                .map(|tool| tool.to_string())
+                .map(std::string::ToString::to_string)
                 .collect()
         } else {
             Vec::new()

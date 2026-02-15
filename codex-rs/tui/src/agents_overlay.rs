@@ -9,6 +9,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use std::collections::HashMap;
 use std::time::Instant;
+use unicode_width::UnicodeWidthStr;
 
 use crate::exec_cell::spinner;
 use crate::shimmer::shimmer_spans;
@@ -30,10 +31,6 @@ pub(crate) struct AgentSummaryEntry {
     pub(crate) plan_update: Option<UpdatePlanArgs>,
     // FORK COMMIT CLOSE: plan update for AGENTS overlay.
     pub(crate) context_left_percent: Option<i64>,
-    // FORK COMMIT OPEN [SAW]: initial message preview for AGENTS overlay.
-    // Role: show the first two lines of agent task text between context and tool summary.
-    pub(crate) message_preview_lines: Vec<String>,
-    // FORK COMMIT CLOSE: initial message preview for AGENTS overlay.
     // FORK COMMIT OPEN [SAW]: last tool for SAW summary.
     // Role: surface the last tool-related event seen on this thread as a single summary line.
     pub(crate) last_tool: Option<String>,
@@ -46,6 +43,8 @@ pub(crate) fn build_agents_overlay_lines(
     now: Instant,
     animations_enabled: bool,
 ) -> Vec<Line<'static>> {
+    const LAST_TOOL_COLUMN_WIDTH: usize = 28;
+
     if agents.is_empty() {
         return vec!["No active sub-agent threads.".italic().into()];
     }
@@ -156,41 +155,25 @@ pub(crate) fn build_agents_overlay_lines(
         second_line_spans.extend(["  ".into(), entry.thread_id.to_string().dim()]);
         lines.push(second_line_spans.into());
 
-        // FORK COMMIT OPEN [SAW]: render initial message preview.
-        // Role: surface first two lines from agent message between context and tool summary.
-        if let Some(first) = entry.message_preview_lines.first() {
-            lines.push(
-                vec![
-                    format!("{indent}  ").into(),
-                    "Prompt: ".dim(),
-                    first.clone().dim(),
-                ]
-                .into(),
-            );
-            if let Some(second) = entry.message_preview_lines.get(1) {
-                // Keep continuation text visually aligned under the first prompt line value.
-                lines
-                    .push(vec![format!("{indent}           ").into(), second.clone().dim()].into());
-            }
-        }
-        // FORK COMMIT CLOSE: render initial message preview.
-
         // FORK COMMIT OPEN [SAW]: render last tool line.
         // Role: show the most recent tool-related event (or approval request) seen for this agent.
         let mut third_line_spans: Vec<Span<'static>> =
             vec![format!("{indent}  ").into(), "Last tool: ".dim()];
-        if let Some(tool) = entry.last_tool.as_ref() {
-            third_line_spans.push(tool.clone().into());
-        } else {
-            third_line_spans.push("—".dim());
+        let tool_label = entry.last_tool.clone().unwrap_or_else(|| "—".to_string());
+        let status_detail = entry
+            .status_detail
+            .clone()
+            .unwrap_or_else(|| "—".to_string());
+        let tool_width = UnicodeWidthStr::width(tool_label.as_str());
+        third_line_spans.push(tool_label.into());
+        if tool_width < LAST_TOOL_COLUMN_WIDTH {
+            third_line_spans.push(" ".repeat(LAST_TOOL_COLUMN_WIDTH - tool_width).into());
         }
-        if let Some(detail) = entry.status_detail.as_ref() {
-            // FORK COMMIT [SAW]: visually separate tool summary and status detail.
-            third_line_spans.push("  ".into());
-            third_line_spans.push("|".dim());
-            third_line_spans.push("  ".into());
-            third_line_spans.push(detail.clone().dim());
-        }
+        // FORK COMMIT [SAW]: keep separator in a stable column to reduce visual jitter.
+        third_line_spans.push("  ".into());
+        third_line_spans.push("|".dim());
+        third_line_spans.push("  ".into());
+        third_line_spans.push(status_detail.dim());
         lines.push(third_line_spans.into());
 
         if let Some(detail) = entry.last_tool_detail.as_ref() {

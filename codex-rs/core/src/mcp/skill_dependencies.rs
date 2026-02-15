@@ -231,6 +231,7 @@ pub(crate) async fn maybe_install_mcp_dependencies(
             format!(
                 "Authenticating MCP {name}... Follow instructions in your browser if prompted."
             ),
+            false,
         )
         .await;
 

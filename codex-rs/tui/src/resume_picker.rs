@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
@@ -20,6 +21,8 @@ use codex_core::ThreadSortKey;
 use codex_core::ThreadsPage;
 use codex_core::config::Config;
 use codex_core::find_thread_names_by_ids;
+// FORK COMMIT [SA]: load runtime thread notes for resume/fork list rows.
+use codex_core::find_thread_notes_by_ids;
 use codex_core::path_utils;
 use codex_protocol::ThreadId;
 use color_eyre::eyre::Result;
@@ -265,6 +268,8 @@ struct PickerState {
     action: SessionPickerAction,
     sort_key: ThreadSortKey,
     thread_name_cache: HashMap<ThreadId, Option<String>>,
+    // FORK COMMIT [SA]: cache runtime thread notes to avoid repeated index scans.
+    thread_note_cache: HashMap<ThreadId, Option<String>>,
 }
 
 struct PaginationState {
@@ -322,6 +327,8 @@ struct Row {
     preview: String,
     thread_id: Option<ThreadId>,
     thread_name: Option<String>,
+    // FORK COMMIT [SA]: per-thread runtime annotation hydrated from thread_note_index.
+    thread_note: Option<String>,
     created_at: Option<DateTime<Utc>>,
     updated_at: Option<DateTime<Utc>>,
     cwd: Option<PathBuf>,
@@ -329,9 +336,22 @@ struct Row {
 }
 
 impl Row {
-    fn display_preview(&self) -> &str {
-        self.thread_name.as_deref().unwrap_or(&self.preview)
+    // FORK COMMIT OPEN [SA]: preview composer with thread_note fallback.
+    // Role: surface runtime annotations in picker rows when no thread_name exists.
+    // legacy:
+    // fn display_preview(&self) -> &str {
+    //     self.thread_name.as_deref().unwrap_or(&self.preview)
+    // }
+    fn display_preview(&self) -> Cow<'_, str> {
+        if let Some(thread_name) = self.thread_name.as_deref() {
+            return Cow::Borrowed(thread_name);
+        }
+        if let Some(thread_note) = self.thread_note.as_deref() {
+            return Cow::Owned(format!("[{thread_note}] {}", self.preview));
+        }
+        Cow::Borrowed(&self.preview)
     }
+    // FORK COMMIT CLOSE: preview composer with thread_note fallback.
 
     fn matches_query(&self, query: &str) -> bool {
         if self.preview.to_lowercase().contains(query) {
@@ -339,6 +359,12 @@ impl Row {
         }
         if let Some(thread_name) = self.thread_name.as_ref()
             && thread_name.to_lowercase().contains(query)
+        {
+            return true;
+        }
+        // FORK COMMIT [SA]: enable search by runtime thread note.
+        if let Some(thread_note) = self.thread_note.as_ref()
+            && thread_note.to_lowercase().contains(query)
         {
             return true;
         }
@@ -382,6 +408,7 @@ impl PickerState {
             action,
             sort_key: ThreadSortKey::CreatedAt,
             thread_name_cache: HashMap::new(),
+            thread_note_cache: HashMap::new(),
         }
     }
 
@@ -512,7 +539,8 @@ impl PickerState {
                 self.pagination.loading = LoadingState::Idle;
                 let page = page.map_err(color_eyre::Report::from)?;
                 self.ingest_page(page);
-                self.update_thread_names().await;
+                // FORK COMMIT [SA]: hydrate both thread_name and thread_note metadata.
+                self.update_thread_metadata().await;
                 let completed_token = pending.search_token.or(search_token);
                 self.continue_search_if_token_matches(completed_token);
             }
@@ -551,28 +579,51 @@ impl PickerState {
         self.apply_filter();
     }
 
-    async fn update_thread_names(&mut self) {
-        let mut missing_ids = HashSet::new();
+    // FORK COMMIT OPEN [SA]: batched hydration for thread_name and thread_note metadata.
+    // Role: keep resume/fork rows up to date without per-row disk scans.
+    // legacy:
+    // async fn update_thread_names(&mut self) { ... }
+    async fn update_thread_metadata(&mut self) {
+        let mut missing_name_ids = HashSet::new();
+        let mut missing_note_ids = HashSet::new();
         for row in &self.all_rows {
             let Some(thread_id) = row.thread_id else {
                 continue;
             };
-            if self.thread_name_cache.contains_key(&thread_id) {
-                continue;
+            if !self.thread_name_cache.contains_key(&thread_id) {
+                missing_name_ids.insert(thread_id);
             }
-            missing_ids.insert(thread_id);
+            if !self.thread_note_cache.contains_key(&thread_id) {
+                missing_note_ids.insert(thread_id);
+            }
         }
 
-        if missing_ids.is_empty() {
+        if missing_name_ids.is_empty() && missing_note_ids.is_empty() {
             return;
         }
 
-        let names = find_thread_names_by_ids(&self.codex_home, &missing_ids)
-            .await
-            .unwrap_or_default();
-        for thread_id in missing_ids {
+        let names = if missing_name_ids.is_empty() {
+            HashMap::new()
+        } else {
+            find_thread_names_by_ids(&self.codex_home, &missing_name_ids)
+                .await
+                .unwrap_or_default()
+        };
+        let notes = if missing_note_ids.is_empty() {
+            HashMap::new()
+        } else {
+            find_thread_notes_by_ids(&self.codex_home, &missing_note_ids)
+                .await
+                .unwrap_or_default()
+        };
+
+        for thread_id in missing_name_ids {
             let thread_name = names.get(&thread_id).cloned();
             self.thread_name_cache.insert(thread_id, thread_name);
+        }
+        for thread_id in missing_note_ids {
+            let thread_note = notes.get(&thread_id).cloned();
+            self.thread_note_cache.insert(thread_id, thread_note);
         }
 
         let mut updated = false;
@@ -582,16 +633,23 @@ impl PickerState {
             };
             let thread_name = self.thread_name_cache.get(&thread_id).cloned().flatten();
             if row.thread_name == thread_name {
-                continue;
+                // keep going: thread_note may still change
+            } else {
+                row.thread_name = thread_name;
+                updated = true;
             }
-            row.thread_name = thread_name;
-            updated = true;
+            let thread_note = self.thread_note_cache.get(&thread_id).cloned().flatten();
+            if row.thread_note != thread_note {
+                row.thread_note = thread_note;
+                updated = true;
+            }
         }
 
         if updated {
             self.apply_filter();
         }
     }
+    // FORK COMMIT CLOSE: batched hydration for thread_name and thread_note metadata.
 
     fn apply_filter(&mut self) {
         let base_iter = self
@@ -816,6 +874,8 @@ fn head_to_row(item: &ThreadItem) -> Row {
         preview,
         thread_id: item.thread_id,
         thread_name: None,
+        // FORK COMMIT [SA]: hydrate later from thread_note index.
+        thread_note: None,
         created_at,
         updated_at,
         cwd: item.cwd.clone(),
@@ -1000,7 +1060,8 @@ fn render_list(
         if add_leading_gap {
             preview_width = preview_width.saturating_sub(2);
         }
-        let preview = truncate_text(row.display_preview(), preview_width);
+        let display_preview = row.display_preview();
+        let preview = truncate_text(display_preview.as_ref(), preview_width);
         let mut spans: Vec<Span> = vec![marker];
         if let Some(created) = created_span {
             spans.push(created);
@@ -1552,6 +1613,7 @@ mod tests {
             preview: String::from("first message"),
             thread_id: None,
             thread_name: Some(String::from("My session")),
+            thread_note: Some(String::from("agent_type=worker")),
             created_at: None,
             updated_at: None,
             cwd: None,
@@ -1559,6 +1621,40 @@ mod tests {
         };
 
         assert_eq!(row.display_preview(), "My session");
+    }
+
+    #[test]
+    fn row_display_preview_falls_back_to_thread_note() {
+        let row = Row {
+            path: PathBuf::from("/tmp/a.jsonl"),
+            preview: String::from("first message"),
+            thread_id: None,
+            thread_name: None,
+            thread_note: Some(String::from("agent_type=worker")),
+            created_at: None,
+            updated_at: None,
+            cwd: None,
+            git_branch: None,
+        };
+
+        assert_eq!(row.display_preview(), "[agent_type=worker] first message");
+    }
+
+    #[test]
+    fn row_matches_query_checks_thread_note() {
+        let row = Row {
+            path: PathBuf::from("/tmp/a.jsonl"),
+            preview: String::from("first message"),
+            thread_id: None,
+            thread_name: None,
+            thread_note: Some(String::from("agent_type=worker; agent_name=implementer")),
+            created_at: None,
+            updated_at: None,
+            cwd: None,
+            git_branch: None,
+        };
+
+        assert!(row.matches_query("implementer"));
     }
 
     #[test]
@@ -1586,6 +1682,7 @@ mod tests {
                 preview: String::from("Fix resume picker timestamps"),
                 thread_id: None,
                 thread_name: None,
+                thread_note: None,
                 created_at: Some(now - Duration::minutes(16)),
                 updated_at: Some(now - Duration::seconds(42)),
                 cwd: None,
@@ -1596,6 +1693,7 @@ mod tests {
                 preview: String::from("Investigate lazy pagination cap"),
                 thread_id: None,
                 thread_name: None,
+                thread_note: None,
                 created_at: Some(now - Duration::hours(1)),
                 updated_at: Some(now - Duration::minutes(35)),
                 cwd: None,
@@ -1606,6 +1704,7 @@ mod tests {
                 preview: String::from("Explain the codebase"),
                 thread_id: None,
                 thread_name: None,
+                thread_note: None,
                 created_at: Some(now - Duration::hours(2)),
                 updated_at: Some(now - Duration::hours(2)),
                 cwd: None,
@@ -1864,6 +1963,7 @@ mod tests {
                 preview: String::from("First message preview"),
                 thread_id: Some(id1),
                 thread_name: None,
+                thread_note: None,
                 created_at: None,
                 updated_at: Some(now - Duration::days(2)),
                 cwd: None,
@@ -1874,6 +1974,7 @@ mod tests {
                 preview: String::from("Second message preview"),
                 thread_id: Some(id2),
                 thread_name: None,
+                thread_note: None,
                 created_at: None,
                 updated_at: Some(now - Duration::days(3)),
                 cwd: None,
@@ -1887,7 +1988,7 @@ mod tests {
         state.scroll_top = 0;
         state.update_view_rows(2);
 
-        state.update_thread_names().await;
+        state.update_thread_metadata().await;
 
         let metrics = calculate_column_metrics(&state.filtered_rows, state.show_all);
 
@@ -1909,6 +2010,63 @@ mod tests {
 
         let snapshot = terminal.backend().to_string();
         assert_snapshot!("resume_picker_thread_names", snapshot);
+    }
+
+    #[tokio::test]
+    async fn update_thread_metadata_loads_thread_notes() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let note_index_path = tempdir.path().join("thread_note_index.jsonl");
+        let id = ThreadId::from_string("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").expect("thread id");
+
+        let entries = vec![
+            json!({
+                "id": id,
+                "thread_note": "agent_type=worker",
+                "updated_at": "2025-01-01T00:00:00Z",
+            }),
+            json!({
+                "id": id,
+                "thread_note": "agent_type=worker; agent_name=implementer",
+                "updated_at": "2025-01-02T00:00:00Z",
+            }),
+        ];
+        let mut out = String::new();
+        for entry in entries {
+            out.push_str(&serde_json::to_string(&entry).expect("thread note entry"));
+            out.push('\n');
+        }
+        std::fs::write(&note_index_path, out).expect("write thread note index");
+
+        let loader: PageLoader = Arc::new(|_| {});
+        let mut state = PickerState::new(
+            tempdir.path().to_path_buf(),
+            FrameRequester::test_dummy(),
+            loader,
+            String::from("openai"),
+            true,
+            None,
+            SessionPickerAction::Resume,
+        );
+
+        state.all_rows = vec![Row {
+            path: PathBuf::from("/tmp/a.jsonl"),
+            preview: String::from("First message preview"),
+            thread_id: Some(id),
+            thread_name: None,
+            thread_note: None,
+            created_at: None,
+            updated_at: None,
+            cwd: None,
+            git_branch: None,
+        }];
+        state.filtered_rows = state.all_rows.clone();
+
+        state.update_thread_metadata().await;
+
+        assert_eq!(
+            state.all_rows[0].thread_note,
+            Some("agent_type=worker; agent_name=implementer".to_string())
+        );
     }
 
     #[test]

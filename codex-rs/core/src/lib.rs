@@ -115,6 +115,8 @@ pub use rollout::find_archived_thread_path_by_id_str;
 #[deprecated(note = "use find_thread_path_by_id_str")]
 pub use rollout::find_conversation_path_by_id_str;
 pub use rollout::find_thread_name_by_id;
+// FORK COMMIT [SA]: re-export batch thread_note lookup for UI consumers.
+pub use rollout::find_thread_notes_by_ids;
 pub use rollout::find_thread_path_by_id_str;
 pub use rollout::find_thread_path_by_name_str;
 pub use rollout::list::Cursor;

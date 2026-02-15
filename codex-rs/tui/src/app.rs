@@ -86,6 +86,7 @@ use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 // FORK COMMIT [SAW]: plan update payloads for AGENTS overlay summaries.
 use codex_protocol::plan_tool::PlanItemArg;
+use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::plan_tool::UpdatePlanArgs;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -299,7 +300,7 @@ struct ThreadEventStore {
     active_reasoning_summary: Option<String>,
     // FORK COMMIT CLOSE: keep latest reasoning summary for AGENTS overlay.
     // FORK COMMIT OPEN [SAW]: keep latest plan update for AGENTS overlay.
-    // Role: persist the last update_plan payload across events until a new update arrives.
+    // Role: persist the last update_plan payload across events and clear completed plans on next turn start.
     active_plan_update: Option<UpdatePlanArgs>,
     // FORK COMMIT CLOSE: keep latest plan update for AGENTS overlay.
 }
@@ -327,6 +328,17 @@ impl ThreadEventStore {
         store
     }
 
+    // FORK COMMIT OPEN [SAW]: completed-plan predicate for AGENTS overlay resets.
+    // Role: clear stale finished plans on a new turn while preserving unfinished checklists.
+    fn has_fully_completed_plan(update: &UpdatePlanArgs) -> bool {
+        !update.plan.is_empty()
+            && update
+                .plan
+                .iter()
+                .all(|item| matches!(&item.status, StepStatus::Completed))
+    }
+    // FORK COMMIT CLOSE: completed-plan predicate for AGENTS overlay resets.
+
     fn push_event(&mut self, event: Event) {
         match &event.msg {
             EventMsg::SessionConfigured(_) => {
@@ -345,6 +357,19 @@ impl ThreadEventStore {
                 self.active_plan_update = Some(update.clone());
             }
             // FORK COMMIT CLOSE: capture update_plan payloads for AGENTS overlay.
+            // FORK COMMIT OPEN [SAW]: new-turn reset for AGENTS overlay summaries.
+            // Role: drop stale reasoning immediately and clear only fully-completed plans between tasks.
+            EventMsg::TurnStarted(_) => {
+                self.active_reasoning_summary = None;
+                if self
+                    .active_plan_update
+                    .as_ref()
+                    .is_some_and(Self::has_fully_completed_plan)
+                {
+                    self.active_plan_update = None;
+                }
+            }
+            // FORK COMMIT CLOSE: new-turn reset for AGENTS overlay summaries.
             // FORK COMMIT OPEN [SAW]: persist reasoning summary for AGENTS overlay.
             // Role: keep the last non-empty summary until an empty summary arrives.
             EventMsg::ItemStarted(started) => {
@@ -1107,33 +1132,12 @@ impl App {
             };
             let config_snapshot = thread.config_snapshot().await;
 
-            let (parent_thread_id, role) = match config_snapshot.session_source {
-                SessionSource::SubAgent(SubAgentSource::Review) => (None, "review".to_string()),
-                SessionSource::SubAgent(SubAgentSource::Compact) => (None, "compact".to_string()),
-                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                    parent_thread_id,
-                    agent_type,
-                    agent_name,
-                    ..
-                }) => {
-                    let agent_type = agent_type
-                        .map(|value| value.trim().to_string())
-                        .filter(|value| !value.is_empty());
-                    let agent_name = agent_name
-                        .map(|value| value.trim().to_string())
-                        .filter(|value| !value.is_empty());
-                    let role = match (agent_type, agent_name) {
-                        (Some(agent_type), Some(agent_name)) => {
-                            format!("{agent_type}/{agent_name}")
-                        }
-                        (Some(agent_type), None) => agent_type,
-                        (None, _) => "subagent".to_string(),
-                    };
-                    (Some(parent_thread_id), role)
-                }
-                SessionSource::SubAgent(SubAgentSource::Other(other)) => (None, other),
-                _ => continue,
-            };
+            let (parent_thread_id, role) =
+                if let SessionSource::SubAgent(_) = &config_snapshot.session_source {
+                    Self::parent_and_role_from_session_source(&config_snapshot.session_source)
+                } else {
+                    continue;
+                };
 
             let context_left_percent = snapshot.events.iter().rev().find_map(|event| {
                 if let EventMsg::TokenCount(token) = &event.msg {
@@ -1149,31 +1153,6 @@ impl App {
                     None
                 }
             });
-
-            // FORK COMMIT OPEN [SAW]: extract initial message preview for AGENTS overlay.
-            // Role: display first two lines of user task text in agent cards.
-            let message_preview_lines: Vec<String> = snapshot
-                .events
-                .iter()
-                .find_map(|event| {
-                    if let EventMsg::UserMessage(ev) = &event.msg {
-                        Some(ev.message.clone())
-                    } else {
-                        None
-                    }
-                })
-                .map(|message| {
-                    message
-                        .lines()
-                        .map(str::trim)
-                        .filter(|line| !line.is_empty())
-                        .map(|line| saw_truncate_detail(line.to_string()))
-                        .take(2)
-                        .collect()
-                })
-                .unwrap_or_default();
-            // FORK COMMIT CLOSE: extract initial message preview for AGENTS overlay.
-
             let (last_tool, last_tool_detail) = snapshot
                 .events
                 .iter()
@@ -1350,7 +1329,6 @@ impl App {
                 status_detail,
                 plan_update,
                 context_left_percent,
-                message_preview_lines,
                 last_tool,
                 last_tool_detail,
             });
@@ -1418,29 +1396,149 @@ impl App {
         //        thread_ids.sort_by_key(ToString::to_string);
          */
 
+        // FORK COMMIT OPEN [SAW]: enrich /agent picker rows with runtime metadata.
+        // Role: make thread selection human-readable by surfacing name/note/model/reasoning/status.
         let mut initial_selected_idx = None;
-        let items: Vec<SelectionItem> = thread_ids
+        struct AgentPickerRow {
+            thread_id: ThreadId,
+            role: String,
+            model: String,
+            reasoning: &'static str,
+            status_label: &'static str,
+            thread_note_value: String,
+            is_current: bool,
+        }
+        let mut items: Vec<SelectionItem> = Vec::new();
+        let mut rows: Vec<AgentPickerRow> = Vec::new();
+        for thread_id in thread_ids {
+            let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+                continue;
+            };
+            let snapshot = {
+                let store = channel.store.lock().await;
+                store.snapshot()
+            };
+            let thread = match self.server.get_thread(thread_id).await {
+                Ok(thread) => thread,
+                Err(_) => continue,
+            };
+            let config_snapshot = thread.config_snapshot().await;
+            let (_, role) =
+                Self::parent_and_role_from_session_source(&config_snapshot.session_source);
+            let session_config = snapshot.session_configured.as_ref().and_then(|event| {
+                if let EventMsg::SessionConfigured(config) = &event.msg {
+                    Some(config)
+                } else {
+                    None
+                }
+            });
+            let mut thread_name = session_config
+                .and_then(|config| config.thread_name.as_deref())
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(ToString::to_string);
+            let mut thread_note = session_config
+                .and_then(|config| config.thread_note.as_deref())
+                .map(str::trim)
+                .filter(|note| !note.is_empty())
+                .map(ToString::to_string);
+            for event in snapshot.events.iter().rev() {
+                match &event.msg {
+                    EventMsg::ThreadNameUpdated(ev)
+                        if ev.thread_id == thread_id && thread_name.is_none() =>
+                    {
+                        thread_name = ev
+                            .thread_name
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                            .map(ToString::to_string);
+                    }
+                    EventMsg::ThreadNoteUpdated(ev)
+                        if ev.thread_id == thread_id && thread_note.is_none() =>
+                    {
+                        thread_note = ev
+                            .thread_note
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|note| !note.is_empty())
+                            .map(ToString::to_string);
+                    }
+                    _ => {}
+                }
+                if thread_name.is_some() && thread_note.is_some() {
+                    break;
+                }
+            }
+            let status_label = Self::agent_status_label(&snapshot.latest_status);
+            let reasoning = Self::reasoning_label(config_snapshot.reasoning_effort);
+            let thread_note_value = thread_note.unwrap_or_else(|| "—".to_string());
+            let is_current = self.active_thread_id == Some(thread_id);
+            items.push(SelectionItem {
+                name: thread_id.to_string(),
+                description: None,
+                selected_description: None,
+                is_current,
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::SelectAgentThread(thread_id));
+                })],
+                dismiss_on_select: true,
+                search_value: Some(thread_id.to_string()),
+                ..Default::default()
+            });
+            rows.push(AgentPickerRow {
+                thread_id,
+                role,
+                model: config_snapshot.model,
+                reasoning,
+                status_label,
+                thread_note_value,
+                is_current,
+            });
+        }
+
+        let role_width = rows
             .iter()
-            .enumerate()
-            .map(|(idx, thread_id)| {
-                if self.active_thread_id == Some(*thread_id) {
-                    initial_selected_idx = Some(idx);
-                }
-                let id = *thread_id;
-                SelectionItem {
-                    name: thread_id.to_string(),
-                    is_current: self.active_thread_id == Some(*thread_id),
-                    actions: vec![Box::new(move |tx| {
-                        tx.send(AppEvent::SelectAgentThread(id));
-                    })],
-                    dismiss_on_select: true,
-                    search_value: Some(thread_id.to_string()),
-                    ..Default::default()
-                }
-            })
-            .collect();
+            .map(|row| row.role.len())
+            .max()
+            .unwrap_or(0)
+            .max(16);
+        let model_width = rows
+            .iter()
+            .map(|row| row.model.len())
+            .max()
+            .unwrap_or(0)
+            .max(20);
+
+        for (idx, row) in rows.iter().enumerate() {
+            let role_field = format!("{:<role_width$}", row.role);
+            let model_field = format!("{:<model_width$}", row.model);
+            let description = format!(
+                "{role_field}  •  {model_field}  •  {}  •  {}",
+                row.reasoning, row.status_label
+            );
+            let selected_description =
+                format!("{role_field}  •  Thread note: {}", row.thread_note_value);
+            if row.is_current {
+                initial_selected_idx = Some(idx);
+            }
+            if let Some(item) = items.get_mut(idx) {
+                item.description = Some(description);
+                item.selected_description = Some(selected_description);
+                item.is_current = row.is_current;
+                item.search_value = Some(row.thread_id.to_string());
+            }
+        }
+        // FORK COMMIT CLOSE: enrich /agent picker rows with runtime metadata.
+
+        if items.is_empty() {
+            self.chat_widget
+                .add_info_message("No agents available yet.".to_string(), None);
+            return;
+        }
 
         self.chat_widget.show_selection_view(SelectionViewParams {
+            view_id: Some("agents_picker"),
             title: Some("Agents".to_string()),
             subtitle: Some("Select a thread to focus".to_string()),
             footer_hint: Some(standard_popup_hint_line()),
@@ -1862,6 +1960,7 @@ impl App {
                     AppRunControl::Continue
                 }
             };
+            app.chat_widget.maybe_post_pending_notification(tui);
             match control {
                 AppRunControl::Continue => {}
                 AppRunControl::Exit(reason) => break reason,
@@ -3003,6 +3102,8 @@ impl App {
                 session_id: thread_id,
                 forked_from_id: None,
                 thread_name: None,
+                // FORK COMMIT [SA]: external-thread bootstrap carries optional runtime thread_note.
+                thread_note: None,
                 model: config_snapshot.model,
                 model_provider_id: config_snapshot.model_provider_id,
                 approval_policy: config_snapshot.approval_policy,
@@ -3052,6 +3153,52 @@ impl App {
             Some(ReasoningEffortConfig::High) => "high",
             Some(ReasoningEffortConfig::XHigh) => "xhigh",
             None | Some(ReasoningEffortConfig::None) => "default",
+        }
+    }
+
+    // FORK COMMIT [SAW]: normalize agent status text for compact /agent picker row descriptions.
+    fn agent_status_label(status: &AgentStatus) -> &'static str {
+        match status {
+            AgentStatus::PendingInit | AgentStatus::Running => "running",
+            AgentStatus::Completed(_) => "completed",
+            AgentStatus::Errored(_) => "errored",
+            AgentStatus::Shutdown => "shutdown",
+            AgentStatus::NotFound => "not_found",
+        }
+    }
+
+    // FORK COMMIT [SAW]: shared role extraction for AGENTS overlay and /agent picker.
+    fn parent_and_role_from_session_source(
+        session_source: &SessionSource,
+    ) -> (Option<ThreadId>, String) {
+        match session_source {
+            SessionSource::SubAgent(SubAgentSource::Review) => (None, "review".to_string()),
+            SessionSource::SubAgent(SubAgentSource::Compact) => (None, "compact".to_string()),
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                agent_type,
+                agent_name,
+                ..
+            }) => {
+                let agent_type = agent_type
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string);
+                let agent_name = agent_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string);
+                let role = match (agent_type, agent_name) {
+                    (Some(agent_type), Some(agent_name)) => format!("{agent_type}/{agent_name}"),
+                    (Some(agent_type), None) => agent_type,
+                    (None, _) => "subagent".to_string(),
+                };
+                (Some(*parent_thread_id), role)
+            }
+            SessionSource::SubAgent(SubAgentSource::Other(other)) => (None, other.clone()),
+            _ => (None, "subagent".to_string()),
         }
     }
 
@@ -3274,6 +3421,7 @@ mod tests {
     use crate::history_cell::HistoryCell;
     use crate::history_cell::UserHistoryCell;
     use crate::history_cell::new_session_info;
+    use crate::render::renderable::Renderable;
     use codex_core::CodexAuth;
     use codex_core::config::ConfigBuilder;
     use codex_core::config::ConfigOverrides;
@@ -3284,12 +3432,21 @@ mod tests {
     use codex_core::protocol::SessionConfiguredEvent;
     use codex_core::protocol::SessionSource;
     use codex_core::protocol::ThreadRolledBackEvent;
+    use codex_core::protocol::TurnStartedEvent;
     use codex_core::protocol::UserMessageEvent;
     use codex_otel::OtelManager;
     use codex_protocol::ThreadId;
+    use codex_protocol::config_types::ModeKind;
+    use codex_protocol::items::ReasoningItem;
+    use codex_protocol::items::TurnItem;
+    use codex_protocol::plan_tool::PlanItemArg;
+    use codex_protocol::plan_tool::StepStatus;
+    use codex_protocol::plan_tool::UpdatePlanArgs;
     use codex_protocol::user_input::TextElement;
     use insta::assert_snapshot;
     use pretty_assertions::assert_eq;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
     use ratatui::prelude::Line;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -3371,6 +3528,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn open_agent_picker_shows_metadata_and_full_id_fallback() -> Result<()> {
+        let mut app = make_test_app().await;
+        let named_thread = app.server.start_thread(app.config.clone()).await?;
+        let unnamed_thread = app.server.start_thread(app.config.clone()).await?;
+        app.handle_thread_created(named_thread.thread_id).await?;
+        app.handle_thread_created(unnamed_thread.thread_id).await?;
+        app.active_thread_id = Some(named_thread.thread_id);
+
+        let Some(channel) = app.thread_event_channels.get_mut(&named_thread.thread_id) else {
+            panic!("named thread channel should exist");
+        };
+        let mut store = channel.store.lock().await;
+        store.push_event(Event {
+            id: String::new(),
+            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
+                session_id: named_thread.thread_id,
+                forked_from_id: None,
+                thread_name: Some("Worker A".to_string()),
+                thread_note: Some("agent_type=worker; agent_name=implementer".to_string()),
+                model: "gpt-test".to_string(),
+                model_provider_id: "test-provider".to_string(),
+                approval_policy: AskForApproval::Never,
+                sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                cwd: PathBuf::from("/home/user/project"),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                history_log_id: 0,
+                history_entry_count: 0,
+                initial_messages: None,
+                network_proxy: None,
+                rollout_path: Some(PathBuf::new()),
+            }),
+        });
+        store.push_event(test_turn_started_event("picker-turn"));
+        drop(store);
+
+        app.open_agent_picker().await;
+
+        let popup = render_bottom_popup(&app.chat_widget, 220);
+        assert!(
+            popup.contains("Agents"),
+            "popup should include title:\n{popup}"
+        );
+        assert!(
+            popup.contains(&format!("{} (current)", named_thread.thread_id)),
+            "popup should show current thread id with marker:\n{popup}"
+        );
+        assert!(
+            popup.contains("subagent"),
+            "popup should include compact metadata description:\n{popup}"
+        );
+        assert!(
+            popup.contains("Thread note: agent_type=worker; agent_name=implementer"),
+            "selected row should include thread note:\n{popup}"
+        );
+        assert!(
+            popup.contains(&named_thread.thread_id.to_string()),
+            "selected row should include full thread id:\n{popup}"
+        );
+        assert!(
+            popup.contains(&unnamed_thread.thread_id.to_string()),
+            "unnamed row should fall back to full thread id:\n{popup}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     // FORK COMMIT OPEN [SAW]: проверка state-machine переходов Ctrl+T.
     // Роль: зафиксировать контракт цикла overlay-состояний и защитить от регрессий.
     async fn ctrl_t_overlay_action_cycles_transcript_and_agents_overlays() {
@@ -3397,6 +3620,104 @@ mod tests {
         assert_eq!(app.ctrl_t_overlay_action(), CtrlTOverlayAction::None);
     }
     // FORK COMMIT CLOSE: проверка state-machine переходов Ctrl+T.
+
+    // FORK COMMIT OPEN [SAW]: lifecycle tests for AGENTS overlay plan/reset behavior.
+    // Role: prevent stale completed plans and reasoning summaries from leaking into the next agent task.
+    fn test_plan_update(step_statuses: &[StepStatus]) -> UpdatePlanArgs {
+        let plan = step_statuses
+            .iter()
+            .enumerate()
+            .map(|(idx, status)| PlanItemArg {
+                step: format!("step-{idx}"),
+                status: status.clone(),
+            })
+            .collect();
+        UpdatePlanArgs {
+            explanation: Some("test-plan".to_string()),
+            plan,
+        }
+    }
+
+    fn test_turn_started_event(turn_id: &str) -> Event {
+        Event {
+            id: format!("turn-started-{turn_id}"),
+            msg: EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: turn_id.to_string(),
+                model_context_window: None,
+                collaboration_mode_kind: ModeKind::Default,
+            }),
+        }
+    }
+
+    fn test_reasoning_started_event(summary: &str, turn_id: &str) -> Event {
+        Event {
+            id: format!("reasoning-started-{turn_id}"),
+            msg: EventMsg::ItemStarted(codex_core::protocol::ItemStartedEvent {
+                thread_id: ThreadId::new(),
+                turn_id: turn_id.to_string(),
+                item: TurnItem::Reasoning(ReasoningItem {
+                    id: format!("reasoning-{turn_id}"),
+                    summary_text: vec![summary.to_string()],
+                    raw_content: Vec::new(),
+                }),
+            }),
+        }
+    }
+
+    #[test]
+    fn turn_started_clears_fully_completed_plan_update() {
+        let mut store = ThreadEventStore::new(32);
+        let completed_plan = test_plan_update(&[StepStatus::Completed, StepStatus::Completed]);
+        store.push_event(Event {
+            id: "plan-update-completed".to_string(),
+            msg: EventMsg::PlanUpdate(completed_plan),
+        });
+        assert!(store.active_plan_update.is_some());
+
+        store.push_event(test_turn_started_event("turn-2"));
+
+        assert!(store.active_plan_update.is_none());
+    }
+
+    #[test]
+    fn turn_started_keeps_non_completed_plan_update() {
+        let mut store = ThreadEventStore::new(32);
+        let in_progress_plan = test_plan_update(&[StepStatus::Completed, StepStatus::InProgress]);
+        store.push_event(Event {
+            id: "plan-update-in-progress".to_string(),
+            msg: EventMsg::PlanUpdate(in_progress_plan.clone()),
+        });
+        assert!(store.active_plan_update.is_some());
+
+        store.push_event(test_turn_started_event("turn-2"));
+
+        let active_plan = store
+            .active_plan_update
+            .as_ref()
+            .expect("in-progress plan should remain visible");
+        assert_eq!(active_plan.plan.len(), in_progress_plan.plan.len());
+        assert!(
+            active_plan
+                .plan
+                .iter()
+                .any(|item| matches!(&item.status, StepStatus::InProgress))
+        );
+    }
+
+    #[test]
+    fn turn_started_always_clears_reasoning_summary() {
+        let mut store = ThreadEventStore::new(32);
+        store.push_event(test_reasoning_started_event("thinking...", "turn-1"));
+        assert_eq!(
+            store.active_reasoning_summary,
+            Some("thinking...".to_string())
+        );
+
+        store.push_event(test_turn_started_event("turn-2"));
+
+        assert_eq!(store.active_reasoning_summary, None);
+    }
+    // FORK COMMIT CLOSE: lifecycle tests for AGENTS overlay plan/reset behavior.
 
     async fn make_test_app() -> App {
         let (chat_widget, app_event_tx, _rx, _op_rx) = make_chatwidget_manual_with_sender().await;
@@ -3508,6 +3829,37 @@ mod tests {
             rx,
             op_rx,
         )
+    }
+
+    fn render_bottom_popup(chat_widget: &crate::chatwidget::ChatWidget, width: u16) -> String {
+        let height = chat_widget.desired_height(width);
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        chat_widget.render(area, &mut buf);
+
+        let mut lines: Vec<String> = (0..area.height)
+            .map(|row| {
+                let mut line = String::new();
+                for col in 0..area.width {
+                    let symbol = buf[(area.x + col, area.y + row)].symbol();
+                    if symbol.is_empty() {
+                        line.push(' ');
+                    } else {
+                        line.push_str(symbol);
+                    }
+                }
+                line.trim_end().to_string()
+            })
+            .collect();
+
+        while lines.first().is_some_and(|line| line.trim().is_empty()) {
+            lines.remove(0);
+        }
+        while lines.last().is_some_and(|line| line.trim().is_empty()) {
+            lines.pop();
+        }
+
+        lines.join("\n")
     }
 
     fn test_otel_manager(config: &Config, model: &str) -> OtelManager {
@@ -3731,6 +4083,7 @@ mod tests {
                 session_id: ThreadId::new(),
                 forked_from_id: None,
                 thread_name: None,
+                thread_note: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
                 approval_policy: AskForApproval::Never,
@@ -3786,6 +4139,7 @@ mod tests {
                 session_id: base_id,
                 forked_from_id: None,
                 thread_name: None,
+                thread_note: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
                 approval_policy: AskForApproval::Never,
@@ -3835,6 +4189,7 @@ mod tests {
                 session_id,
                 forked_from_id: None,
                 thread_name: None,
+                thread_note: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
                 approval_policy: AskForApproval::Never,
@@ -3914,6 +4269,7 @@ mod tests {
                 session_id,
                 forked_from_id: None,
                 thread_name: None,
+                thread_note: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
                 approval_policy: AskForApproval::Never,
@@ -4038,6 +4394,7 @@ mod tests {
             session_id: thread_id,
             forked_from_id: None,
             thread_name: None,
+            thread_note: None,
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
             approval_policy: AskForApproval::Never,
