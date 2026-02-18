@@ -223,6 +223,9 @@ use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::js_repl::JsReplHandle;
 use crate::tools::parallel::ToolCallRuntime;
+use crate::tools::policy::build_allow_set;
+use crate::tools::policy::build_deny_set;
+use crate::tools::policy::is_tool_enabled;
 use crate::tools::sandboxing::ApprovalStore;
 use crate::tools::spec::ToolsConfig;
 use crate::tools::spec::ToolsConfigParams;
@@ -4604,6 +4607,24 @@ fn codex_apps_connector_id(tool: &crate::mcp_connection_manager::ToolInfo) -> Op
     tool.connector_id.as_deref()
 }
 
+fn filter_non_apps_mcp_tools_by_tool_policy(
+    mcp_tools: &HashMap<String, crate::mcp_connection_manager::ToolInfo>,
+    allow_list: Option<&[String]>,
+    deny_list: Option<&[String]>,
+) -> HashMap<String, crate::mcp_connection_manager::ToolInfo> {
+    let Some(allow_set) = build_allow_set(allow_list) else {
+        return HashMap::new();
+    };
+    let deny_set = build_deny_set(deny_list);
+
+    mcp_tools
+        .iter()
+        .filter(|(_, tool)| tool.server_name != CODEX_APPS_MCP_SERVER_NAME)
+        .filter(|(name, _)| is_tool_enabled(name, Some(&allow_set), &deny_set))
+        .map(|(name, tool)| (name.clone(), tool.clone()))
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 #[instrument(level = "trace",
     skip_all,
@@ -4778,6 +4799,11 @@ async fn built_tools(
             } else {
                 HashMap::new()
             };
+        selected_mcp_tools.extend(filter_non_apps_mcp_tools_by_tool_policy(
+            &mcp_tools,
+            turn_context.tools_config.tool_allow_list.as_deref(),
+            turn_context.tools_config.tool_deny_list.as_deref(),
+        ));
 
         if let Some(connectors) = connectors_for_tools.as_ref() {
             let apps_mcp_tools = filter_codex_apps_mcp_tools_only(mcp_tools, connectors);
@@ -5823,6 +5849,43 @@ mod tests {
                 "mcp__rmcp__echo".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn allowlist_mcp_glob_includes_non_apps_tools_without_search_selection() {
+        let mcp_tools = HashMap::from([
+            (
+                "mcp__codex_apps__calendar_create_event".to_string(),
+                make_mcp_tool(
+                    CODEX_APPS_MCP_SERVER_NAME,
+                    "calendar_create_event",
+                    Some("calendar"),
+                    Some("Calendar"),
+                ),
+            ),
+            (
+                "mcp__rmcp__echo".to_string(),
+                make_mcp_tool("rmcp", "echo", None, None),
+            ),
+            (
+                "mcp__rmcp__danger_exec".to_string(),
+                make_mcp_tool("rmcp", "danger_exec", None, None),
+            ),
+        ]);
+
+        let allow_list = vec!["mcp*".to_string()];
+        let deny_list = vec!["mcp__rmcp__danger*".to_string()];
+
+        let mut tool_names: Vec<String> = filter_non_apps_mcp_tools_by_tool_policy(
+            &mcp_tools,
+            Some(&allow_list),
+            Some(&deny_list),
+        )
+        .into_keys()
+        .collect();
+        tool_names.sort();
+
+        assert_eq!(tool_names, vec!["mcp__rmcp__echo".to_string()]);
     }
 
     #[tokio::test]
