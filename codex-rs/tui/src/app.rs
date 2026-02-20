@@ -1405,6 +1405,7 @@ impl App {
             model: String,
             reasoning: &'static str,
             status_label: &'static str,
+            repo_label: String,
             thread_note_value: String,
             is_current: bool,
         }
@@ -1472,6 +1473,11 @@ impl App {
             }
             let status_label = Self::agent_status_label(&snapshot.latest_status);
             let reasoning = Self::reasoning_label(config_snapshot.reasoning_effort);
+            let repo_label = if let Some(rel) = relativize_to_home(&config_snapshot.cwd) {
+                format!("~/{}", rel.display())
+            } else {
+                config_snapshot.cwd.display().to_string()
+            };
             let thread_note_value = thread_note.unwrap_or_else(|| "—".to_string());
             let is_current = self.active_thread_id == Some(thread_id);
             items.push(SelectionItem {
@@ -1492,6 +1498,7 @@ impl App {
                 model: config_snapshot.model,
                 reasoning,
                 status_label,
+                repo_label,
                 thread_note_value,
                 is_current,
             });
@@ -1514,8 +1521,8 @@ impl App {
             let role_field = format!("{:<role_width$}", row.role);
             let model_field = format!("{:<model_width$}", row.model);
             let description = format!(
-                "{role_field}  •  {model_field}  •  {}  •  {}",
-                row.reasoning, row.status_label
+                "{role_field}  •  {model_field}  •  {}  •  {}  •  {}",
+                row.reasoning, row.status_label, row.repo_label
             );
             let selected_description =
                 format!("{role_field}  •  Thread note: {}", row.thread_note_value);
@@ -3563,6 +3570,16 @@ mod tests {
         store.push_event(test_turn_started_event("picker-turn"));
         drop(store);
 
+        let expected_repo_label = {
+            let thread = app.server.get_thread(unnamed_thread.thread_id).await?;
+            let snapshot = thread.config_snapshot().await;
+            if let Some(rel) = relativize_to_home(&snapshot.cwd) {
+                format!("~/{}", rel.display())
+            } else {
+                snapshot.cwd.display().to_string()
+            }
+        };
+
         app.open_agent_picker().await;
 
         let popup = render_bottom_popup(&app.chat_widget, 220);
@@ -3589,6 +3606,10 @@ mod tests {
         assert!(
             popup.contains(&unnamed_thread.thread_id.to_string()),
             "unnamed row should fall back to full thread id:\n{popup}"
+        );
+        assert!(
+            popup.contains(&expected_repo_label),
+            "row description should include repo label at the end:\n{popup}"
         );
         Ok(())
     }

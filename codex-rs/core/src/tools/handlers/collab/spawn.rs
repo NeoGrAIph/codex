@@ -11,6 +11,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::ReviewDecision;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -55,7 +56,8 @@ pub async fn handle(
         .map(ToString::to_string);
     let spawn_cwd = requested_working_directory
         .as_ref()
-        .map(|directory| turn.resolve_path(Some(directory.clone())));
+        .map(|directory| resolve_spawn_working_directory(turn.as_ref(), directory))
+        .transpose()?;
     if let Some(spawn_cwd) = spawn_cwd.as_ref()
         && spawn_cwd != &turn.cwd
     {
@@ -422,6 +424,33 @@ pub async fn handle(
     })
 }
 
+fn resolve_spawn_working_directory(
+    turn: &TurnContext,
+    directory: &str,
+) -> Result<PathBuf, FunctionCallError> {
+    let directory = expand_home_relative_working_directory(directory, dirs::home_dir())?;
+    Ok(crate::util::resolve_path(&turn.cwd, &directory))
+}
+
+fn expand_home_relative_working_directory(
+    directory: &str,
+    home_directory: Option<PathBuf>,
+) -> Result<PathBuf, FunctionCallError> {
+    if directory == "~" || directory.starts_with("~/") {
+        let home_directory = home_directory.ok_or_else(|| {
+            FunctionCallError::RespondToModel(
+                "working_directory uses home-relative path (~), but the home directory could not be resolved".to_string(),
+            )
+        })?;
+        let suffix = directory
+            .strip_prefix("~/")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        return Ok(home_directory.join(suffix));
+    }
+    Ok(PathBuf::from(directory))
+}
+
 // FORK COMMIT OPEN [SA]: spawn-time model/effort contract validation.
 // Role: ensure spawned sessions use a model known to the current provider and valid reasoning effort.
 fn validate_spawn_model_selection(
@@ -754,6 +783,43 @@ mod tests {
             Some(
                 "agent_type=worker; agent_name=implementer; agent_description=Fast fixes"
                     .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn expand_home_relative_working_directory_expands_tilde_forms() {
+        let home = PathBuf::from("/home/test-user");
+        assert_eq!(
+            expand_home_relative_working_directory("~", Some(home.clone())),
+            Ok(home.clone())
+        );
+        assert_eq!(
+            expand_home_relative_working_directory("~/repo/camo-fleet", Some(home.clone())),
+            Ok(home.join("repo/camo-fleet"))
+        );
+        assert_eq!(
+            expand_home_relative_working_directory("nested-dir", Some(home.clone())),
+            Ok(PathBuf::from("nested-dir"))
+        );
+        assert_eq!(
+            expand_home_relative_working_directory("/tmp/work", Some(home.clone())),
+            Ok(PathBuf::from("/tmp/work"))
+        );
+        assert_eq!(
+            expand_home_relative_working_directory("~other/repo", Some(home)),
+            Ok(PathBuf::from("~other/repo"))
+        );
+    }
+
+    #[test]
+    fn expand_home_relative_working_directory_errors_without_home() {
+        let err = expand_home_relative_working_directory("~/repo/camo-fleet", None)
+            .expect_err("home-relative path should require a home directory");
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "working_directory uses home-relative path (~), but the home directory could not be resolved".to_string()
             )
         );
     }

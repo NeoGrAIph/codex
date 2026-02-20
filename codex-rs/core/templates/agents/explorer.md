@@ -44,7 +44,6 @@ deny_list:
   - mcp__directus-syrm__relations
   - mcp__directus-syrm__trigger-flow
   - mcp__n8n-mcp__n8n_code_file_write
-  - mcp__n8n-mcp__n8n_code_node_test
   - mcp__n8n-mcp__n8n_executions_delete
   - mcp__n8n-mcp__n8n_folder_create
   - mcp__n8n-mcp__n8n_folder_delete
@@ -88,7 +87,6 @@ deny_list:
   - mcp__payloadcmsmcp-sse__payload_pages_delete
   - mcp__payloadcmsmcp-sse__payload_pages_set_status
   - mcp__payloadcmsmcp-sse__payload_pages_update
-  - mcp__camofleet-mcp__camofleet_automation_screenshot
   - mcp__camofleet-mcp__camofleet_control_automation_attach
   - mcp__camofleet-mcp__camofleet_control_automation_delete
   - mcp__camofleet-mcp__camofleet_control_automation_detach
@@ -100,11 +98,6 @@ deny_list:
   - mcp__camofleet-mcp__camofleet_control_persist_storage_state
   - mcp__camofleet-mcp__camofleet_control_release_computer
   - mcp__camofleet-mcp__camofleet_control_touch_session
-  - mcp__camofleet-mcp__camofleet_live_network_clear
-  - mcp__camofleet-mcp__camofleet_network_subscribe
-  - mcp__camofleet-mcp__camofleet_network_unsubscribe
-  - mcp__camofleet-mcp__camofleet_page_action
-  - mcp__camofleet-mcp__camofleet_page_open
   - mcp__camofleet-mcp__camofleet_playwright_exec
   - mcp__camofleet-mcp__camofleet_session_create
   - mcp__camofleet-mcp__camofleet_session_release

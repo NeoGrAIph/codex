@@ -20,7 +20,9 @@ use serde_json::Value;
 
 use crate::codex::Session;
 use crate::codex::TurnContext;
+use crate::features::Feature;
 use crate::function_tool::FunctionCallError;
+use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::protocol::EventMsg;
 use crate::protocol::McpInvocation;
 use crate::protocol::McpToolCallBeginEvent;
@@ -91,6 +93,8 @@ struct ListResourcesPayload {
     resources: Vec<ResourceWithServer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    servers: Option<Vec<ServerSummary>>,
 }
 
 impl ListResourcesPayload {
@@ -104,6 +108,7 @@ impl ListResourcesPayload {
             server: Some(server),
             resources,
             next_cursor: result.next_cursor,
+            servers: None,
         }
     }
 
@@ -122,8 +127,44 @@ impl ListResourcesPayload {
             server: None,
             resources,
             next_cursor: None,
+            servers: None,
         }
     }
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ServerSummary {
+    name: String,
+    description: String,
+}
+
+fn build_apps_server_summaries(
+    resources_by_server: &HashMap<String, Vec<Resource>>,
+    configured_server_names: Vec<String>,
+) -> Vec<ServerSummary> {
+    let mut server_names: Vec<String> = resources_by_server
+        .keys()
+        .cloned()
+        .chain(configured_server_names)
+        .collect();
+    server_names.sort();
+    server_names.dedup();
+
+    server_names
+        .into_iter()
+        .map(|name| {
+            // FORK COMMIT OPEN [APPS]: Keep server-level summary visible in Apps mode even when resources are unavailable.
+            // legacy: description: String::new(),
+            let description = if name == CODEX_APPS_MCP_SERVER_NAME {
+                "Connected ChatGPT Apps MCP server.".to_string()
+            } else {
+                format!("Configured MCP server `{name}`.")
+            };
+            // FORK COMMIT CLOSE: Keep server-level summary visible in Apps mode even when resources are unavailable.
+            ServerSummary { name, description }
+        })
+        .collect()
 }
 
 #[derive(Debug, Serialize)]
@@ -283,14 +324,23 @@ async fn handle_list_resources(
                 ));
             }
 
-            let resources = session
-                .services
-                .mcp_connection_manager
-                .read()
-                .await
-                .list_all_resources()
-                .await;
-            Ok(ListResourcesPayload::from_all_servers(resources))
+            let manager = session.services.mcp_connection_manager.read().await;
+            let resources = manager.list_all_resources().await;
+            let servers = if turn.features.enabled(Feature::Apps) {
+                let mut configured_servers: Vec<String> =
+                    turn.config.mcp_servers.get().keys().cloned().collect();
+                configured_servers.push(CODEX_APPS_MCP_SERVER_NAME.to_string());
+                Some(build_apps_server_summaries(&resources, configured_servers))
+            } else {
+                None
+            };
+            let mut payload = ListResourcesPayload::from_all_servers(resources);
+            // FORK COMMIT OPEN [APPS]: Enrich list_mcp_resources with MCP server/tool metadata only when Apps feature is enabled.
+            // legacy:
+            // Ok(ListResourcesPayload::from_all_servers(resources))
+            payload.servers = servers;
+            // FORK COMMIT CLOSE: Enrich list_mcp_resources with MCP server/tool metadata only when Apps feature is enabled.
+            Ok(payload)
         }
     }
     .await;
@@ -753,6 +803,32 @@ mod tests {
                 "memo://a-1".to_string(),
                 "memo://a-2".to_string(),
                 "memo://b-1".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn build_apps_server_summaries_includes_server_descriptions() {
+        let mut resources = HashMap::new();
+        resources.insert("alpha".to_string(), vec![resource("memo://a-1", "a-1")]);
+        resources.insert("codex_apps".to_string(), Vec::new());
+
+        let summary = build_apps_server_summaries(
+            &resources,
+            vec!["alpha".to_string(), "codex_apps".to_string()],
+        );
+
+        assert_eq!(
+            summary,
+            vec![
+                ServerSummary {
+                    name: "alpha".to_string(),
+                    description: "Configured MCP server `alpha`.".to_string(),
+                },
+                ServerSummary {
+                    name: "codex_apps".to_string(),
+                    description: "Connected ChatGPT Apps MCP server.".to_string(),
+                },
             ]
         );
     }

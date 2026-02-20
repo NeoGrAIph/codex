@@ -654,7 +654,7 @@ fn create_spawn_agent_tool() -> ToolSpec {
             "working_directory".to_string(),
             JsonSchema::String {
                 description: Some(
-                    "Optional working directory override for the spawned agent thread. When it differs from the current session working directory, user approval is required."
+                    "Optional working directory for the spawned agent thread. If the target directory is inside the user's home, pass it as a home-relative path (for example, \"~/repo/project\"). If it differs from the current session working directory, user approval is required."
                         .to_string(),
                 ),
             },
