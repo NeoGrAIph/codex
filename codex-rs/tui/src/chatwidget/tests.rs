@@ -3035,6 +3035,43 @@ async fn collab_mode_shift_tab_cycles_only_when_enabled_and_idle() {
 }
 
 #[tokio::test]
+async fn collab_mode_shift_tab_shows_interactive_mode_indicator() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+
+    // Default -> Plan
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    let plan_footer = render_bottom_text(&chat, 120);
+    assert!(
+        plan_footer.contains("Plan mode"),
+        "expected Plan mode indicator in footer, got {plan_footer:?}"
+    );
+
+    // Plan -> Interactive
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    let interactive_footer = render_bottom_text(&chat, 120);
+    assert!(
+        interactive_footer.contains("Interactive mode"),
+        "expected Interactive mode indicator in footer, got {interactive_footer:?}"
+    );
+    assert!(
+        interactive_footer.contains("shift+tab to cycle"),
+        "expected cycle hint in Interactive mode footer, got {interactive_footer:?}"
+    );
+
+    chat.on_task_started();
+    let running_footer = render_bottom_text(&chat, 120);
+    assert!(
+        running_footer.contains("Interactive mode"),
+        "expected Interactive mode indicator while running, got {running_footer:?}"
+    );
+    assert!(
+        !running_footer.contains("shift+tab to cycle"),
+        "expected cycle hint to be hidden while running, got {running_footer:?}"
+    );
+}
+
+#[tokio::test]
 async fn collab_slash_command_opens_picker_and_updates_mode() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.thread_id = Some(ThreadId::new());
@@ -3897,6 +3934,27 @@ fn render_bottom_first_row(chat: &ChatWidget, width: u16) -> String {
         }
     }
     String::new()
+}
+
+fn render_bottom_text(chat: &ChatWidget, width: u16) -> String {
+    let height = chat.desired_height(width);
+    let area = Rect::new(0, 0, width, height);
+    let mut buf = Buffer::empty(area);
+    chat.render(area, &mut buf);
+
+    let mut blob = String::new();
+    for y in 0..area.height {
+        for x in 0..area.width {
+            let s = buf[(x, y)].symbol();
+            if s.is_empty() {
+                blob.push(' ');
+            } else {
+                blob.push_str(s);
+            }
+        }
+        blob.push('\n');
+    }
+    blob
 }
 
 fn render_bottom_popup(chat: &ChatWidget, width: u16) -> String {

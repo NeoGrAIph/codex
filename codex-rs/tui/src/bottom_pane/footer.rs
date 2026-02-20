@@ -75,6 +75,7 @@ pub(crate) struct FooterProps {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CollaborationModeIndicator {
     Plan,
+    Interactive,
     #[allow(dead_code)] // Hidden by current mode filtering; kept for future UI re-enablement.
     PairProgramming,
     #[allow(dead_code)] // Hidden by current mode filtering; kept for future UI re-enablement.
@@ -93,6 +94,7 @@ impl CollaborationModeIndicator {
         };
         match self {
             CollaborationModeIndicator::Plan => format!("Plan mode{suffix}"),
+            CollaborationModeIndicator::Interactive => format!("Interactive mode{suffix}"),
             CollaborationModeIndicator::PairProgramming => {
                 format!("Pair Programming mode{suffix}")
             }
@@ -104,6 +106,7 @@ impl CollaborationModeIndicator {
         let label = self.label(show_cycle_hint);
         match self {
             CollaborationModeIndicator::Plan => Span::from(label).magenta(),
+            CollaborationModeIndicator::Interactive => Span::from(label).magenta(),
             CollaborationModeIndicator::PairProgramming => Span::from(label).cyan(),
             CollaborationModeIndicator::Execute => Span::from(label).dim(),
         }
@@ -1574,6 +1577,72 @@ mod tests {
         assert!(
             screen.contains('…'),
             "status line should be truncated with ellipsis to keep mode indicator"
+        );
+    }
+
+    #[test]
+    fn interactive_mode_indicator_shows_cycle_hint_when_idle() {
+        let props = FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
+            steer_enabled: false,
+            collaboration_modes_enabled: true,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            context_window_percent: None,
+            context_window_used_tokens: None,
+            status_line_value: None,
+            status_line_enabled: false,
+        };
+
+        let screen = render_footer_with_mode_indicator(
+            120,
+            &props,
+            Some(CollaborationModeIndicator::Interactive),
+        );
+        let collapsed = screen.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            collapsed.contains("Interactive mode"),
+            "interactive mode indicator should be visible"
+        );
+        assert!(
+            collapsed.contains("shift+tab to cycle"),
+            "cycle hint should be visible while idle"
+        );
+    }
+
+    #[test]
+    fn interactive_mode_indicator_hides_cycle_hint_while_running() {
+        let props = FooterProps {
+            mode: FooterMode::ComposerEmpty,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: true,
+            steer_enabled: false,
+            collaboration_modes_enabled: true,
+            is_wsl: false,
+            quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
+            context_window_percent: None,
+            context_window_used_tokens: None,
+            status_line_value: None,
+            status_line_enabled: false,
+        };
+
+        let screen = render_footer_with_mode_indicator(
+            120,
+            &props,
+            Some(CollaborationModeIndicator::Interactive),
+        );
+        let collapsed = screen.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            collapsed.contains("Interactive mode"),
+            "interactive mode indicator should remain visible"
+        );
+        assert!(
+            !collapsed.contains("shift+tab to cycle"),
+            "cycle hint should be hidden while a task is running"
         );
     }
 
