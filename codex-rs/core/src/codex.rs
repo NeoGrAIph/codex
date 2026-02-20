@@ -162,6 +162,7 @@ use crate::proposed_plan_parser::extract_proposed_plan_text;
 use crate::protocol::AgentMessageContentDeltaEvent;
 use crate::protocol::AgentReasoningSectionBreakEvent;
 use crate::protocol::ApplyPatchApprovalRequestEvent;
+use crate::protocol::ApprovalRequestResolvedEvent;
 use crate::protocol::AskForApproval;
 use crate::protocol::BackgroundEventEvent;
 use crate::protocol::DeprecationNoticeEvent;
@@ -176,6 +177,7 @@ use crate::protocol::RateLimitSnapshot;
 use crate::protocol::ReasoningContentDeltaEvent;
 use crate::protocol::ReasoningRawContentDeltaEvent;
 use crate::protocol::RequestUserInputEvent;
+use crate::protocol::RequestUserInputResolvedEvent;
 use crate::protocol::ReviewDecision;
 use crate::protocol::SandboxPolicy;
 use crate::protocol::SessionConfiguredEvent;
@@ -2244,6 +2246,13 @@ impl Session {
         match entry {
             Some(tx_response) => {
                 tx_response.send(response).ok();
+                self.send_event_raw(Event {
+                    id: sub_id.to_string(),
+                    msg: EventMsg::RequestUserInputResolved(RequestUserInputResolvedEvent {
+                        turn_id: sub_id.to_string(),
+                    }),
+                })
+                .await;
             }
             None => {
                 warn!("No pending user input found for sub_id: {sub_id}");
@@ -2286,6 +2295,13 @@ impl Session {
         match entry {
             Some(tx_approve) => {
                 tx_approve.send(decision).ok();
+                self.send_event_raw(Event {
+                    id: approval_id.to_string(),
+                    msg: EventMsg::ApprovalRequestResolved(ApprovalRequestResolvedEvent {
+                        call_id: approval_id.to_string(),
+                    }),
+                })
+                .await;
             }
             None => {
                 warn!("No pending approval found for call_id: {approval_id}");

@@ -971,6 +971,10 @@ pub enum EventMsg {
     ExecApprovalRequest(ExecApprovalRequestEvent),
 
     RequestUserInput(RequestUserInputEvent),
+    /// Notification that a request_user_input call was resolved.
+    RequestUserInputResolved(RequestUserInputResolvedEvent),
+    /// Notification that an approval request call was resolved.
+    ApprovalRequestResolved(ApprovalRequestResolvedEvent),
 
     DynamicToolCallRequest(DynamicToolCallRequest),
 
@@ -2236,6 +2240,18 @@ pub struct StreamErrorEvent {
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct StreamInfoEvent {
     pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct RequestUserInputResolvedEvent {
+    /// Turn ID for the request_user_input prompt that was resolved.
+    pub turn_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct ApprovalRequestResolvedEvent {
+    /// Call ID for the approval prompt that was resolved.
+    pub call_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]

@@ -800,6 +800,8 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             | EventMsg::UndoStarted(_)
             | EventMsg::ThreadRolledBack(_)
             | EventMsg::RequestUserInput(_)
+            | EventMsg::RequestUserInputResolved(_)
+            | EventMsg::ApprovalRequestResolved(_)
             | EventMsg::CollabResumeBegin(_)
             | EventMsg::CollabResumeEnd(_)
             | EventMsg::DynamicToolCallRequest(_) => {}

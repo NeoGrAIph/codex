@@ -22,6 +22,15 @@ const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn request_user_input_round_trip() -> Result<()> {
+    request_user_input_round_trip_for_mode(ModeKind::Plan).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn request_user_input_round_trip_in_interactive_mode() -> Result<()> {
+    request_user_input_round_trip_for_mode(ModeKind::Interactive).await
+}
+
+async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> Result<()> {
     let codex_home = tempfile::TempDir::new()?;
     let responses = vec![
         create_request_user_input_sse_response("call1")?,
@@ -56,7 +65,7 @@ async fn request_user_input_round_trip() -> Result<()> {
             model: Some("mock-model".to_string()),
             effort: Some(ReasoningEffort::Medium),
             collaboration_mode: Some(CollaborationMode {
-                mode: ModeKind::Plan,
+                mode,
                 settings: Settings {
                     model: "mock-model".to_string(),
                     reasoning_effort: Some(ReasoningEffort::Medium),

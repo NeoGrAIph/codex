@@ -290,6 +290,14 @@ struct ThreadEventStore {
     session_configured: Option<Event>,
     buffer: VecDeque<Event>,
     user_message_ids: HashSet<String>,
+    // FORK COMMIT OPEN [SAW]: replay guard for resolved approval prompts.
+    // Role: prevent already-resolved exec/patch approvals from reappearing on thread replay.
+    resolved_approval_call_ids: HashSet<String>,
+    // FORK COMMIT CLOSE: replay guard for resolved approval prompts.
+    // FORK COMMIT OPEN [SAW]: replay guard for resolved request_user_input prompts.
+    // Role: prevent already-resolved prompts from reappearing when switching threads via /agent.
+    resolved_user_input_turn_ids: HashSet<String>,
+    // FORK COMMIT CLOSE: replay guard for resolved request_user_input prompts.
     capacity: usize,
     active: bool,
     created_at: Instant,
@@ -312,6 +320,8 @@ impl ThreadEventStore {
             session_configured: None,
             buffer: VecDeque::new(),
             user_message_ids: HashSet::new(),
+            resolved_approval_call_ids: HashSet::new(),
+            resolved_user_input_turn_ids: HashSet::new(),
             capacity,
             active: false,
             created_at: now,
@@ -351,6 +361,48 @@ impl ThreadEventStore {
                 self.session_configured = Some(event);
                 return;
             }
+            // FORK COMMIT OPEN [SAW]: compact approval lifecycle for safe replay.
+            // Role: remove resolved approval prompts from replay buffer and ignore stale reinsertions.
+            EventMsg::ApprovalRequestResolved(resolved) => {
+                let call_id = resolved.call_id.clone();
+                self.resolved_approval_call_ids.insert(call_id.clone());
+                self.buffer.retain(|queued| match &queued.msg {
+                    EventMsg::ExecApprovalRequest(request) => request.call_id != call_id,
+                    EventMsg::ApplyPatchApprovalRequest(request) => request.call_id != call_id,
+                    _ => true,
+                });
+                return;
+            }
+            EventMsg::ExecApprovalRequest(request)
+                if self.resolved_approval_call_ids.contains(&request.call_id) =>
+            {
+                return;
+            }
+            EventMsg::ApplyPatchApprovalRequest(request)
+                if self.resolved_approval_call_ids.contains(&request.call_id) =>
+            {
+                return;
+            }
+            // FORK COMMIT CLOSE: compact approval lifecycle for safe replay.
+            // FORK COMMIT OPEN [SAW]: compact request_user_input lifecycle for safe replay.
+            // Role: remove resolved prompts from replay buffer and ignore stale reinsertions.
+            EventMsg::RequestUserInputResolved(resolved) => {
+                let turn_id = resolved.turn_id.clone();
+                self.resolved_user_input_turn_ids.insert(turn_id.clone());
+                self.buffer.retain(|queued| {
+                    !matches!(
+                        &queued.msg,
+                        EventMsg::RequestUserInput(request) if request.turn_id == turn_id
+                    )
+                });
+                return;
+            }
+            EventMsg::RequestUserInput(request)
+                if self.resolved_user_input_turn_ids.contains(&request.turn_id) =>
+            {
+                return;
+            }
+            // FORK COMMIT CLOSE: compact request_user_input lifecycle for safe replay.
             // FORK COMMIT OPEN [SAW]: capture update_plan payloads for AGENTS overlay.
             // Role: store the latest plan update so AGENTS can render it under the tool line.
             EventMsg::PlanUpdate(update) => {
@@ -3432,9 +3484,15 @@ mod tests {
     use codex_core::CodexAuth;
     use codex_core::config::ConfigBuilder;
     use codex_core::config::ConfigOverrides;
+    use codex_core::protocol::ApplyPatchApprovalRequestEvent;
+    use codex_core::protocol::ApprovalRequestResolvedEvent;
     use codex_core::protocol::AskForApproval;
     use codex_core::protocol::Event;
     use codex_core::protocol::EventMsg;
+    use codex_core::protocol::ExecApprovalRequestEvent;
+    use codex_core::protocol::FileChange;
+    use codex_core::protocol::RequestUserInputEvent;
+    use codex_core::protocol::RequestUserInputResolvedEvent;
     use codex_core::protocol::SandboxPolicy;
     use codex_core::protocol::SessionConfiguredEvent;
     use codex_core::protocol::SessionSource;
@@ -3455,6 +3513,7 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::prelude::Line;
+    use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
@@ -3670,6 +3729,93 @@ mod tests {
         }
     }
 
+    fn test_request_user_input_event(turn_id: &str) -> Event {
+        Event {
+            id: format!("request-user-input-{turn_id}"),
+            msg: EventMsg::RequestUserInput(RequestUserInputEvent {
+                call_id: format!("call-{turn_id}"),
+                turn_id: turn_id.to_string(),
+                questions: Vec::new(),
+            }),
+        }
+    }
+
+    fn test_exec_approval_request_event(call_id: &str) -> Event {
+        Event {
+            id: format!("exec-approval-{call_id}"),
+            msg: EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
+                call_id: call_id.to_string(),
+                turn_id: "turn-1".to_string(),
+                command: vec!["echo".to_string(), "test".to_string()],
+                cwd: PathBuf::from("/tmp"),
+                reason: None,
+                proposed_execpolicy_amendment: None,
+                parsed_cmd: Vec::new(),
+            }),
+        }
+    }
+
+    fn test_apply_patch_approval_request_event(call_id: &str) -> Event {
+        Event {
+            id: format!("apply-patch-approval-{call_id}"),
+            msg: EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
+                call_id: call_id.to_string(),
+                turn_id: "turn-1".to_string(),
+                changes: HashMap::<PathBuf, FileChange>::new(),
+                reason: None,
+                grant_root: None,
+            }),
+        }
+    }
+
+    fn test_request_user_input_resolved_event(turn_id: &str) -> Event {
+        Event {
+            id: format!("request-user-input-resolved-{turn_id}"),
+            msg: EventMsg::RequestUserInputResolved(RequestUserInputResolvedEvent {
+                turn_id: turn_id.to_string(),
+            }),
+        }
+    }
+
+    fn test_approval_request_resolved_event(call_id: &str) -> Event {
+        Event {
+            id: format!("approval-request-resolved-{call_id}"),
+            msg: EventMsg::ApprovalRequestResolved(ApprovalRequestResolvedEvent {
+                call_id: call_id.to_string(),
+            }),
+        }
+    }
+
+    fn snapshot_contains_request_user_input(snapshot: &ThreadEventSnapshot, turn_id: &str) -> bool {
+        snapshot.events.iter().any(|event| {
+            matches!(
+                &event.msg,
+                EventMsg::RequestUserInput(request) if request.turn_id == turn_id
+            )
+        })
+    }
+
+    fn snapshot_contains_exec_approval(snapshot: &ThreadEventSnapshot, call_id: &str) -> bool {
+        snapshot.events.iter().any(|event| {
+            matches!(
+                &event.msg,
+                EventMsg::ExecApprovalRequest(request) if request.call_id == call_id
+            )
+        })
+    }
+
+    fn snapshot_contains_apply_patch_approval(
+        snapshot: &ThreadEventSnapshot,
+        call_id: &str,
+    ) -> bool {
+        snapshot.events.iter().any(|event| {
+            matches!(
+                &event.msg,
+                EventMsg::ApplyPatchApprovalRequest(request) if request.call_id == call_id
+            )
+        })
+    }
+
     fn test_reasoning_started_event(summary: &str, turn_id: &str) -> Event {
         Event {
             id: format!("reasoning-started-{turn_id}"),
@@ -3737,6 +3883,90 @@ mod tests {
         store.push_event(test_turn_started_event("turn-2"));
 
         assert_eq!(store.active_reasoning_summary, None);
+    }
+
+    #[test]
+    fn request_user_input_resolved_removes_prompt_from_snapshot() {
+        let mut store = ThreadEventStore::new(32);
+        store.push_event(test_request_user_input_event("turn-1"));
+
+        let before = store.snapshot();
+        assert!(snapshot_contains_request_user_input(&before, "turn-1"));
+
+        store.push_event(test_request_user_input_resolved_event("turn-1"));
+
+        let after = store.snapshot();
+        assert!(!snapshot_contains_request_user_input(&after, "turn-1"));
+    }
+
+    #[test]
+    fn resolved_request_user_input_ignores_stale_reinsertion() {
+        let mut store = ThreadEventStore::new(32);
+        store.push_event(test_request_user_input_resolved_event("turn-1"));
+        store.push_event(test_request_user_input_event("turn-1"));
+
+        let snapshot = store.snapshot();
+        assert!(!snapshot_contains_request_user_input(&snapshot, "turn-1"));
+    }
+
+    #[test]
+    fn unresolved_request_user_input_remains_in_snapshot() {
+        let mut store = ThreadEventStore::new(32);
+        store.push_event(test_request_user_input_event("turn-1"));
+
+        let snapshot = store.snapshot();
+        assert!(snapshot_contains_request_user_input(&snapshot, "turn-1"));
+    }
+
+    #[test]
+    fn approval_request_resolved_removes_exec_approval_from_snapshot() {
+        let mut store = ThreadEventStore::new(32);
+        store.push_event(test_exec_approval_request_event("call-1"));
+
+        let before = store.snapshot();
+        assert!(snapshot_contains_exec_approval(&before, "call-1"));
+
+        store.push_event(test_approval_request_resolved_event("call-1"));
+
+        let after = store.snapshot();
+        assert!(!snapshot_contains_exec_approval(&after, "call-1"));
+    }
+
+    #[test]
+    fn approval_request_resolved_removes_apply_patch_approval_from_snapshot() {
+        let mut store = ThreadEventStore::new(32);
+        store.push_event(test_apply_patch_approval_request_event("call-1"));
+
+        let before = store.snapshot();
+        assert!(snapshot_contains_apply_patch_approval(&before, "call-1"));
+
+        store.push_event(test_approval_request_resolved_event("call-1"));
+
+        let after = store.snapshot();
+        assert!(!snapshot_contains_apply_patch_approval(&after, "call-1"));
+    }
+
+    #[test]
+    fn resolved_approval_request_ignores_stale_reinsertion() {
+        let mut store = ThreadEventStore::new(32);
+        store.push_event(test_approval_request_resolved_event("call-1"));
+        store.push_event(test_exec_approval_request_event("call-1"));
+        store.push_event(test_apply_patch_approval_request_event("call-1"));
+
+        let snapshot = store.snapshot();
+        assert!(!snapshot_contains_exec_approval(&snapshot, "call-1"));
+        assert!(!snapshot_contains_apply_patch_approval(&snapshot, "call-1"));
+    }
+
+    #[test]
+    fn unresolved_approval_requests_remain_in_snapshot() {
+        let mut store = ThreadEventStore::new(32);
+        store.push_event(test_exec_approval_request_event("call-1"));
+        store.push_event(test_apply_patch_approval_request_event("call-2"));
+
+        let snapshot = store.snapshot();
+        assert!(snapshot_contains_exec_approval(&snapshot, "call-1"));
+        assert!(snapshot_contains_apply_patch_approval(&snapshot, "call-2"));
     }
     // FORK COMMIT CLOSE: lifecycle tests for AGENTS overlay plan/reset behavior.
 

@@ -74,6 +74,12 @@ async fn request_user_input_round_trip_resolves_pending() -> anyhow::Result<()> 
     request_user_input_round_trip_for_mode(ModeKind::Plan).await
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn request_user_input_round_trip_resolves_pending_in_interactive_mode() -> anyhow::Result<()>
+{
+    request_user_input_round_trip_for_mode(ModeKind::Interactive).await
+}
+
 async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -172,6 +178,13 @@ async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Resul
             response,
         })
         .await?;
+
+    let resolved_turn_id = wait_for_event_match(&codex, |event| match event {
+        EventMsg::RequestUserInputResolved(ev) => Some(ev.turn_id.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(resolved_turn_id, request.turn_id);
 
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 

@@ -95,6 +95,8 @@ pub(crate) fn should_persist_event_msg(ev: &EventMsg) -> bool {
         | EventMsg::ExecCommandEnd(_)
         | EventMsg::ExecApprovalRequest(_)
         | EventMsg::RequestUserInput(_)
+        | EventMsg::RequestUserInputResolved(_)
+        | EventMsg::ApprovalRequestResolved(_)
         | EventMsg::DynamicToolCallRequest(_)
         | EventMsg::ElicitationRequest(_)
         | EventMsg::ApplyPatchApprovalRequest(_)

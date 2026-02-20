@@ -3310,6 +3310,26 @@ impl ChatWidget {
                     self.add_info_message("Plan mode unavailable right now.".to_string(), None);
                 }
             }
+            SlashCommand::Interactive => {
+                if !self.collaboration_modes_enabled() {
+                    self.add_info_message(
+                        "Collaboration modes are disabled.".to_string(),
+                        Some("Enable collaboration modes to use /interactive.".to_string()),
+                    );
+                    return;
+                }
+                if let Some(mask) = collaboration_modes::mask_for_kind(
+                    self.models_manager.as_ref(),
+                    ModeKind::Interactive,
+                ) {
+                    self.set_collaboration_mask(mask);
+                } else {
+                    self.add_info_message(
+                        "Interactive mode unavailable right now.".to_string(),
+                        None,
+                    );
+                }
+            }
             SlashCommand::Collab => {
                 if !self.collaboration_modes_enabled() {
                     self.add_info_message(
@@ -3536,6 +3556,33 @@ impl ChatWidget {
             SlashCommand::Plan if !trimmed.is_empty() => {
                 self.dispatch_command(cmd);
                 if self.active_mode_kind() != ModeKind::Plan {
+                    return;
+                }
+                let Some((prepared_args, prepared_elements)) =
+                    self.bottom_pane.prepare_inline_args_submission(true)
+                else {
+                    return;
+                };
+                let user_message = UserMessage {
+                    text: prepared_args,
+                    local_images: self
+                        .bottom_pane
+                        .take_recent_submission_images_with_placeholders(),
+                    text_elements: prepared_elements,
+                    mention_bindings: self.bottom_pane.take_recent_submission_mention_bindings(),
+                };
+                if self.is_session_configured() {
+                    self.reasoning_buffer.clear();
+                    self.full_reasoning_buffer.clear();
+                    self.set_status_header(String::from("Working"));
+                    self.submit_user_message(user_message);
+                } else {
+                    self.queue_user_message(user_message);
+                }
+            }
+            SlashCommand::Interactive if !trimmed.is_empty() => {
+                self.dispatch_command(cmd);
+                if self.active_mode_kind() != ModeKind::Interactive {
                     return;
                 }
                 let Some((prepared_args, prepared_elements)) =
@@ -4030,6 +4077,10 @@ impl ChatWidget {
             EventMsg::RequestUserInput(ev) => {
                 self.on_request_user_input(ev);
             }
+            // FORK COMMIT [SAW]: lifecycle marker handled by per-thread replay store.
+            EventMsg::RequestUserInputResolved(_) => {}
+            // FORK COMMIT [SAW]: lifecycle marker handled by per-thread replay store.
+            EventMsg::ApprovalRequestResolved(_) => {}
             EventMsg::ExecCommandBegin(ev) => self.on_exec_command_begin(ev),
             EventMsg::TerminalInteraction(delta) => self.on_terminal_interaction(delta),
             EventMsg::ExecCommandOutputDelta(delta) => self.on_exec_command_output_delta(delta),
@@ -6213,7 +6264,10 @@ impl ChatWidget {
         }
         match self.active_mode_kind() {
             ModeKind::Plan => Some(CollaborationModeIndicator::Plan),
-            ModeKind::Default | ModeKind::PairProgramming | ModeKind::Execute => None,
+            ModeKind::Default
+            | ModeKind::Interactive
+            | ModeKind::PairProgramming
+            | ModeKind::Execute => None,
         }
     }
 
@@ -6238,7 +6292,7 @@ impl ChatWidget {
         }
     }
 
-    /// Cycle to the next collaboration mode variant (Plan -> Default -> Plan).
+    /// Cycle to the next collaboration mode variant.
     fn cycle_collaboration_mode(&mut self) {
         if !self.collaboration_modes_enabled() {
             return;

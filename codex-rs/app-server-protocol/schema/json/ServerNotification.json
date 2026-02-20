@@ -2158,6 +2158,50 @@
           "type": "object"
         },
         {
+          "description": "Notification that a request_user_input call was resolved.",
+          "properties": {
+            "turn_id": {
+              "description": "Turn ID for the request_user_input prompt that was resolved.",
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "request_user_input_resolved"
+              ],
+              "title": "RequestUserInputResolvedEventMsgType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "turn_id",
+            "type"
+          ],
+          "title": "RequestUserInputResolvedEventMsg",
+          "type": "object"
+        },
+        {
+          "description": "Notification that an approval request call was resolved.",
+          "properties": {
+            "call_id": {
+              "description": "Call ID for the approval prompt that was resolved.",
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "approval_request_resolved"
+              ],
+              "title": "ApprovalRequestResolvedEventMsgType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "call_id",
+            "type"
+          ],
+          "title": "ApprovalRequestResolvedEventMsg",
+          "type": "object"
+        },
+        {
           "properties": {
             "arguments": true,
             "callId": {

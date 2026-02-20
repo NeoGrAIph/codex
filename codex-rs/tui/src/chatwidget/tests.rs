@@ -3021,6 +3021,10 @@ async fn collab_mode_shift_tab_cycles_only_when_enabled_and_idle() {
     assert_eq!(chat.current_collaboration_mode(), &initial);
 
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Interactive);
+    assert_eq!(chat.current_collaboration_mode(), &initial);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
     assert_eq!(chat.current_collaboration_mode(), &initial);
 
@@ -3101,6 +3105,22 @@ async fn plan_slash_command_switches_to_plan_mode() {
 }
 
 #[tokio::test]
+async fn interactive_slash_command_switches_to_interactive_mode() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+    let initial = chat.current_collaboration_mode().clone();
+
+    chat.dispatch_command(SlashCommand::Interactive);
+
+    assert!(
+        rx.try_recv().is_err(),
+        "interactive should not emit an app event"
+    );
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Interactive);
+    assert_eq!(chat.current_collaboration_mode(), &initial);
+}
+
+#[tokio::test]
 async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
     chat.set_feature_enabled(Feature::CollaborationModes, true);
@@ -3144,6 +3164,55 @@ async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
         }
     );
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+}
+
+#[tokio::test]
+async fn interactive_slash_command_with_args_submits_prompt_in_interactive_mode() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+
+    let configured = codex_core::protocol::SessionConfiguredEvent {
+        session_id: ThreadId::new(),
+        forked_from_id: None,
+        thread_name: None,
+        thread_note: None,
+        model: "test-model".to_string(),
+        model_provider_id: "test-provider".to_string(),
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::new_read_only_policy(),
+        cwd: PathBuf::from("/home/user/project"),
+        reasoning_effort: Some(ReasoningEffortConfig::default()),
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: None,
+        network_proxy: None,
+        rollout_path: None,
+    };
+    chat.handle_codex_event(Event {
+        id: "configured".into(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
+
+    chat.bottom_pane.set_composer_text(
+        "/interactive build the feature".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let items = match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => items,
+        other => panic!("expected Op::UserTurn, got {other:?}"),
+    };
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0],
+        UserInput::Text {
+            text: "build the feature".to_string(),
+            text_elements: Vec::new(),
+        }
+    );
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Interactive);
 }
 
 #[tokio::test]

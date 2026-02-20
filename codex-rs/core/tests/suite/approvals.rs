@@ -26,6 +26,7 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_match;
 use pretty_assertions::assert_eq;
 use regex_lite::Regex;
 use serde_json::Value;
@@ -596,6 +597,15 @@ async fn expect_patch_approval(
         EventMsg::TurnComplete(_) => panic!("expected patch approval request before completion"),
         other => panic!("unexpected event: {other:?}"),
     }
+}
+
+async fn expect_approval_request_resolved(test: &TestCodex, expected_call_id: &str) {
+    let resolved_call_id = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ApprovalRequestResolved(event) => Some(event.call_id.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(resolved_call_id, expected_call_id);
 }
 
 async fn wait_for_completion_without_approval(test: &TestCodex) {
@@ -1527,6 +1537,7 @@ async fn run_scenario(scenario: &ScenarioSpec) -> Result<()> {
                     scenario.name
                 );
             }
+            let approval_call_id = approval.call_id.clone();
             test.codex
                 .submit(Op::ExecApproval {
                     id: approval.call_id,
@@ -1534,6 +1545,7 @@ async fn run_scenario(scenario: &ScenarioSpec) -> Result<()> {
                     decision: decision.clone(),
                 })
                 .await?;
+            expect_approval_request_resolved(&test, &approval_call_id).await;
             wait_for_completion(&test).await;
         }
         Outcome::PatchApproval {
@@ -1549,12 +1561,14 @@ async fn run_scenario(scenario: &ScenarioSpec) -> Result<()> {
                     scenario.name
                 );
             }
+            let approval_call_id = approval.call_id.clone();
             test.codex
                 .submit(Op::PatchApproval {
                     id: approval.call_id,
                     decision: decision.clone(),
                 })
                 .await?;
+            expect_approval_request_resolved(&test, &approval_call_id).await;
             wait_for_completion(&test).await;
         }
     }

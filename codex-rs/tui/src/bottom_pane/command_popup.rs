@@ -481,6 +481,10 @@ mod tests {
             !cmds.contains(&"plan"),
             "expected '/plan' to be hidden when collaboration modes are disabled, got {cmds:?}"
         );
+        assert!(
+            !cmds.contains(&"interactive"),
+            "expected '/interactive' to be hidden when collaboration modes are disabled, got {cmds:?}"
+        );
     }
 
     #[test]
@@ -518,6 +522,25 @@ mod tests {
         match popup.selected_item() {
             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "plan"),
             other => panic!("expected plan to be selected for exact match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interactive_command_visible_when_collaboration_modes_enabled() {
+        let mut popup = CommandPopup::new(
+            Vec::new(),
+            CommandPopupFlags {
+                collaboration_modes_enabled: true,
+                connectors_enabled: false,
+                personality_command_enabled: true,
+                windows_degraded_sandbox_active: false,
+            },
+        );
+        popup.on_composer_text_change("/interactive".to_string());
+
+        match popup.selected_item() {
+            Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "interactive"),
+            other => panic!("expected interactive to be selected for exact match, got {other:?}"),
         }
     }
 

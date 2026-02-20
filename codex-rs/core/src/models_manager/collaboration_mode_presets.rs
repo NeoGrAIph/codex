@@ -6,11 +6,13 @@ use codex_protocol::openai_models::ReasoningEffort;
 const COLLABORATION_MODE_PLAN: &str = include_str!("../../templates/collaboration_mode/plan.md");
 const COLLABORATION_MODE_DEFAULT: &str =
     include_str!("../../templates/collaboration_mode/default.md");
+const COLLABORATION_MODE_INTERACTIVE: &str =
+    include_str!("../../templates/collaboration_mode/interactive.md");
 const KNOWN_MODE_NAMES_PLACEHOLDER: &str = "{{KNOWN_MODE_NAMES}}";
 const REQUEST_USER_INPUT_AVAILABILITY_PLACEHOLDER: &str = "{{REQUEST_USER_INPUT_AVAILABILITY}}";
 
 pub(crate) fn builtin_collaboration_mode_presets() -> Vec<CollaborationModeMask> {
-    vec![plan_preset(), default_preset()]
+    vec![plan_preset(), interactive_preset(), default_preset()]
 }
 
 fn plan_preset() -> CollaborationModeMask {
@@ -29,15 +31,30 @@ fn default_preset() -> CollaborationModeMask {
         mode: Some(ModeKind::Default),
         model: None,
         reasoning_effort: None,
-        developer_instructions: Some(Some(default_mode_instructions())),
+        developer_instructions: Some(Some(mode_instructions(
+            COLLABORATION_MODE_DEFAULT,
+            ModeKind::Default,
+        ))),
     }
 }
 
-fn default_mode_instructions() -> String {
+fn interactive_preset() -> CollaborationModeMask {
+    CollaborationModeMask {
+        name: ModeKind::Interactive.display_name().to_string(),
+        mode: Some(ModeKind::Interactive),
+        model: None,
+        reasoning_effort: None,
+        developer_instructions: Some(Some(mode_instructions(
+            COLLABORATION_MODE_INTERACTIVE,
+            ModeKind::Interactive,
+        ))),
+    }
+}
+
+fn mode_instructions(template: &str, mode: ModeKind) -> String {
     let known_mode_names = format_mode_names(&TUI_VISIBLE_COLLABORATION_MODES);
-    let request_user_input_availability =
-        request_user_input_availability_message(ModeKind::Default);
-    COLLABORATION_MODE_DEFAULT
+    let request_user_input_availability = request_user_input_availability_message(mode);
+    template
         .replace(KNOWN_MODE_NAMES_PLACEHOLDER, &known_mode_names)
         .replace(
             REQUEST_USER_INPUT_AVAILABILITY_PLACEHOLDER,
@@ -74,25 +91,39 @@ mod tests {
     #[test]
     fn preset_names_use_mode_display_names() {
         assert_eq!(plan_preset().name, ModeKind::Plan.display_name());
+        assert_eq!(
+            interactive_preset().name,
+            ModeKind::Interactive.display_name()
+        );
         assert_eq!(default_preset().name, ModeKind::Default.display_name());
     }
 
     #[test]
-    fn default_mode_instructions_replace_mode_names_placeholder() {
+    fn mode_instructions_replace_mode_names_placeholder() {
         let default_instructions = default_preset()
             .developer_instructions
             .expect("default preset should include instructions")
             .expect("default instructions should be set");
+        let interactive_instructions = interactive_preset()
+            .developer_instructions
+            .expect("interactive preset should include instructions")
+            .expect("interactive instructions should be set");
 
         assert!(!default_instructions.contains(KNOWN_MODE_NAMES_PLACEHOLDER));
         assert!(!default_instructions.contains(REQUEST_USER_INPUT_AVAILABILITY_PLACEHOLDER));
+        assert!(!interactive_instructions.contains(KNOWN_MODE_NAMES_PLACEHOLDER));
+        assert!(!interactive_instructions.contains(REQUEST_USER_INPUT_AVAILABILITY_PLACEHOLDER));
 
         let known_mode_names = format_mode_names(&TUI_VISIBLE_COLLABORATION_MODES);
         let expected_snippet = format!("Known mode names are {known_mode_names}.");
         assert!(default_instructions.contains(&expected_snippet));
+        assert!(interactive_instructions.contains(&expected_snippet));
 
-        let expected_availability_message =
-            request_user_input_availability_message(ModeKind::Default);
-        assert!(default_instructions.contains(&expected_availability_message));
+        let default_availability = request_user_input_availability_message(ModeKind::Default);
+        assert!(default_instructions.contains(&default_availability));
+
+        let interactive_availability =
+            request_user_input_availability_message(ModeKind::Interactive);
+        assert!(interactive_instructions.contains(&interactive_availability));
     }
 }
