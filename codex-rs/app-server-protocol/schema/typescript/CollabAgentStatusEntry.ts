@@ -18,6 +18,10 @@ agent_nickname?: string | null,
  */
 agent_role?: string | null, 
 /**
+ * Optional user-facing note assigned to the agent thread.
+ */
+thread_note?: string | null, 
+/**
  * Last known status of the agent.
  */
 status: AgentStatus, };

@@ -567,6 +567,7 @@ impl UnifiedExecProcessManager {
         let env = apply_unified_exec_env(create_env(
             &context.turn.shell_environment_policy,
             Some(context.session.conversation_id),
+            context.turn.thread_note.as_deref(),
         ));
         let mut orchestrator = ToolOrchestrator::new();
         let mut runtime = UnifiedExecRuntime::new(self);
