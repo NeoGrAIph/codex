@@ -3,6 +3,7 @@
 node_modules
 .pnpm-store
 .pnpm-debug.log
+Cargo.lock
 
 # Keep pnpm-lock.yaml
 !pnpm-lock.yaml
@@ -90,4 +91,3 @@ CHANGELOG.ignore.md
 # Python bytecode files
 __pycache__/
 *.pyc
-
