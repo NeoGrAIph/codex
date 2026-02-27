@@ -28,6 +28,18 @@ In the codex-rs folder where the rust code lives:
 - When API contracts or wire behavior change, update user/developer-facing docs in the same change set (at minimum `app-server/README.md` when app-server API is affected).
 - Keep documentation centralized and consistent: update the relevant feature and API docs instead of scattering duplicate notes across unrelated files.
 
+## Upstream Porting Conflict Policy (Required)
+
+- When porting fork commits onto a newer upstream release, resolve conflicts in source-of-truth files first (`src/protocol/*.rs`, runtime handlers, exhaustive `match` arms, and imports).
+- Never resolve generated schema/type files by choosing `ours` or `theirs` wholesale.
+- Preserve both feature sets during conflict resolution:
+  - fork-introduced behavior,
+  - upstream behavior already present in the target release.
+- After resolving source-of-truth conflicts, regenerate generated artifacts using project commands (for app-server protocol: `just write-app-server-schema`).
+- Before finishing, verify there are no conflict markers and no wire-contract regressions (methods/events/notifications dropped unintentionally).
+- Run minimal validation for the touched scope (formatting, target build, and relevant crate tests).
+- If there is a tradeoff between "minimal diff" and preserving upstream behavior, preserving behavior is mandatory.
+
 Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, run the tests:
 
 1. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `cargo test -p codex-tui`.
