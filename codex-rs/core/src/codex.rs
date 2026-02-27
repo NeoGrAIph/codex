@@ -256,6 +256,10 @@ use crate::tools::network_approval::NetworkApprovalService;
 use crate::tools::network_approval::build_blocked_request_observer;
 use crate::tools::network_approval::build_network_policy_decider;
 use crate::tools::parallel::ToolCallRuntime;
+use crate::tools::policy::build_allow_set;
+use crate::tools::policy::build_deny_set;
+use crate::tools::policy::is_tool_enabled;
+use crate::tools::policy::normalize_tool_policy_list;
 use crate::tools::sandboxing::ApprovalStore;
 use crate::tools::spec::ToolsConfig;
 use crate::tools::spec::ToolsConfigParams;
@@ -5497,6 +5501,43 @@ fn codex_apps_connector_id(tool: &crate::mcp_connection_manager::ToolInfo) -> Op
     tool.connector_id.as_deref()
 }
 
+fn thread_spawn_tool_policy(
+    session_source: &SessionSource,
+) -> (Option<Vec<String>>, Option<Vec<String>>) {
+    if let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        allow_list,
+        deny_list,
+        ..
+    }) = session_source
+    {
+        (
+            normalize_tool_policy_list(allow_list.as_deref()),
+            normalize_tool_policy_list(deny_list.as_deref()),
+        )
+    } else {
+        (None, None)
+    }
+}
+
+fn filter_non_apps_mcp_tools_by_tool_policy(
+    mcp_tools: HashMap<String, crate::mcp_connection_manager::ToolInfo>,
+    allow_list: Option<&[String]>,
+    deny_list: Option<&[String]>,
+) -> HashMap<String, crate::mcp_connection_manager::ToolInfo> {
+    let allow_set = build_allow_set(allow_list);
+    let deny_set = build_deny_set(deny_list);
+
+    mcp_tools
+        .into_iter()
+        .filter(|(name, tool)| {
+            if tool.server_name == CODEX_APPS_MCP_SERVER_NAME {
+                return true;
+            }
+            is_tool_enabled(name, allow_set.as_deref(), &deny_set)
+        })
+        .collect()
+}
+
 fn build_prompt(
     input: Vec<ResponseItem>,
     router: &ToolRouter,
@@ -5679,6 +5720,8 @@ async fn built_tools(
         let skill_name_counts_lower = skills_outcome.map_or_else(HashMap::new, |outcome| {
             build_skill_name_counts(&outcome.skills, &outcome.disabled_paths).1
         });
+        let (tool_allow_list, tool_deny_list) =
+            thread_spawn_tool_policy(&turn_context.session_source);
 
         let explicitly_enabled = filter_connectors_for_input(
             connectors,
@@ -5697,6 +5740,11 @@ async fn built_tools(
             &mcp_tools,
             explicitly_enabled.as_ref(),
         ));
+        selected_mcp_tools = filter_non_apps_mcp_tools_by_tool_policy(
+            selected_mcp_tools,
+            tool_allow_list.as_deref(),
+            tool_deny_list.as_deref(),
+        );
 
         mcp_tools =
             connectors::filter_codex_apps_tools_by_policy(selected_mcp_tools, &turn_context.config);
@@ -7088,6 +7136,86 @@ mod tests {
         let mut tool_names: Vec<String> = selected_mcp_tools.into_keys().collect();
         tool_names.sort();
         assert_eq!(tool_names, vec!["mcp__rmcp__echo".to_string()]);
+    }
+
+    #[test]
+    fn non_app_mcp_tools_policy_enforces_allow_and_deny_globs() {
+        let mcp_tools = HashMap::from([
+            (
+                "mcp__codex_apps__calendar_create_event".to_string(),
+                make_mcp_tool(
+                    CODEX_APPS_MCP_SERVER_NAME,
+                    "calendar_create_event",
+                    Some("calendar"),
+                    Some("Calendar"),
+                ),
+            ),
+            (
+                "mcp__rmcp__echo".to_string(),
+                make_mcp_tool("rmcp", "echo", None, None),
+            ),
+            (
+                "mcp__rmcp__danger_exec".to_string(),
+                make_mcp_tool("rmcp", "danger_exec", None, None),
+            ),
+        ]);
+        let allow_list = vec!["mcp__rmcp__*".to_string()];
+        let deny_list = vec!["mcp__rmcp__danger*".to_string()];
+
+        let mut tool_names: Vec<String> = filter_non_apps_mcp_tools_by_tool_policy(
+            mcp_tools,
+            Some(&allow_list),
+            Some(&deny_list),
+        )
+        .into_keys()
+        .collect();
+        tool_names.sort();
+
+        assert_eq!(
+            tool_names,
+            vec![
+                "mcp__codex_apps__calendar_create_event".to_string(),
+                "mcp__rmcp__echo".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn non_app_mcp_tools_policy_uses_deny_when_allow_absent() {
+        let mcp_tools = HashMap::from([
+            (
+                "mcp__codex_apps__calendar_create_event".to_string(),
+                make_mcp_tool(
+                    CODEX_APPS_MCP_SERVER_NAME,
+                    "calendar_create_event",
+                    Some("calendar"),
+                    Some("Calendar"),
+                ),
+            ),
+            (
+                "mcp__rmcp__echo".to_string(),
+                make_mcp_tool("rmcp", "echo", None, None),
+            ),
+            (
+                "mcp__rmcp__danger_exec".to_string(),
+                make_mcp_tool("rmcp", "danger_exec", None, None),
+            ),
+        ]);
+        let deny_list = vec!["mcp__rmcp__danger*".to_string()];
+
+        let mut tool_names: Vec<String> =
+            filter_non_apps_mcp_tools_by_tool_policy(mcp_tools, None, Some(&deny_list))
+                .into_keys()
+                .collect();
+        tool_names.sort();
+
+        assert_eq!(
+            tool_names,
+            vec![
+                "mcp__codex_apps__calendar_create_event".to_string(),
+                "mcp__rmcp__echo".to_string(),
+            ]
+        );
     }
 
     #[test]

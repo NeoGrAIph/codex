@@ -74,6 +74,17 @@
 
 Итог: обогащение метаданных при выдаче thread summaries не затирает policy-контекст.
 
+### 4) Runtime enforcement for non-app MCP tools in Apps mode
+
+Дополнительный bugfix (`3ce86025b`, адаптированный под `rust-v0.106.0`) включает фактическое применение
+`allow_list` / `deny_list` к non-app MCP инструментам при сборке toolset в Apps mode:
+
+- фильтрация применяется только к non-app MCP (`mcp__<server>__*`, кроме `codex_apps`);
+- `deny_list` имеет приоритет над `allow_list`;
+- если `allow_list` отсутствует, разрешаются все non-app инструменты, которые не заблокированы deny;
+- wildcard-шаблоны `*` и `?` поддерживаются;
+- policy для `codex_apps` инструментов по-прежнему определяется connector-политикой и не переопределяется этим шагом.
+
 ## Compatibility guarantees
 
 - Legacy входной payload с `agent_type` (совместимость добавлена ранее, в `0f9eed3a6`) поддерживается и маппится в `agent_role`.
@@ -106,3 +117,4 @@
 
 - 2026-02-27: Initial document added for commit `935e4739d` (`ThreadSpawn contract hardening`, protocol and metadata propagation).
 - 2026-02-27: Corrected historical note for backward compatibility (`agent_type` alias introduced in `0f9eed3a6`) and fixed `depth` type to `i32`.
+- 2026-02-27: Documented runtime non-app MCP allow/deny enforcement in Apps mode for Stage 1 bugfix (`3ce86025b`, adapted to `rust-v0.106.0`).
