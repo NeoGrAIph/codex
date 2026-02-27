@@ -21,6 +21,13 @@ In the codex-rs folder where the rust code lives:
   locally before CI.
 - Do not create small helper methods that are referenced only once.
 
+## Fork Feature Documentation Workflow
+
+- Treat `docs/features/<code-name>.md` as the source of truth for each fork feature. Keep feature intent, behavior, and rollout notes there.
+- Store research and release-alignment artifacts under `docs/research/<release>/` so implementation context is traceable per release.
+- When API contracts or wire behavior change, update user/developer-facing docs in the same change set (at minimum `app-server/README.md` when app-server API is affected).
+- Keep documentation centralized and consistent: update the relevant feature and API docs instead of scattering duplicate notes across unrelated files.
+
 Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, run the tests:
 
 1. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `cargo test -p codex-tui`.
