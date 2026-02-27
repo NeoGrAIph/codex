@@ -834,6 +834,8 @@ fn thread_spawn_source(
         depth,
         agent_nickname: None,
         agent_role: agent_role.map(str::to_string),
+        allow_list: None,
+        deny_list: None,
     })
 }
 
@@ -1268,6 +1270,8 @@ mod tests {
             depth: max_depth,
             agent_nickname: None,
             agent_role: None,
+            allow_list: None,
+            deny_list: None,
         });
 
         let invocation = invocation(
@@ -1307,6 +1311,8 @@ mod tests {
             depth: DEFAULT_AGENT_MAX_DEPTH,
             agent_nickname: None,
             agent_role: None,
+            allow_list: None,
+            deny_list: None,
         });
 
         let invocation = invocation(
@@ -1699,6 +1705,8 @@ mod tests {
             depth: max_depth,
             agent_nickname: None,
             agent_role: None,
+            allow_list: None,
+            deny_list: None,
         });
 
         let invocation = invocation(

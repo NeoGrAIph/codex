@@ -794,6 +794,26 @@
                     "null"
                   ]
                 },
+                "allow_list": {
+                  "default": null,
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "deny_list": {
+                  "default": null,
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
                 "depth": {
                   "format": "int32",
                   "type": "integer"

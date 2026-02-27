@@ -1963,6 +1963,10 @@ pub enum SubAgentSource {
         agent_nickname: Option<String>,
         #[serde(default, alias = "agent_type")]
         agent_role: Option<String>,
+        #[serde(default)]
+        allow_list: Option<Vec<String>>,
+        #[serde(default)]
+        deny_list: Option<Vec<String>>,
     },
     MemoryConsolidation,
     Other(String),
@@ -3534,5 +3538,77 @@ mod tests {
             .expect("new_or_append should return info");
 
         assert_eq!(info.model_context_window, Some(258_400));
+    }
+
+    #[test]
+    fn thread_spawn_source_deserializes_legacy_role_alias_and_policy_defaults() -> Result<()> {
+        let source: SessionSource = serde_json::from_value(json!({
+            "subagent": {
+                "thread_spawn": {
+                    "parent_thread_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                    "depth": 2,
+                    "agent_nickname": "atlas",
+                    "agent_type": "explorer"
+                }
+            }
+        }))?;
+
+        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth,
+            agent_nickname,
+            agent_role,
+            allow_list,
+            deny_list,
+        }) = source
+        else {
+            panic!("expected thread_spawn source");
+        };
+
+        assert_eq!(
+            parent_thread_id.to_string(),
+            "67e55044-10b1-426f-9247-bb680e5fe0c8"
+        );
+        assert_eq!(depth, 2);
+        assert_eq!(agent_nickname, Some("atlas".to_string()));
+        assert_eq!(agent_role, Some("explorer".to_string()));
+        assert_eq!(allow_list, None);
+        assert_eq!(deny_list, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn thread_spawn_source_serializes_and_roundtrips_policy_lists() -> Result<()> {
+        let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")?,
+            depth: 3,
+            agent_nickname: Some("atlas".to_string()),
+            agent_role: Some("explorer".to_string()),
+            allow_list: Some(vec!["spawn_agent".to_string(), "wait".to_string()]),
+            deny_list: Some(vec!["write_file".to_string()]),
+        });
+
+        let value = serde_json::to_value(&source)?;
+        assert_eq!(
+            value,
+            json!({
+                "subagent": {
+                    "thread_spawn": {
+                        "parent_thread_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                        "depth": 3,
+                        "agent_nickname": "atlas",
+                        "agent_role": "explorer",
+                        "allow_list": ["spawn_agent", "wait"],
+                        "deny_list": ["write_file"]
+                    }
+                }
+            })
+        );
+
+        let decoded: SessionSource = serde_json::from_value(value)?;
+        assert_eq!(decoded, source);
+
+        Ok(())
     }
 }
