@@ -631,6 +631,15 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
                 )),
             },
         ),
+        (
+            "thread_note".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional note stored on the spawned thread for downstream agent metadata and context."
+                        .to_string(),
+                ),
+            },
+        ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
@@ -829,6 +838,37 @@ fn create_resume_agent_tool() -> ToolSpec {
         description:
             "Resume a previously closed agent by id so it can receive send_input and wait calls."
                 .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["id".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
+fn create_set_thread_note_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "id".to_string(),
+            JsonSchema::String {
+                description: Some("Agent id to update note for.".to_string()),
+            },
+        ),
+        (
+            "note".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional thread note. Empty or whitespace clears the current note."
+                        .to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "set_thread_note".to_string(),
+        description: "Set or clear an agent thread note after spawn.".to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,
@@ -1809,11 +1849,13 @@ pub(crate) fn build_specs(
         let multi_agent_handler = Arc::new(MultiAgentHandler);
         builder.push_spec(create_spawn_agent_tool(config));
         builder.push_spec(create_send_input_tool());
+        builder.push_spec(create_set_thread_note_tool());
         builder.push_spec(create_resume_agent_tool());
         builder.push_spec(create_wait_tool());
         builder.push_spec(create_close_agent_tool());
         builder.register_handler("spawn_agent", multi_agent_handler.clone());
         builder.register_handler("send_input", multi_agent_handler.clone());
+        builder.register_handler("set_thread_note", multi_agent_handler.clone());
         builder.register_handler("resume_agent", multi_agent_handler.clone());
         builder.register_handler("wait", multi_agent_handler.clone());
         builder.register_handler("close_agent", multi_agent_handler);
@@ -2101,6 +2143,7 @@ mod tests {
             &[
                 "spawn_agent",
                 "send_input",
+                "set_thread_note",
                 "wait",
                 "close_agent",
                 "spawn_agents_on_csv",
@@ -2131,6 +2174,7 @@ mod tests {
             &[
                 "spawn_agent",
                 "send_input",
+                "set_thread_note",
                 "resume_agent",
                 "wait",
                 "close_agent",

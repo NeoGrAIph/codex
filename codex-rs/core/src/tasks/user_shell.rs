@@ -154,6 +154,7 @@ pub(crate) async fn execute_user_shell_command(
         env: create_env(
             &turn_context.shell_environment_policy,
             Some(session.conversation_id),
+            turn_context.thread_note.as_deref(),
         ),
         network: turn_context.network.clone(),
         // TODO(zhao-oai): Now that we have ExecExpiration::Cancellation, we

@@ -728,6 +728,7 @@ mod tests {
             source,
             git_info: None,
             name: None,
+            thread_note: None,
             turns: Vec::new(),
         }
     }

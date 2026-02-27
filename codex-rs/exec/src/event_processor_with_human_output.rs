@@ -820,6 +820,7 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             }
             EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
             EventMsg::ThreadNameUpdated(_)
+            | EventMsg::ThreadNoteUpdated(_)
             | EventMsg::ExecApprovalRequest(_)
             | EventMsg::ApplyPatchApprovalRequest(_)
             | EventMsg::TerminalInteraction(_)
@@ -894,6 +895,7 @@ impl EventProcessorWithHumanOutput {
         matches!(
             msg,
             EventMsg::ThreadNameUpdated(_)
+                | EventMsg::ThreadNoteUpdated(_)
                 | EventMsg::TokenCount(_)
                 | EventMsg::TurnStarted(_)
                 | EventMsg::ExecApprovalRequest(_)

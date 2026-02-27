@@ -768,6 +768,13 @@
                 },
                 "parent_thread_id": {
                   "$ref": "#/definitions/ThreadId"
+                },
+                "thread_note": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -901,6 +908,13 @@
             }
           ],
           "description": "Current runtime status for the thread."
+        },
+        "threadNote": {
+          "description": "Optional user-facing thread note.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "turns": {
           "description": "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",

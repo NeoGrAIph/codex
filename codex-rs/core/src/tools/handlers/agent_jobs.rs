@@ -633,6 +633,7 @@ async fn run_agent_job_loop(
                         Some(SessionSource::SubAgent(SubAgentSource::Other(format!(
                             "agent_job:{job_id}"
                         )))),
+                        None,
                     )
                     .await
                 {

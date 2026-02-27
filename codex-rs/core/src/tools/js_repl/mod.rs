@@ -566,7 +566,11 @@ impl JsReplManager {
             .await
             .map_err(|err| err.to_string())?;
 
-        let mut env = create_env(&turn.shell_environment_policy, thread_id);
+        let mut env = create_env(
+            &turn.shell_environment_policy,
+            thread_id,
+            turn.thread_note.as_deref(),
+        );
         env.insert(
             "CODEX_JS_TMP_DIR".to_string(),
             self.tmp_dir.path().to_string_lossy().to_string(),

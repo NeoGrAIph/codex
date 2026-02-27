@@ -410,6 +410,8 @@ impl Codex {
                 developer_instructions: None,
             },
         };
+        let thread_note =
+            crate::util::normalize_thread_note(session_source.get_thread_note().as_deref());
         let session_configuration = SessionConfiguration {
             provider: config.model_provider.clone(),
             collaboration_mode,
@@ -425,6 +427,7 @@ impl Codex {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name,
             session_source,
@@ -577,6 +580,7 @@ pub(crate) struct TurnContext {
     pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
     pub(crate) reasoning_summary: ReasoningSummaryConfig,
     pub(crate) session_source: SessionSource,
+    pub(crate) thread_note: Option<String>,
     /// The session's current working directory. All relative paths provided by
     /// the model as well as sandbox policies are resolved against this path
     /// instead of `std::env::current_dir()`.
@@ -664,6 +668,7 @@ impl TurnContext {
             reasoning_effort,
             reasoning_summary: self.reasoning_summary,
             session_source: self.session_source.clone(),
+            thread_note: self.thread_note.clone(),
             cwd: self.cwd.clone(),
             developer_instructions: self.developer_instructions.clone(),
             compact_prompt: self.compact_prompt.clone(),
@@ -775,6 +780,8 @@ pub(crate) struct SessionConfiguration {
     codex_home: PathBuf,
     /// Optional user-facing name for the thread, updated during the session.
     thread_name: Option<String>,
+    /// Optional runtime note for the thread, updated during the session.
+    thread_note: Option<String>,
 
     // TODO(pakrym): Remove config from here
     original_config_do_not_use: Arc<Config>,
@@ -801,6 +808,7 @@ impl SessionConfiguration {
             reasoning_effort: self.collaboration_mode.reasoning_effort(),
             personality: self.personality,
             session_source: self.session_source.clone(),
+            thread_note: self.thread_note.clone(),
         }
     }
 
@@ -1009,6 +1017,7 @@ impl Session {
             reasoning_effort,
             reasoning_summary,
             session_source,
+            thread_note: session_configuration.thread_note.clone(),
             cwd,
             developer_instructions: session_configuration.developer_instructions.clone(),
             compact_prompt: session_configuration.compact_prompt.clone(),
@@ -1279,7 +1288,25 @@ impl Session {
                     None
                 }
             };
+        let thread_note =
+            match session_index::find_thread_note_by_id(&config.codex_home, &conversation_id).await
+            {
+                Ok(note) => note,
+                Err(err) => {
+                    warn!("Failed to read thread note index: {err}");
+                    None
+                }
+            };
         session_configuration.thread_name = thread_name.clone();
+        let source_thread_note = crate::util::normalize_thread_note(
+            session_configuration
+                .session_source
+                .get_thread_note()
+                .as_deref(),
+        );
+        session_configuration.thread_note = thread_note
+            .or_else(|| session_configuration.thread_note.clone())
+            .or(source_thread_note);
         let state = SessionState::new(session_configuration.clone());
         let managed_network_requirements_enabled = config.managed_network_requirements_enabled();
         let network_approval = Arc::new(NetworkApprovalService::default());
@@ -1409,6 +1436,7 @@ impl Session {
                 session_id: conversation_id,
                 forked_from_id,
                 thread_name: session_configuration.thread_name.clone(),
+                thread_note: session_configuration.thread_note.clone(),
                 model: session_configuration.collaboration_mode.model().to_string(),
                 model_provider_id: config.model_provider_id.clone(),
                 approval_policy: session_configuration.approval_policy.value(),
@@ -3026,17 +3054,25 @@ impl Session {
             items.push(DeveloperInstructions::new(memory_prompt).into());
         }
         // Add developer instructions from collaboration_mode if they exist and are non-empty
-        let (collaboration_mode, base_instructions) = {
+        let (collaboration_mode, base_instructions, thread_note) = {
             let state = self.state.lock().await;
             (
                 state.session_configuration.collaboration_mode.clone(),
                 state.session_configuration.base_instructions.clone(),
+                state
+                    .session_configuration
+                    .thread_note
+                    .clone()
+                    .or_else(|| state.session_configuration.session_source.get_thread_note()),
             )
         };
         if let Some(collab_instructions) =
             DeveloperInstructions::from_collaboration_mode(&collaboration_mode)
         {
             items.push(collab_instructions.into());
+        }
+        if let Some(thread_note) = thread_note {
+            items.push(DeveloperInstructions::new(format!("Thread note: {thread_note}")).into());
         }
         if self.features.enabled(Feature::Personality)
             && let Some(personality) = turn_context.personality
@@ -3771,6 +3807,9 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             Op::SetThreadName { name } => {
                 handlers::set_thread_name(&sess, sub.id.clone(), name).await;
             }
+            Op::SetThreadNote { note } => {
+                handlers::set_thread_note(&sess, sub.id.clone(), note).await;
+            }
             Op::RunUserShellCommand { command } => {
                 handlers::run_user_shell_command(&sess, sub.id.clone(), command).await;
             }
@@ -3832,6 +3871,7 @@ mod handlers {
     use codex_protocol::protocol::ReviewRequest;
     use codex_protocol::protocol::SkillsListEntry;
     use codex_protocol::protocol::ThreadNameUpdatedEvent;
+    use codex_protocol::protocol::ThreadNoteUpdatedEvent;
     use codex_protocol::protocol::ThreadRolledBackEvent;
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::WarningEvent;
@@ -4497,6 +4537,60 @@ mod handlers {
         .await;
     }
 
+    /// Persists the thread note in the note index, updates in-memory state, and emits
+    /// a `ThreadNoteUpdated` event on success.
+    pub async fn set_thread_note(sess: &Arc<Session>, sub_id: String, note: Option<String>) {
+        let normalized = crate::util::normalize_thread_note(note.as_deref());
+        let persistence_enabled = {
+            let rollout = sess.services.rollout.lock().await;
+            rollout.is_some()
+        };
+        if !persistence_enabled {
+            let event = Event {
+                id: sub_id,
+                msg: EventMsg::Error(ErrorEvent {
+                    message: "Session persistence is disabled; cannot set thread note.".to_string(),
+                    codex_error_info: Some(CodexErrorInfo::Other),
+                }),
+            };
+            sess.send_event_raw(event).await;
+            return;
+        }
+
+        let codex_home = sess.codex_home().await;
+        if let Err(e) = session_index::append_thread_note(
+            &codex_home,
+            sess.conversation_id,
+            normalized.as_deref(),
+        )
+        .await
+        {
+            let event = Event {
+                id: sub_id,
+                msg: EventMsg::Error(ErrorEvent {
+                    message: format!("Failed to set thread note: {e}"),
+                    codex_error_info: Some(CodexErrorInfo::Other),
+                }),
+            };
+            sess.send_event_raw(event).await;
+            return;
+        }
+
+        {
+            let mut state = sess.state.lock().await;
+            state.session_configuration.thread_note = normalized.clone();
+        }
+
+        sess.send_event_raw(Event {
+            id: sub_id,
+            msg: EventMsg::ThreadNoteUpdated(ThreadNoteUpdatedEvent {
+                thread_id: sess.conversation_id,
+                thread_note: normalized,
+            }),
+        })
+        .await;
+    }
+
     pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
         sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
         let _ = sess.conversation.shutdown().await;
@@ -4664,6 +4758,7 @@ async fn spawn_review_thread(
         reasoning_effort,
         reasoning_summary,
         session_source,
+        thread_note: parent_turn_context.thread_note.clone(),
         tools_config,
         features: parent_turn_context.features.clone(),
         ghost_snapshot: parent_turn_context.ghost_snapshot.clone(),
@@ -7806,6 +7901,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name: None,
             session_source: SessionSource::Exec,
@@ -7898,6 +7994,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name: None,
             session_source: SessionSource::Exec,
@@ -8209,6 +8306,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name: None,
             session_source: SessionSource::Exec,
@@ -8261,6 +8359,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name: None,
             session_source: SessionSource::Exec,
@@ -8341,6 +8440,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name: None,
             session_source: SessionSource::Exec,
@@ -8499,6 +8599,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name: None,
             session_source: SessionSource::Exec,

@@ -370,6 +370,10 @@ pub enum Op {
     /// involve the model.
     SetThreadName { name: String },
 
+    /// Set or clear a runtime thread note in persisted metadata.
+    /// This is a local-only operation handled by codex-core.
+    SetThreadNote { note: Option<String> },
+
     /// Request Codex to undo a turn (turn are stacked so it is the same effect as CMD + Z).
     Undo,
 
@@ -1018,6 +1022,9 @@ pub enum EventMsg {
 
     /// Updated session metadata (e.g., thread name changes).
     ThreadNameUpdated(ThreadNameUpdatedEvent),
+
+    /// Updated runtime thread note metadata.
+    ThreadNoteUpdated(ThreadNoteUpdatedEvent),
 
     /// Incremental MCP startup progress updates.
     McpStartupUpdate(McpStartupUpdateEvent),
@@ -1952,6 +1959,8 @@ pub enum SubAgentSource {
         #[serde(default, alias = "agent_type")]
         agent_role: Option<String>,
         #[serde(default)]
+        thread_note: Option<String>,
+        #[serde(default)]
         allow_list: Option<Vec<String>>,
         #[serde(default)]
         deny_list: Option<Vec<String>>,
@@ -1993,6 +2002,15 @@ impl SessionSource {
             }
             SessionSource::SubAgent(SubAgentSource::MemoryConsolidation) => {
                 Some("memory builder".to_string())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn get_thread_note(&self) -> Option<String> {
+        match self {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { thread_note, .. }) => {
+                thread_note.clone()
             }
             _ => None,
         }
@@ -2708,6 +2726,11 @@ pub struct SessionConfiguredEvent {
     #[ts(optional)]
     pub thread_name: Option<String>,
 
+    /// Optional runtime thread note (may be unset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_note: Option<String>,
+
     /// Tell the client what model is being queried.
     pub model: String,
 
@@ -2754,6 +2777,14 @@ pub struct ThreadNameUpdatedEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub thread_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+pub struct ThreadNoteUpdatedEvent {
+    pub thread_id: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_note: Option<String>,
 }
 
 /// User's decision in response to an ExecApprovalRequest.
@@ -2869,6 +2900,9 @@ pub struct CollabAgentRef {
     /// Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
     #[serde(default, alias = "agent_type", skip_serializing_if = "Option::is_none")]
     pub agent_role: Option<String>,
+    /// Optional user-facing note assigned to the agent thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -2881,6 +2915,9 @@ pub struct CollabAgentStatusEntry {
     /// Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
     #[serde(default, alias = "agent_type", skip_serializing_if = "Option::is_none")]
     pub agent_role: Option<String>,
+    /// Optional user-facing note assigned to the agent thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_note: Option<String>,
     /// Last known status of the agent.
     pub status: AgentStatus,
 }
@@ -2899,6 +2936,9 @@ pub struct CollabAgentSpawnEndEvent {
     /// Optional role assigned to the new agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_agent_role: Option<String>,
+    /// Optional note assigned to the new agent thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_agent_thread_note: Option<String>,
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
@@ -3389,6 +3429,7 @@ mod tests {
                 session_id: conversation_id,
                 forked_from_id: None,
                 thread_name: None,
+                thread_note: None,
                 model: "codex-mini-latest".to_string(),
                 model_provider_id: "openai".to_string(),
                 approval_policy: AskForApproval::Never,
@@ -3546,6 +3587,7 @@ mod tests {
             depth,
             agent_nickname,
             agent_role,
+            thread_note,
             allow_list,
             deny_list,
         }) = source
@@ -3560,6 +3602,7 @@ mod tests {
         assert_eq!(depth, 2);
         assert_eq!(agent_nickname, Some("atlas".to_string()));
         assert_eq!(agent_role, Some("explorer".to_string()));
+        assert_eq!(thread_note, None);
         assert_eq!(allow_list, None);
         assert_eq!(deny_list, None);
 
@@ -3573,6 +3616,7 @@ mod tests {
             depth: 3,
             agent_nickname: Some("atlas".to_string()),
             agent_role: Some("explorer".to_string()),
+            thread_note: Some("parallel worker".to_string()),
             allow_list: Some(vec!["spawn_agent".to_string(), "wait".to_string()]),
             deny_list: Some(vec!["write_file".to_string()]),
         });
@@ -3587,6 +3631,7 @@ mod tests {
                         "depth": 3,
                         "agent_nickname": "atlas",
                         "agent_role": "explorer",
+                        "thread_note": "parallel worker",
                         "allow_list": ["spawn_agent", "wait"],
                         "deny_list": ["write_file"]
                     }
