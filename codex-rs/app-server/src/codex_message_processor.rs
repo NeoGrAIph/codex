@@ -7827,6 +7827,8 @@ fn with_thread_spawn_agent_metadata(
                 depth,
                 agent_nickname: existing_agent_nickname,
                 agent_role: existing_agent_role,
+                allow_list,
+                deny_list,
             },
         ) => codex_protocol::protocol::SessionSource::SubAgent(
             codex_protocol::protocol::SubAgentSource::ThreadSpawn {
@@ -7834,6 +7836,8 @@ fn with_thread_spawn_agent_metadata(
                 depth,
                 agent_nickname: agent_nickname.or(existing_agent_nickname),
                 agent_role: agent_role.or(existing_agent_role),
+                allow_list,
+                deny_list,
             },
         ),
         _ => source,
@@ -8105,6 +8109,8 @@ mod tests {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: None,
+                allow_list: None,
+                deny_list: None,
             }),
             agent_nickname: Some("atlas".to_string()),
             agent_role: Some("explorer".to_string()),
@@ -8197,6 +8203,8 @@ mod tests {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: None,
+                allow_list: None,
+                deny_list: None,
             }))?;
 
         let summary = summary_from_state_db_metadata(
@@ -8220,6 +8228,44 @@ mod tests {
 
         assert_eq!(thread.agent_nickname, Some("atlas".to_string()));
         assert_eq!(thread.agent_role, Some("explorer".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn with_thread_spawn_agent_metadata_preserves_policy_lists() -> Result<()> {
+        let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::from_string("ad7f0408-99b8-4f6e-a46f-bd0eec433370")?,
+            depth: 1,
+            agent_nickname: None,
+            agent_role: None,
+            allow_list: Some(vec!["spawn_agent".to_string(), "wait".to_string()]),
+            deny_list: Some(vec!["write_file".to_string()]),
+        });
+
+        let merged = with_thread_spawn_agent_metadata(
+            source,
+            Some("atlas".to_string()),
+            Some("explorer".to_string()),
+        );
+
+        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            agent_nickname,
+            agent_role,
+            allow_list,
+            deny_list,
+            ..
+        }) = merged
+        else {
+            panic!("expected thread_spawn source");
+        };
+
+        assert_eq!(agent_nickname, Some("atlas".to_string()));
+        assert_eq!(agent_role, Some("explorer".to_string()));
+        assert_eq!(
+            allow_list,
+            Some(vec!["spawn_agent".to_string(), "wait".to_string()])
+        );
+        assert_eq!(deny_list, Some(vec!["write_file".to_string()]));
         Ok(())
     }
 

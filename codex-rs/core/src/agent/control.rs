@@ -88,6 +88,8 @@ impl AgentControl {
                 parent_thread_id,
                 depth,
                 agent_role,
+                allow_list,
+                deny_list,
                 ..
             })) => {
                 let agent_nickname = reservation.reserve_agent_nickname(&agent_nickname_list())?;
@@ -96,6 +98,8 @@ impl AgentControl {
                     depth,
                     agent_nickname: Some(agent_nickname),
                     agent_role,
+                    allow_list,
+                    deny_list,
                 }))
             }
             other => other,
@@ -203,6 +207,8 @@ impl AgentControl {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,
+                allow_list,
+                deny_list,
                 ..
             }) => {
                 // Collab resume callers rebuild a placeholder ThreadSpawn source. Rehydrate the
@@ -230,6 +236,8 @@ impl AgentControl {
                     depth,
                     agent_nickname: reserved_agent_nickname,
                     agent_role: resumed_agent_role,
+                    allow_list,
+                    deny_list,
                 })
             }
             other => other,
@@ -1252,6 +1260,8 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
+                    allow_list: None,
+                    deny_list: None,
                 })),
             )
             .await
@@ -1285,6 +1295,8 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
+                    allow_list: None,
+                    deny_list: None,
                 })),
             )
             .await
@@ -1302,6 +1314,7 @@ mod tests {
             depth,
             agent_nickname,
             agent_role,
+            ..
         }) = snapshot.session_source
         else {
             panic!("expected thread-spawn sub-agent source");
@@ -1340,6 +1353,8 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
+                    allow_list: None,
+                    deny_list: None,
                 })),
             )
             .await
@@ -1408,6 +1423,8 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: None,
+                    allow_list: None,
+                    deny_list: None,
                 }),
             )
             .await
@@ -1426,6 +1443,7 @@ mod tests {
             depth: resumed_depth,
             agent_nickname: resumed_nickname,
             agent_role: resumed_role,
+            ..
         }) = resumed_snapshot.session_source
         else {
             panic!("expected thread-spawn sub-agent source");
