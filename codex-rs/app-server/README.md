@@ -238,7 +238,10 @@ Experimental API: `thread/start`, `thread/resume`, and `thread/fork` accept `per
 - `archived` — when `true`, list archived threads only. When `false` or `null`, list non-archived threads (default).
 - `cwd` — restrict results to threads whose session cwd exactly matches this path.
 - `searchTerm` — restrict results to threads whose extracted title contains this substring (case-sensitive).
-- Responses include `agentNickname` and `agentRole` for AgentControl-spawned thread sub-agents when available.
+- Responses include top-level `agentNickname` and `agentRole` for AgentControl-spawned thread
+  sub-agents when available.
+- Persona metadata is carried in `source` for thread-spawn sub-agents:
+  `source.subagent.thread_spawn.agent_persona` (optional; absent for legacy sessions).
 
 Example:
 
@@ -250,7 +253,7 @@ Example:
 } }
 { "id": 20, "result": {
     "data": [
-        { "id": "thr_a", "preview": "Create a TUI", "modelProvider": "openai", "createdAt": 1730831111, "updatedAt": 1730831111, "status": { "type": "notLoaded" }, "agentNickname": "Atlas", "agentRole": "explorer" },
+        { "id": "thr_a", "preview": "Create a TUI", "modelProvider": "openai", "createdAt": 1730831111, "updatedAt": 1730831111, "status": { "type": "notLoaded" }, "agentNickname": "Atlas", "agentRole": "explorer", "source": { "subagent": { "thread_spawn": { "parent_thread_id": "67e55044-10b1-426f-9247-bb680e5fe0c8", "depth": 2, "agent_nickname": "Atlas", "agent_persona": "Runner", "agent_role": "explorer" } } } },
         { "id": "thr_b", "preview": "Fix tests", "modelProvider": "openai", "createdAt": 1730750000, "updatedAt": 1730750000, "status": { "type": "notLoaded" } }
     ],
     "nextCursor": "opaque-token-or-null"
@@ -306,7 +309,10 @@ If this was the last subscriber, the server unloads the thread and emits `thread
 
 ### Example: Read a thread
 
-Use `thread/read` to fetch a stored thread by id without resuming it. Pass `includeTurns` when you want the rollout history loaded into `thread.turns`. The returned thread includes `agentNickname` and `agentRole` for AgentControl-spawned thread sub-agents when available.
+Use `thread/read` to fetch a stored thread by id without resuming it. Pass `includeTurns` when you
+want the rollout history loaded into `thread.turns`. The returned thread includes `agentNickname`
+and `agentRole` for AgentControl-spawned thread sub-agents when available. Persona metadata is
+carried in `thread.source.subagent.thread_spawn.agent_persona` when source is thread-spawn.
 
 ```json
 { "method": "thread/read", "id": 22, "params": { "threadId": "thr_123" } }

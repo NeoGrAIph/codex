@@ -383,6 +383,19 @@ impl Codex {
         // 2. conversation history => session_meta.base_instructions
         // 3. base_instructions for current model
         let model_info = models_manager.get_model_info(model.as_str(), &config).await;
+        let requested_reasoning_effort = config.model_reasoning_effort;
+        let normalized_reasoning_effort =
+            normalize_reasoning_effort_for_model(requested_reasoning_effort, &model_info, false);
+        if requested_reasoning_effort.is_some()
+            && requested_reasoning_effort != normalized_reasoning_effort
+        {
+            warn!(
+                model = %model_info.slug,
+                ?requested_reasoning_effort,
+                ?normalized_reasoning_effort,
+                "requested reasoning_effort is unsupported for model; using normalized value"
+            );
+        }
         let base_instructions = config
             .base_instructions
             .clone()
@@ -424,7 +437,7 @@ impl Codex {
             mode: ModeKind::Default,
             settings: Settings {
                 model: model.clone(),
-                reasoning_effort: config.model_reasoning_effort,
+                reasoning_effort: normalized_reasoning_effort,
                 developer_instructions: None,
             },
         };
@@ -625,6 +638,44 @@ pub(crate) struct TurnContext {
     pub(crate) turn_metadata_state: Arc<TurnMetadataState>,
     pub(crate) turn_skills: TurnSkillsContext,
 }
+
+fn midpoint_supported_reasoning_effort(model_info: &ModelInfo) -> Option<ReasoningEffortConfig> {
+    let supported_reasoning_levels = model_info
+        .supported_reasoning_levels
+        .iter()
+        .map(|preset| preset.effort)
+        .collect::<Vec<_>>();
+    supported_reasoning_levels
+        .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
+        .copied()
+        .or(model_info.default_reasoning_level)
+}
+
+fn normalize_reasoning_effort_for_model(
+    current_reasoning_effort: Option<ReasoningEffortConfig>,
+    model_info: &ModelInfo,
+    default_when_missing: bool,
+) -> Option<ReasoningEffortConfig> {
+    let supported_reasoning_levels = model_info
+        .supported_reasoning_levels
+        .iter()
+        .map(|preset| preset.effort)
+        .collect::<Vec<_>>();
+
+    match current_reasoning_effort {
+        Some(current_reasoning_effort) => {
+            if supported_reasoning_levels.contains(&current_reasoning_effort) {
+                Some(current_reasoning_effort)
+            } else {
+                midpoint_supported_reasoning_effort(model_info)
+            }
+        }
+        None => default_when_missing
+            .then(|| midpoint_supported_reasoning_effort(model_info))
+            .flatten(),
+    }
+}
+
 impl TurnContext {
     pub(crate) fn model_context_window(&self) -> Option<i64> {
         let effective_context_window_percent = self.model_info.effective_context_window_percent;
@@ -638,26 +689,8 @@ impl TurnContext {
         config.model = Some(model.clone());
         let model_info = models_manager.get_model_info(model.as_str(), &config).await;
         let truncation_policy = model_info.truncation_policy.into();
-        let supported_reasoning_levels = model_info
-            .supported_reasoning_levels
-            .iter()
-            .map(|preset| preset.effort)
-            .collect::<Vec<_>>();
-        let reasoning_effort = if let Some(current_reasoning_effort) = self.reasoning_effort {
-            if supported_reasoning_levels.contains(&current_reasoning_effort) {
-                Some(current_reasoning_effort)
-            } else {
-                supported_reasoning_levels
-                    .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
-                    .copied()
-                    .or(model_info.default_reasoning_level)
-            }
-        } else {
-            supported_reasoning_levels
-                .get(supported_reasoning_levels.len().saturating_sub(1) / 2)
-                .copied()
-                .or(model_info.default_reasoning_level)
-        };
+        let reasoning_effort =
+            normalize_reasoning_effort_for_model(self.reasoning_effort, &model_info, true);
         config.model_reasoning_effort = reasoning_effort;
 
         let collaboration_mode =
@@ -6714,6 +6747,7 @@ mod tests {
     use codex_protocol::models::ResponseInputItem;
     use codex_protocol::models::ResponseItem;
     use codex_protocol::openai_models::ModelsResponse;
+    use codex_protocol::openai_models::ReasoningEffortPreset;
     use std::path::Path;
     use std::time::Duration;
     use tokio::time::sleep;
@@ -8313,6 +8347,47 @@ mod tests {
             &updated.tool_call_gate,
             &turn_context.tool_call_gate
         ));
+    }
+
+    #[test]
+    fn normalize_reasoning_effort_for_model_falls_back_when_unsupported() {
+        let mut model_info = model_info::model_info_from_slug("test-model");
+        model_info.default_reasoning_level = Some(ReasoningEffortConfig::Medium);
+        model_info.supported_reasoning_levels = vec![
+            ReasoningEffortPreset {
+                effort: ReasoningEffortConfig::Low,
+                description: "low".to_string(),
+            },
+            ReasoningEffortPreset {
+                effort: ReasoningEffortConfig::Medium,
+                description: "medium".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            normalize_reasoning_effort_for_model(
+                Some(ReasoningEffortConfig::XHigh),
+                &model_info,
+                false
+            ),
+            Some(ReasoningEffortConfig::Low)
+        );
+        assert_eq!(
+            normalize_reasoning_effort_for_model(
+                Some(ReasoningEffortConfig::Low),
+                &model_info,
+                false
+            ),
+            Some(ReasoningEffortConfig::Low)
+        );
+        assert_eq!(
+            normalize_reasoning_effort_for_model(None, &model_info, false),
+            None
+        );
+        assert_eq!(
+            normalize_reasoning_effort_for_model(None, &model_info, true),
+            Some(ReasoningEffortConfig::Low)
+        );
     }
 
     #[test]

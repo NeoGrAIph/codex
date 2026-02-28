@@ -12,6 +12,7 @@ SELECT
     source,
     agent_nickname,
     agent_role,
+    agent_persona,
     model_provider,
     cwd,
     cli_version,
@@ -115,6 +116,7 @@ SELECT
     source,
     agent_nickname,
     agent_role,
+    agent_persona,
     model_provider,
     cwd,
     cli_version,
@@ -205,6 +207,7 @@ INSERT INTO threads (
     source,
     agent_nickname,
     agent_role,
+    agent_persona,
     model_provider,
     cwd,
     cli_version,
@@ -218,7 +221,7 @@ INSERT INTO threads (
     git_sha,
     git_branch,
     git_origin_url
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
@@ -226,6 +229,7 @@ ON CONFLICT(id) DO UPDATE SET
     source = excluded.source,
     agent_nickname = excluded.agent_nickname,
     agent_role = excluded.agent_role,
+    agent_persona = excluded.agent_persona,
     model_provider = excluded.model_provider,
     cwd = excluded.cwd,
     cli_version = excluded.cli_version,
@@ -248,6 +252,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(metadata.source.as_str())
         .bind(metadata.agent_nickname.as_deref())
         .bind(metadata.agent_role.as_deref())
+        .bind(metadata.agent_persona.as_deref())
         .bind(metadata.model_provider.as_str())
         .bind(metadata.cwd.display().to_string())
         .bind(metadata.cli_version.as_str())

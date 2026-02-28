@@ -2293,6 +2293,7 @@ mod tests {
             sender_thread_id: ThreadId::new(),
             receiver_thread_id: ThreadId::new(),
             receiver_agent_nickname: None,
+            receiver_agent_persona: None,
             receiver_agent_role: None,
         };
 
@@ -2316,6 +2317,7 @@ mod tests {
             sender_thread_id: ThreadId::new(),
             receiver_thread_id: ThreadId::new(),
             receiver_agent_nickname: None,
+            receiver_agent_persona: None,
             receiver_agent_role: None,
             status: codex_protocol::protocol::AgentStatus::NotFound,
         };

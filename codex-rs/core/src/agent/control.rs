@@ -8,6 +8,7 @@ use crate::session_prefix::format_subagent_notification_message;
 use crate::state_db;
 use crate::thread_manager::ThreadManagerState;
 use codex_protocol::ThreadId;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -66,6 +67,7 @@ impl AgentControl {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,
+                agent_persona,
                 agent_role,
                 thread_note: source_thread_note,
                 allow_list,
@@ -77,6 +79,7 @@ impl AgentControl {
                     parent_thread_id,
                     depth,
                     agent_nickname: Some(agent_nickname),
+                    agent_persona,
                     agent_role,
                     thread_note: thread_note.clone().or(source_thread_note),
                     allow_list,
@@ -136,14 +139,18 @@ impl AgentControl {
             }) => {
                 // Collab resume callers rebuild a placeholder ThreadSpawn source. Rehydrate the
                 // stored nickname/role from sqlite when available; otherwise leave both unset.
-                let (resumed_agent_nickname, resumed_agent_role) =
+                let (resumed_agent_nickname, resumed_agent_persona, resumed_agent_role) =
                     if let Some(state_db_ctx) = state_db::get_state_db(&config, None).await {
                         match state_db_ctx.get_thread(thread_id).await {
-                            Ok(Some(metadata)) => (metadata.agent_nickname, metadata.agent_role),
-                            Ok(None) | Err(_) => (None, None),
+                            Ok(Some(metadata)) => (
+                                metadata.agent_nickname,
+                                metadata.agent_persona,
+                                metadata.agent_role,
+                            ),
+                            Ok(None) | Err(_) => (None, None, None),
                         }
                     } else {
-                        (None, None)
+                        (None, None, None)
                     };
                 let reserved_agent_nickname = resumed_agent_nickname
                     .as_deref()
@@ -158,6 +165,7 @@ impl AgentControl {
                     parent_thread_id,
                     depth,
                     agent_nickname: reserved_agent_nickname,
+                    agent_persona: resumed_agent_persona,
                     agent_role: resumed_agent_role,
                     thread_note,
                     allow_list,
@@ -239,19 +247,26 @@ impl AgentControl {
         thread.agent_status().await
     }
 
-    pub(crate) async fn get_agent_nickname_and_role(
-        &self,
-        agent_id: ThreadId,
-    ) -> Option<(Option<String>, Option<String>)> {
-        self.get_agent_nickname_role_and_note(agent_id)
-            .await
-            .map(|(agent_nickname, agent_role, _thread_note)| (agent_nickname, agent_role))
-    }
-
-    pub(crate) async fn get_agent_nickname_role_and_note(
+    pub(crate) async fn get_agent_identity(
         &self,
         agent_id: ThreadId,
     ) -> Option<(Option<String>, Option<String>, Option<String>)> {
+        self.get_agent_metadata(agent_id).await.map(
+            |(agent_nickname, agent_persona, agent_role, _thread_note)| {
+                (agent_nickname, agent_persona, agent_role)
+            },
+        )
+    }
+
+    pub(crate) async fn get_agent_metadata(
+        &self,
+        agent_id: ThreadId,
+    ) -> Option<(
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> {
         let Ok(state) = self.upgrade() else {
             return None;
         };
@@ -261,8 +276,26 @@ impl AgentControl {
         let config_snapshot = thread.config_snapshot().await;
         Some((
             config_snapshot.session_source.get_nickname(),
+            config_snapshot.session_source.get_agent_persona(),
             config_snapshot.session_source.get_agent_role(),
             config_snapshot.thread_note,
+        ))
+    }
+
+    pub(crate) async fn get_agent_model_settings(
+        &self,
+        agent_id: ThreadId,
+    ) -> Option<(Option<String>, Option<ReasoningEffort>)> {
+        let Ok(state) = self.upgrade() else {
+            return None;
+        };
+        let Ok(thread) = state.get_thread(agent_id).await else {
+            return None;
+        };
+        let config_snapshot = thread.config_snapshot().await;
+        Some((
+            Some(config_snapshot.model),
+            config_snapshot.reasoning_effort,
         ))
     }
 
@@ -924,6 +957,7 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
+                    agent_persona: None,
                     thread_note: None,
                     allow_list: None,
                     deny_list: None,
@@ -961,6 +995,7 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
+                    agent_persona: None,
                     thread_note: None,
                     allow_list: None,
                     deny_list: None,
@@ -1021,6 +1056,7 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
+                    agent_persona: None,
                     thread_note: None,
                     allow_list: None,
                     deny_list: None,
@@ -1093,6 +1129,7 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: None,
+                    agent_persona: None,
                     thread_note: None,
                     allow_list: None,
                     deny_list: None,

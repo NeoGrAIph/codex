@@ -7258,6 +7258,7 @@ async fn read_summary_from_state_db_context_by_thread_id(
         metadata.source,
         metadata.agent_nickname,
         metadata.agent_role,
+        metadata.agent_persona,
         metadata.git_sha,
         metadata.git_branch,
         metadata.git_origin_url,
@@ -7281,6 +7282,7 @@ async fn summary_from_thread_list_item(
         let source = with_thread_spawn_agent_metadata(
             it.source
                 .unwrap_or(codex_protocol::protocol::SessionSource::Unknown),
+            it.agent_persona.clone(),
             it.agent_nickname.clone(),
             it.agent_role.clone(),
             None,
@@ -7339,6 +7341,7 @@ fn summary_from_state_db_metadata(
     cwd: PathBuf,
     cli_version: String,
     source: String,
+    agent_persona: Option<String>,
     agent_nickname: Option<String>,
     agent_role: Option<String>,
     git_sha: Option<String>,
@@ -7349,7 +7352,8 @@ fn summary_from_state_db_metadata(
     let source = serde_json::from_str(&source)
         .or_else(|_| serde_json::from_value(serde_json::Value::String(source.clone())))
         .unwrap_or(codex_protocol::protocol::SessionSource::Unknown);
-    let source = with_thread_spawn_agent_metadata(source, agent_nickname, agent_role, None);
+    let source =
+        with_thread_spawn_agent_metadata(source, agent_persona, agent_nickname, agent_role, None);
     let git_info = if git_sha.is_none() && git_branch.is_none() && git_origin_url.is_none() {
         None
     } else {
@@ -7400,6 +7404,7 @@ pub(crate) async fn read_summary_from_rollout(
     let mut session_meta = session_meta;
     session_meta.source = with_thread_spawn_agent_metadata(
         session_meta.source.clone(),
+        session_meta.agent_persona.clone(),
         session_meta.agent_nickname.clone(),
         session_meta.agent_role.clone(),
         None,
@@ -7518,11 +7523,16 @@ fn map_git_info(git_info: &CoreGitInfo) -> ConversationGitInfo {
 
 fn with_thread_spawn_agent_metadata(
     source: codex_protocol::protocol::SessionSource,
+    agent_persona: Option<String>,
     agent_nickname: Option<String>,
     agent_role: Option<String>,
     thread_note: Option<String>,
 ) -> codex_protocol::protocol::SessionSource {
-    if agent_nickname.is_none() && agent_role.is_none() && thread_note.is_none() {
+    if agent_persona.is_none()
+        && agent_nickname.is_none()
+        && agent_role.is_none()
+        && thread_note.is_none()
+    {
         return source;
     }
 
@@ -7533,6 +7543,7 @@ fn with_thread_spawn_agent_metadata(
                 depth,
                 agent_nickname: existing_agent_nickname,
                 agent_role: existing_agent_role,
+                agent_persona: existing_agent_persona,
                 thread_note: existing_thread_note,
                 allow_list,
                 deny_list,
@@ -7541,6 +7552,7 @@ fn with_thread_spawn_agent_metadata(
             codex_protocol::protocol::SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,
+                agent_persona: agent_persona.or(existing_agent_persona),
                 agent_nickname: agent_nickname.or(existing_agent_nickname),
                 agent_role: agent_role.or(existing_agent_role),
                 thread_note: thread_note.or(existing_thread_note),
@@ -7813,12 +7825,14 @@ mod tests {
                 parent_thread_id,
                 depth: 1,
                 agent_nickname: None,
+                agent_persona: None,
                 agent_role: None,
                 thread_note: None,
                 allow_list: None,
                 deny_list: None,
             }),
             agent_nickname: Some("atlas".to_string()),
+            agent_persona: None,
             agent_role: Some("explorer".to_string()),
             model_provider: Some("test-provider".to_string()),
             ..SessionMeta::default()
@@ -7849,6 +7863,7 @@ mod tests {
                 parent_thread_id: ThreadId::from_string("ad7f0408-99b8-4f6e-a46f-bd0eec433370")?,
                 depth: 1,
                 agent_nickname: None,
+                agent_persona: None,
                 agent_role: None,
                 thread_note: None,
                 allow_list: None,
@@ -7865,6 +7880,7 @@ mod tests {
             PathBuf::from("/"),
             "0.0.0".to_string(),
             source,
+            None,
             Some("atlas".to_string()),
             Some("explorer".to_string()),
             None,
@@ -7885,6 +7901,7 @@ mod tests {
             parent_thread_id: ThreadId::from_string("ad7f0408-99b8-4f6e-a46f-bd0eec433370")?,
             depth: 1,
             agent_nickname: None,
+            agent_persona: None,
             agent_role: None,
             thread_note: None,
             allow_list: Some(vec!["spawn_agent".to_string(), "wait".to_string()]),
@@ -7893,6 +7910,7 @@ mod tests {
 
         let merged = with_thread_spawn_agent_metadata(
             source,
+            None,
             Some("atlas".to_string()),
             Some("explorer".to_string()),
             None,

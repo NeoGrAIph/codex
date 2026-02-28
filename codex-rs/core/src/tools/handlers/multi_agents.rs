@@ -94,16 +94,28 @@ mod spawn {
     use super::*;
     use crate::agent::role::DEFAULT_ROLE_NAME;
     use crate::agent::role::apply_role_to_config;
+    use crate::agent::role::is_declared_role;
+    use crate::agent::role_templates::DEFAULT_AGENT_NICKNAME;
+    use crate::agent::role_templates::LoadedRoleTemplates;
+    use crate::agent::role_templates::RoleTemplateModelSource;
+    use crate::protocol::SandboxPolicy;
+    use codex_protocol::openai_models::ModelPreset;
+    use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 
     use crate::agent::exceeds_thread_spawn_depth_limit;
     use crate::agent::next_thread_spawn_depth;
     use std::sync::Arc;
 
     #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct SpawnAgentArgs {
         message: Option<String>,
         items: Option<Vec<UserInput>>,
         agent_type: Option<String>,
+        agent_nickname: Option<String>,
+        agent_name: Option<String>,
+        model: Option<String>,
+        reasoning_effort: Option<String>,
         thread_note: Option<String>,
     }
 
@@ -112,6 +124,31 @@ mod spawn {
         agent_id: String,
         nickname: Option<String>,
         thread_note: Option<String>,
+        requested_model: Option<String>,
+        model_source: String,
+        model: Option<String>,
+        reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum SpawnModelSource {
+        ExplicitArgument,
+        TemplatePersona,
+        TemplateRole,
+        InheritedParent,
+        CatalogDefault,
+    }
+
+    impl SpawnModelSource {
+        const fn as_str(self) -> &'static str {
+            match self {
+                Self::ExplicitArgument => "explicit_argument",
+                Self::TemplatePersona => "template_persona",
+                Self::TemplateRole => "template_role",
+                Self::InheritedParent => "inherited_parent",
+                Self::CatalogDefault => "catalog_default",
+            }
+        }
     }
 
     pub async fn handle(
@@ -121,11 +158,39 @@ mod spawn {
         arguments: String,
     ) -> Result<ToolOutput, FunctionCallError> {
         let args: SpawnAgentArgs = parse_arguments(&arguments)?;
+        if args
+            .agent_name
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+        {
+            return Err(FunctionCallError::RespondToModel(
+                "unsupported key `agent_name`; use `agent_nickname`".to_string(),
+            ));
+        }
         let role_name = args
             .agent_type
             .as_deref()
             .map(str::trim)
             .filter(|role| !role.is_empty());
+        let requested_agent_nickname = args
+            .agent_nickname
+            .as_deref()
+            .map(str::trim)
+            .filter(|nickname| !nickname.is_empty());
+        let model_override = args
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(ToString::to_string);
+        let requested_model = model_override.clone();
+        let reasoning_effort_override = args
+            .reasoning_effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|effort| !effort.is_empty())
+            .map(ToString::to_string);
         let thread_note = crate::util::normalize_thread_note(args.thread_note.as_deref());
         let input_items = parse_collab_input(args.message, args.items)?;
         let prompt = input_preview(&input_items);
@@ -150,10 +215,127 @@ mod spawn {
             .await;
         let mut config =
             build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
-        apply_role_to_config(&mut config, role_name)
-            .await
+        let requested_role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
+        let loaded_templates = LoadedRoleTemplates::load_for_context(
+            Some(turn.cwd.as_path()),
+            Some(turn.config.codex_home.as_path()),
+        )
+        .map_err(FunctionCallError::RespondToModel)?;
+        let template_resolved_role = loaded_templates
+            .resolve_role_name(requested_role_name)
             .map_err(FunctionCallError::RespondToModel)?;
+        let declared_role_name = if is_declared_role(&config, requested_role_name) {
+            Some(requested_role_name.to_string())
+        } else if let Some(template_role_name) = template_resolved_role.as_ref() {
+            if is_declared_role(&config, template_role_name) {
+                Some(template_role_name.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(declared_role_name) = declared_role_name.as_deref() {
+            apply_role_to_config(&mut config, Some(declared_role_name))
+                .await
+                .map_err(FunctionCallError::RespondToModel)?;
+        } else if template_resolved_role.is_none() {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "unknown agent_type '{requested_role_name}'"
+            )));
+        }
         apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+        let mut model_source = SpawnModelSource::InheritedParent;
+
+        let effective_role_name = template_resolved_role
+            .as_deref()
+            .or(declared_role_name.as_deref())
+            .unwrap_or(requested_role_name);
+        let template_settings = loaded_templates
+            .resolve_spawn_settings(effective_role_name, requested_agent_nickname)
+            .map_err(FunctionCallError::RespondToModel)?;
+        if template_settings.is_none()
+            && requested_agent_nickname
+                .is_some_and(|nickname| !nickname.eq_ignore_ascii_case(DEFAULT_AGENT_NICKNAME))
+        {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "agent_type '{effective_role_name}' does not define agent_nickname '{nickname}'",
+                nickname = requested_agent_nickname.unwrap_or(DEFAULT_AGENT_NICKNAME)
+            )));
+        }
+
+        let (agent_persona, allow_list, deny_list) = match template_settings {
+            Some(settings) => {
+                config.base_instructions = Some(settings.instructions);
+                if let Some(model) = settings.model {
+                    config.model = Some(model);
+                    model_source = match settings.model_source {
+                        Some(RoleTemplateModelSource::Nickname) => {
+                            SpawnModelSource::TemplatePersona
+                        }
+                        Some(RoleTemplateModelSource::Role) => SpawnModelSource::TemplateRole,
+                        None => SpawnModelSource::TemplateRole,
+                    };
+                }
+                if let Some(reasoning_effort) = settings.reasoning_effort {
+                    config.model_reasoning_effort = Some(reasoning_effort);
+                }
+                if settings.read_only {
+                    config
+                        .permissions
+                        .sandbox_policy
+                        .set(SandboxPolicy::new_read_only_policy())
+                        .map_err(|err| {
+                            FunctionCallError::RespondToModel(format!(
+                                "sandbox_policy is invalid: {err}"
+                            ))
+                        })?;
+                }
+                (
+                    Some(settings.agent_persona),
+                    settings.allow_list,
+                    settings.deny_list,
+                )
+            }
+            None => (None, None, None),
+        };
+        if let Some(model) = model_override {
+            config.model = Some(model);
+            model_source = SpawnModelSource::ExplicitArgument;
+        }
+        if let Some(reasoning_effort) = reasoning_effort_override {
+            let presets = session
+                .services
+                .models_manager
+                .try_list_models()
+                .map_err(|_| {
+                    FunctionCallError::RespondToModel(
+                        "Models are being updated; try spawn_agent again in a moment.".to_string(),
+                    )
+                })?;
+            let model = resolve_spawn_model(&mut config, &presets)?;
+            let preset = presets
+                .iter()
+                .find(|preset| preset.model == model)
+                .ok_or_else(|| {
+                    let available = available_models_csv(&presets);
+                    FunctionCallError::RespondToModel(format!(
+                        "unknown model {model:?} for spawn_agent. Available models: {available}"
+                    ))
+                })?;
+            let effort = parse_reasoning_effort_config(&reasoning_effort).ok_or_else(|| {
+                let supported = supported_reasoning_efforts_csv(preset);
+                FunctionCallError::RespondToModel(format!(
+                    "reasoning_effort {reasoning_effort:?} is not supported for model {model:?}. Supported efforts: {supported}"
+                ))
+            })?;
+            config.model_reasoning_effort = Some(effort);
+        }
+        let had_model_before_validation = config.model.is_some();
+        validate_spawn_model_selection(session.as_ref(), &mut config)?;
+        if !had_model_before_validation && config.model.is_some() {
+            model_source = SpawnModelSource::CatalogDefault;
+        }
         apply_spawn_agent_overrides(&mut config, child_depth);
 
         let result = session
@@ -165,8 +347,11 @@ mod spawn {
                 Some(thread_spawn_source(
                     session.conversation_id,
                     child_depth,
-                    role_name,
+                    agent_persona.clone(),
+                    Some(effective_role_name),
                     thread_note.clone(),
+                    allow_list,
+                    deny_list,
                 )),
                 thread_note.clone(),
             )
@@ -179,14 +364,24 @@ mod spawn {
             ),
             Err(_) => (None, AgentStatus::NotFound),
         };
-        let (new_agent_nickname, new_agent_role, new_agent_thread_note) = match new_thread_id {
+        let (new_agent_nickname, new_agent_persona, new_agent_role, new_agent_thread_note) =
+            match new_thread_id {
+                Some(thread_id) => session
+                    .services
+                    .agent_control
+                    .get_agent_metadata(thread_id)
+                    .await
+                    .unwrap_or((None, None, None, None)),
+                None => (None, None, None, None),
+            };
+        let (new_agent_model, new_agent_reasoning_effort) = match new_thread_id {
             Some(thread_id) => session
                 .services
                 .agent_control
-                .get_agent_nickname_role_and_note(thread_id)
+                .get_agent_model_settings(thread_id)
                 .await
-                .unwrap_or((None, None, None)),
-            None => (None, None, None),
+                .unwrap_or((None, None)),
+            None => (None, None),
         };
         let nickname = new_agent_nickname.clone();
         let result_thread_note = new_agent_thread_note.clone();
@@ -198,6 +393,7 @@ mod spawn {
                     sender_thread_id: session.conversation_id,
                     new_thread_id,
                     new_agent_nickname,
+                    new_agent_persona,
                     new_agent_role,
                     new_agent_thread_note,
                     prompt,
@@ -207,14 +403,20 @@ mod spawn {
             )
             .await;
         let new_thread_id = result?;
-        let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
-        turn.otel_manager
-            .counter("codex.multi_agent.spawn", 1, &[("role", role_tag)]);
+        turn.otel_manager.counter(
+            "codex.multi_agent.spawn",
+            1,
+            &[("role", effective_role_name)],
+        );
 
         let content = serde_json::to_string(&SpawnAgentResult {
             agent_id: new_thread_id.to_string(),
             nickname,
             thread_note: result_thread_note,
+            requested_model,
+            model_source: model_source.as_str().to_string(),
+            model: new_agent_model,
+            reasoning_effort: new_agent_reasoning_effort,
         })
         .map_err(|err| {
             FunctionCallError::Fatal(format!("failed to serialize spawn_agent result: {err}"))
@@ -224,6 +426,104 @@ mod spawn {
             body: FunctionCallOutputBody::Text(content),
             success: Some(true),
         })
+    }
+
+    fn validate_spawn_model_selection(
+        session: &Session,
+        config: &mut Config,
+    ) -> Result<(), FunctionCallError> {
+        let presets = session
+            .services
+            .models_manager
+            .try_list_models()
+            .map_err(|_| {
+                FunctionCallError::RespondToModel(
+                    "Models are being updated; try spawn_agent again in a moment.".to_string(),
+                )
+            })?;
+        let model = resolve_spawn_model(config, &presets)?;
+        let preset = presets
+            .iter()
+            .find(|preset| preset.model == model)
+            .ok_or_else(|| {
+                let available = available_models_csv(&presets);
+                FunctionCallError::RespondToModel(format!(
+                    "unknown model {model:?} for spawn_agent. Available models: {available}"
+                ))
+            })?;
+
+        if let Some(effort) = config.model_reasoning_effort
+            && !preset
+                .supported_reasoning_efforts
+                .iter()
+                .any(|supported| supported.effort == effort)
+        {
+            let supported = supported_reasoning_efforts_csv(preset);
+            return Err(FunctionCallError::RespondToModel(format!(
+                "reasoning_effort {effort:?} is not supported for model {model:?}. Supported efforts: {supported}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn resolve_spawn_model(
+        config: &mut Config,
+        presets: &[ModelPreset],
+    ) -> Result<String, FunctionCallError> {
+        if let Some(model) = config.model.as_deref() {
+            return Ok(model.to_string());
+        }
+
+        let default_model = presets
+            .iter()
+            .find(|preset| preset.is_default)
+            .or_else(|| presets.first())
+            .map(|preset| preset.model.clone())
+            .ok_or_else(|| {
+                FunctionCallError::RespondToModel(
+                    "No models are available for spawn_agent.".to_string(),
+                )
+            })?;
+        config.model = Some(default_model.clone());
+        Ok(default_model)
+    }
+
+    fn available_models_csv(presets: &[ModelPreset]) -> String {
+        let models = presets
+            .iter()
+            .map(|preset| preset.model.as_str())
+            .collect::<Vec<_>>();
+        if models.is_empty() {
+            "<none>".to_string()
+        } else {
+            models.join(", ")
+        }
+    }
+
+    fn supported_reasoning_efforts_csv(preset: &ModelPreset) -> String {
+        let efforts = preset
+            .supported_reasoning_efforts
+            .iter()
+            .map(|supported| supported.effort.to_string())
+            .collect::<Vec<_>>();
+        if efforts.is_empty() {
+            "<none>".to_string()
+        } else {
+            efforts.join(", ")
+        }
+    }
+
+    fn parse_reasoning_effort_config(effort: &str) -> Option<ReasoningEffortConfig> {
+        match effort.trim().to_ascii_lowercase().as_str() {
+            "none" => Some(ReasoningEffortConfig::None),
+            "minimal" => Some(ReasoningEffortConfig::Minimal),
+            "low" => Some(ReasoningEffortConfig::Low),
+            "medium" => Some(ReasoningEffortConfig::Medium),
+            "high" => Some(ReasoningEffortConfig::High),
+            "xhigh" => Some(ReasoningEffortConfig::XHigh),
+            _ => None,
+        }
     }
 }
 
@@ -255,12 +555,12 @@ mod send_input {
         let receiver_thread_id = agent_id(&args.id)?;
         let input_items = parse_collab_input(args.message, args.items)?;
         let prompt = input_preview(&input_items);
-        let (receiver_agent_nickname, receiver_agent_role) = session
+        let (receiver_agent_nickname, receiver_agent_persona, receiver_agent_role) = session
             .services
             .agent_control
-            .get_agent_nickname_and_role(receiver_thread_id)
+            .get_agent_identity(receiver_thread_id)
             .await
-            .unwrap_or((None, None));
+            .unwrap_or((None, None, None));
         if args.interrupt {
             session
                 .services
@@ -300,6 +600,7 @@ mod send_input {
                     sender_thread_id: session.conversation_id,
                     receiver_thread_id,
                     receiver_agent_nickname,
+                    receiver_agent_persona,
                     receiver_agent_role,
                     prompt,
                     status,
@@ -389,12 +690,12 @@ mod resume_agent {
     ) -> Result<ToolOutput, FunctionCallError> {
         let args: ResumeAgentArgs = parse_arguments(&arguments)?;
         let receiver_thread_id = agent_id(&args.id)?;
-        let (receiver_agent_nickname, receiver_agent_role) = session
+        let (receiver_agent_nickname, receiver_agent_persona, receiver_agent_role) = session
             .services
             .agent_control
-            .get_agent_nickname_and_role(receiver_thread_id)
+            .get_agent_identity(receiver_thread_id)
             .await
-            .unwrap_or((None, None));
+            .unwrap_or((None, None, None));
         let child_depth = next_thread_spawn_depth(&turn.session_source);
         let max_depth = turn.config.agent_max_depth;
         if exceeds_thread_spawn_depth_limit(child_depth, max_depth) {
@@ -411,6 +712,7 @@ mod resume_agent {
                     sender_thread_id: session.conversation_id,
                     receiver_thread_id,
                     receiver_agent_nickname: receiver_agent_nickname.clone(),
+                    receiver_agent_persona: receiver_agent_persona.clone(),
                     receiver_agent_role: receiver_agent_role.clone(),
                 }
                 .into(),
@@ -442,12 +744,16 @@ mod resume_agent {
             None
         };
 
-        let (receiver_agent_nickname, receiver_agent_role) = session
+        let (receiver_agent_nickname, receiver_agent_persona, receiver_agent_role) = session
             .services
             .agent_control
-            .get_agent_nickname_and_role(receiver_thread_id)
+            .get_agent_identity(receiver_thread_id)
             .await
-            .unwrap_or((receiver_agent_nickname, receiver_agent_role));
+            .unwrap_or((
+                receiver_agent_nickname,
+                receiver_agent_persona,
+                receiver_agent_role,
+            ));
         session
             .send_event(
                 &turn,
@@ -456,6 +762,7 @@ mod resume_agent {
                     sender_thread_id: session.conversation_id,
                     receiver_thread_id,
                     receiver_agent_nickname,
+                    receiver_agent_persona,
                     receiver_agent_role,
                     status: status.clone(),
                 }
@@ -492,7 +799,15 @@ mod resume_agent {
             .resume_agent_from_rollout(
                 config,
                 receiver_thread_id,
-                thread_spawn_source(session.conversation_id, child_depth, None, None),
+                thread_spawn_source(
+                    session.conversation_id,
+                    child_depth,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
             )
             .await
             .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
@@ -550,15 +865,16 @@ pub(crate) mod wait {
             .collect::<Result<Vec<_>, _>>()?;
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
         for receiver_thread_id in &receiver_thread_ids {
-            let (agent_nickname, agent_role, thread_note) = session
+            let (agent_nickname, agent_persona, agent_role, thread_note) = session
                 .services
                 .agent_control
-                .get_agent_nickname_role_and_note(*receiver_thread_id)
+                .get_agent_metadata(*receiver_thread_id)
                 .await
-                .unwrap_or((None, None, None));
+                .unwrap_or((None, None, None, None));
             receiver_agents.push(CollabAgentRef {
                 thread_id: *receiver_thread_id,
                 agent_nickname,
+                agent_persona,
                 agent_role,
                 thread_note,
             });
@@ -733,12 +1049,12 @@ pub mod close_agent {
     ) -> Result<ToolOutput, FunctionCallError> {
         let args: CloseAgentArgs = parse_arguments(&arguments)?;
         let agent_id = agent_id(&args.id)?;
-        let (receiver_agent_nickname, receiver_agent_role) = session
+        let (receiver_agent_nickname, receiver_agent_persona, receiver_agent_role) = session
             .services
             .agent_control
-            .get_agent_nickname_and_role(agent_id)
+            .get_agent_identity(agent_id)
             .await
-            .unwrap_or((None, None));
+            .unwrap_or((None, None, None));
         session
             .send_event(
                 &turn,
@@ -767,6 +1083,7 @@ pub mod close_agent {
                             sender_thread_id: session.conversation_id,
                             receiver_thread_id: agent_id,
                             receiver_agent_nickname: receiver_agent_nickname.clone(),
+                            receiver_agent_persona: receiver_agent_persona.clone(),
                             receiver_agent_role: receiver_agent_role.clone(),
                             status,
                         }
@@ -795,6 +1112,7 @@ pub mod close_agent {
                     sender_thread_id: session.conversation_id,
                     receiver_thread_id: agent_id,
                     receiver_agent_nickname,
+                    receiver_agent_persona,
                     receiver_agent_role,
                     status: status.clone(),
                 }
@@ -835,6 +1153,7 @@ fn build_wait_agent_statuses(
             entries.push(CollabAgentStatusEntry {
                 thread_id: receiver_agent.thread_id,
                 agent_nickname: receiver_agent.agent_nickname.clone(),
+                agent_persona: receiver_agent.agent_persona.clone(),
                 agent_role: receiver_agent.agent_role.clone(),
                 thread_note: receiver_agent.thread_note.clone(),
                 status: status.clone(),
@@ -848,6 +1167,7 @@ fn build_wait_agent_statuses(
         .map(|(thread_id, status)| CollabAgentStatusEntry {
             thread_id: *thread_id,
             agent_nickname: None,
+            agent_persona: None,
             agent_role: None,
             thread_note: None,
             status: status.clone(),
@@ -885,17 +1205,21 @@ fn collab_agent_error(agent_id: ThreadId, err: CodexErr) -> FunctionCallError {
 fn thread_spawn_source(
     parent_thread_id: ThreadId,
     depth: i32,
+    agent_persona: Option<String>,
     agent_role: Option<&str>,
     thread_note: Option<String>,
+    allow_list: Option<Vec<String>>,
+    deny_list: Option<Vec<String>>,
 ) -> SessionSource {
     SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id,
         depth,
         agent_nickname: None,
+        agent_persona,
         agent_role: agent_role.map(str::to_string),
         thread_note,
-        allow_list: None,
-        deny_list: None,
+        allow_list,
+        deny_list,
     })
 }
 
@@ -1040,9 +1364,11 @@ mod tests {
     use serde::Deserialize;
     use serde_json::json;
     use std::collections::HashMap;
+    use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
+    use tempfile::TempDir;
     use tokio::sync::Mutex;
     use tokio::time::timeout;
 
@@ -1073,6 +1399,14 @@ mod tests {
             CodexAuth::from_api_key("dummy"),
             built_in_model_providers()["openai"].clone(),
         )
+    }
+
+    fn write_role_template(temp_dir: &TempDir, role_name: &str, template_body: &str) -> PathBuf {
+        let role_dir = temp_dir.path().join(".codex").join(".agents");
+        fs::create_dir_all(&role_dir).expect("create role templates directory");
+        let role_path = role_dir.join(format!("{role_name}.md"));
+        fs::write(&role_path, template_body).expect("write role template");
+        role_path
     }
 
     #[tokio::test]
@@ -1384,6 +1718,7 @@ mod tests {
             depth: max_depth,
             agent_nickname: None,
             agent_role: None,
+            agent_persona: None,
             thread_note: None,
             allow_list: None,
             deny_list: None,
@@ -1426,6 +1761,7 @@ mod tests {
             depth: DEFAULT_AGENT_MAX_DEPTH,
             agent_nickname: None,
             agent_role: None,
+            agent_persona: None,
             thread_note: None,
             allow_list: None,
             deny_list: None,
@@ -1459,6 +1795,727 @@ mod tests {
                 .is_some_and(|nickname| !nickname.is_empty())
         );
         assert_eq!(success, Some(true));
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_rejects_unknown_template_nickname() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "agent_type": "explorer",
+                "agent_nickname": "runner"
+            })),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("spawn should fail for unknown agent_nickname");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "unknown agent_nickname 'runner' for agent_type 'explorer'".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_accepts_template_only_role_without_declared_config() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            nickname: Option<String>,
+        }
+
+        let temp_dir = TempDir::new().expect("create tempdir");
+        write_role_template(
+            &temp_dir,
+            "orchestrator",
+            r#"---
+description: Orchestrator role from project templates
+read_only: true
+agent_names:
+  - name: default
+    description: default orchestrator persona
+allow_list: ["wait", "send_input"]
+deny_list: ["apply_patch"]
+---
+<!-- agent_nickname: default -->
+Coordinate sub-agents and report concise status updates.
+"#,
+        );
+
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        turn.cwd = temp_dir.path().to_path_buf();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "coordinate this task",
+                "agent_type": "orchestrator"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn should succeed for template-only role");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+        assert!(
+            result
+                .nickname
+                .as_deref()
+                .is_some_and(|nickname| !nickname.is_empty())
+        );
+
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+
+        match snapshot.session_source {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                agent_role,
+                allow_list,
+                deny_list,
+                ..
+            }) => {
+                assert_eq!(agent_role, Some("orchestrator".to_string()));
+                assert_eq!(
+                    allow_list,
+                    Some(vec!["send_input".to_string(), "wait".to_string()])
+                );
+                assert_eq!(deny_list, Some(vec!["apply_patch".to_string()]));
+            }
+            source => panic!("expected ThreadSpawn session source, got {source:?}"),
+        }
+        assert_eq!(
+            snapshot.sandbox_policy,
+            SandboxPolicy::new_read_only_policy()
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_accepts_template_alias_and_emits_canonical_role() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            nickname: Option<String>,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "agent_type": "Explorer"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn should succeed for template alias");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+        assert!(
+            result
+                .nickname
+                .as_deref()
+                .is_some_and(|nickname| !nickname.is_empty())
+        );
+
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+
+        match snapshot.session_source {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. }) => {
+                assert_eq!(agent_role, Some("explorer".to_string()));
+            }
+            source => panic!("expected ThreadSpawn session source, got {source:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_applies_template_policy_and_runtime_overrides() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            nickname: Option<String>,
+        }
+
+        let temp_dir = TempDir::new().expect("create tempdir");
+        write_role_template(
+            &temp_dir,
+            "worker",
+            r#"---
+description: Worker template from project
+read_only: true
+agent_names:
+  - name: default
+    description: default worker persona
+allow_list: ["wait", "spawn_agent", "wait"]
+deny_list: ["send_input"]
+---
+<!-- agent_nickname: default -->
+Use this worker template prompt.
+"#,
+        );
+
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        turn.cwd = temp_dir.path().to_path_buf();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "implement this task",
+                "agent_type": "worker"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+        assert!(
+            result
+                .nickname
+                .as_deref()
+                .is_some_and(|nickname| !nickname.is_empty())
+        );
+
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+
+        match snapshot.session_source {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                agent_role,
+                allow_list,
+                deny_list,
+                ..
+            }) => {
+                assert_eq!(agent_role, Some("worker".to_string()));
+                assert_eq!(
+                    allow_list,
+                    Some(vec!["spawn_agent".to_string(), "wait".to_string()])
+                );
+                assert_eq!(deny_list, Some(vec!["send_input".to_string()]));
+            }
+            source => panic!("expected ThreadSpawn session source, got {source:?}"),
+        }
+        assert_eq!(
+            snapshot.sandbox_policy,
+            SandboxPolicy::new_read_only_policy()
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_applies_template_model_and_reasoning_effort() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            requested_model: Option<String>,
+            model_source: String,
+            model: Option<String>,
+            reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+        }
+
+        let temp_dir = TempDir::new().expect("create tempdir");
+        write_role_template(
+            &temp_dir,
+            "worker",
+            r#"---
+description: Worker template from project
+model: gpt-5.2-codex
+reasoning_effort: low
+agent_names:
+  - name: default
+    description: default worker persona
+  - name: Runner
+    description: run long commands
+    model: gpt-5.3-codex
+    reasoning_effort: high
+---
+<!-- agent_nickname: default -->
+Use this worker template prompt.
+<!-- agent_nickname: runner -->
+Use this runner template prompt.
+"#,
+        );
+
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        turn.cwd = temp_dir.path().to_path_buf();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "run cargo test",
+                "agent_type": "worker",
+                "agent_nickname": "runner"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+        assert_eq!(snapshot.model, "gpt-5.3-codex");
+        assert_eq!(
+            snapshot.reasoning_effort,
+            Some(codex_protocol::openai_models::ReasoningEffort::High)
+        );
+        assert_eq!(result.model, Some("gpt-5.3-codex".to_string()));
+        assert_eq!(
+            result.reasoning_effort,
+            Some(codex_protocol::openai_models::ReasoningEffort::High)
+        );
+        assert_eq!(result.requested_model, None);
+        assert_eq!(result.model_source, "template_persona");
+
+        match snapshot.session_source {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                agent_persona,
+                agent_role,
+                ..
+            }) => {
+                assert_eq!(agent_persona, Some("Runner".to_string()));
+                assert_eq!(agent_role, Some("worker".to_string()));
+            }
+            source => panic!("expected ThreadSpawn session source, got {source:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_explicit_model_and_reasoning_override_take_priority() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            requested_model: Option<String>,
+            model_source: String,
+            model: Option<String>,
+            reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+        }
+
+        let temp_dir = TempDir::new().expect("create tempdir");
+        write_role_template(
+            &temp_dir,
+            "worker",
+            r#"---
+description: Worker template from project
+model: gpt-5.2-codex
+reasoning_effort: low
+agent_names:
+  - name: default
+    description: default worker persona
+  - name: Runner
+    description: run long commands
+    model: gpt-5.3-codex-spark
+    reasoning_effort: high
+---
+<!-- agent_nickname: default -->
+Use this worker template prompt.
+<!-- agent_nickname: runner -->
+Use this runner template prompt.
+"#,
+        );
+
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        turn.cwd = temp_dir.path().to_path_buf();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "run cargo test",
+                "agent_type": "worker",
+                "agent_nickname": "runner",
+                "model": "gpt-5-codex",
+                "reasoning_effort": "medium"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+        assert_eq!(snapshot.model, "gpt-5-codex");
+        assert_eq!(
+            snapshot.reasoning_effort,
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+        );
+        assert_eq!(result.model, Some("gpt-5-codex".to_string()));
+        assert_eq!(
+            result.reasoning_effort,
+            Some(codex_protocol::openai_models::ReasoningEffort::Medium)
+        );
+        assert_eq!(result.requested_model, Some("gpt-5-codex".to_string()));
+        assert_eq!(result.model_source, "explicit_argument");
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_without_model_uses_parent_model_source() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            requested_model: Option<String>,
+            model_source: String,
+            model: Option<String>,
+        }
+
+        let temp_dir = TempDir::new().expect("create tempdir");
+        write_role_template(
+            &temp_dir,
+            "worker",
+            r#"---
+description: Worker template from project
+agent_names:
+  - name: default
+    description: default worker persona
+---
+<!-- agent_nickname: default -->
+Use this worker template prompt.
+"#,
+        );
+
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        turn.cwd = temp_dir.path().to_path_buf();
+        let expected_parent_model = turn.model_info.slug.clone();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "run cargo test",
+                "agent_type": "worker"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+        assert_eq!(result.requested_model, None);
+        assert_eq!(result.model_source, "inherited_parent");
+        assert_eq!(result.model, Some(expected_parent_model.clone()));
+
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+        assert_eq!(snapshot.model, expected_parent_model);
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_model_does_not_follow_parent_model_updates() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            model: Option<String>,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let parent_model_before = turn.model_info.slug.clone();
+        let new_parent_model = session
+            .services
+            .models_manager
+            .try_list_models()
+            .expect("model catalog should be available")
+            .into_iter()
+            .map(|preset| preset.model)
+            .find(|model| model != &parent_model_before)
+            .expect("catalog should include an alternate model");
+
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let invocation = invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "run cargo test",
+                "agent_type": "worker"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn should succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+        assert_eq!(result.model, Some(parent_model_before.clone()));
+
+        let current_mode = session.collaboration_mode().await;
+        let updated_mode = current_mode.with_updates(Some(new_parent_model.clone()), None, None);
+        session
+            .update_settings(crate::codex::SessionSettingsUpdate {
+                collaboration_mode: Some(updated_mode),
+                ..Default::default()
+            })
+            .await
+            .expect("parent model override should apply");
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let current_turn = session.new_default_turn().await;
+                if current_turn.model_info.slug == new_parent_model {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("parent model should update");
+
+        let child_snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+        assert_eq!(child_snapshot.model, parent_model_before);
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_rejects_unknown_model_override() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "model": "gpt-5.999-codex-invalid"
+            })),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("spawn should fail");
+        };
+        let FunctionCallError::RespondToModel(message) = err else {
+            panic!("expected respond-to-model error");
+        };
+        assert!(
+            message.contains("unknown model"),
+            "expected unknown model message, got: {message}"
+        );
+        assert!(
+            message.contains("Available models:"),
+            "expected available models list, got: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_rejects_unknown_reasoning_effort_with_model_specific_list() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "model": "gpt-5.3-codex",
+                "reasoning_effort": "ultra"
+            })),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("spawn should fail");
+        };
+        let FunctionCallError::RespondToModel(message) = err else {
+            panic!("expected respond-to-model error");
+        };
+        assert!(
+            message.contains("\"gpt-5.3-codex\""),
+            "expected model-specific error, got: {message}"
+        );
+        assert!(
+            message.contains("Supported efforts: low, medium, high, xhigh"),
+            "expected model-specific supported list, got: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_rejects_unsupported_reasoning_effort_for_model() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "model": "gpt-5.1-codex-mini",
+                "reasoning_effort": "xhigh"
+            })),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("spawn should fail");
+        };
+        let FunctionCallError::RespondToModel(message) = err else {
+            panic!("expected respond-to-model error");
+        };
+        assert!(
+            message.contains("reasoning_effort"),
+            "expected unsupported reasoning message, got: {message}"
+        );
+        assert!(
+            message.contains("\"gpt-5.1-codex-mini\""),
+            "expected model slug in error, got: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_rejects_none_reasoning_effort_when_model_does_not_support_it() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "model": "gpt-5.1-codex-mini",
+                "reasoning_effort": "none"
+            })),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("spawn should fail");
+        };
+        let FunctionCallError::RespondToModel(message) = err else {
+            panic!("expected respond-to-model error");
+        };
+        assert!(
+            message.contains("reasoning_effort"),
+            "expected unsupported reasoning message, got: {message}"
+        );
+        assert!(
+            message.contains("Supported efforts: medium, high"),
+            "expected model-supported list, got: {message}"
+        );
     }
 
     #[tokio::test]
@@ -1929,6 +2986,7 @@ mod tests {
             depth: max_depth,
             agent_nickname: None,
             agent_role: None,
+            agent_persona: None,
             thread_note: None,
             allow_list: None,
             deny_list: None,
@@ -1998,6 +3056,7 @@ mod tests {
             thread_id,
             agent_nickname: Some("atlas".to_string()),
             agent_role: Some("explorer".to_string()),
+            agent_persona: None,
             thread_note: Some("focused on metadata sync".to_string()),
         }];
 

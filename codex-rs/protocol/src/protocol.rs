@@ -1968,6 +1968,8 @@ pub enum SubAgentSource {
         depth: i32,
         #[serde(default)]
         agent_nickname: Option<String>,
+        #[serde(default)]
+        agent_persona: Option<String>,
         #[serde(default, alias = "agent_type")]
         agent_role: Option<String>,
         #[serde(default)]
@@ -2027,6 +2029,15 @@ impl SessionSource {
             _ => None,
         }
     }
+
+    pub fn get_agent_persona(&self) -> Option<String> {
+        match self {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_persona, .. }) => {
+                agent_persona.clone()
+            }
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for SubAgentSource {
@@ -2066,6 +2077,9 @@ pub struct SessionMeta {
     /// Optional random unique nickname assigned to an AgentControl-spawned sub-agent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_nickname: Option<String>,
+    /// Optional selected persona (agent_nickname from YAML template) assigned to an AgentControl-spawned sub-agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_persona: Option<String>,
     /// Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
     #[serde(default, alias = "agent_type", skip_serializing_if = "Option::is_none")]
     pub agent_role: Option<String>,
@@ -2089,6 +2103,7 @@ impl Default for SessionMeta {
             cli_version: String::new(),
             source: SessionSource::default(),
             agent_nickname: None,
+            agent_persona: None,
             agent_role: None,
             model_provider: None,
             base_instructions: None,
@@ -2909,6 +2924,9 @@ pub struct CollabAgentRef {
     /// Optional nickname assigned to an AgentControl-spawned sub-agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_nickname: Option<String>,
+    /// Optional selected persona assigned to an AgentControl-spawned sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_persona: Option<String>,
     /// Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
     #[serde(default, alias = "agent_type", skip_serializing_if = "Option::is_none")]
     pub agent_role: Option<String>,
@@ -2924,6 +2942,9 @@ pub struct CollabAgentStatusEntry {
     /// Optional nickname assigned to an AgentControl-spawned sub-agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_nickname: Option<String>,
+    /// Optional selected persona assigned to an AgentControl-spawned sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_persona: Option<String>,
     /// Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
     #[serde(default, alias = "agent_type", skip_serializing_if = "Option::is_none")]
     pub agent_role: Option<String>,
@@ -2945,6 +2966,9 @@ pub struct CollabAgentSpawnEndEvent {
     /// Optional nickname assigned to the new agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_agent_nickname: Option<String>,
+    /// Optional selected persona assigned to the new agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_agent_persona: Option<String>,
     /// Optional role assigned to the new agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_agent_role: Option<String>,
@@ -2982,6 +3006,9 @@ pub struct CollabAgentInteractionEndEvent {
     /// Optional nickname assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_nickname: Option<String>,
+    /// Optional selected persona assigned to the receiver agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_agent_persona: Option<String>,
     /// Optional role assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_role: Option<String>,
@@ -3039,6 +3066,9 @@ pub struct CollabCloseEndEvent {
     /// Optional nickname assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_nickname: Option<String>,
+    /// Optional selected persona assigned to the receiver agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_agent_persona: Option<String>,
     /// Optional role assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_role: Option<String>,
@@ -3058,6 +3088,9 @@ pub struct CollabResumeBeginEvent {
     /// Optional nickname assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_nickname: Option<String>,
+    /// Optional selected persona assigned to the receiver agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_agent_persona: Option<String>,
     /// Optional role assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_role: Option<String>,
@@ -3074,6 +3107,9 @@ pub struct CollabResumeEndEvent {
     /// Optional nickname assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_nickname: Option<String>,
+    /// Optional selected persona assigned to the receiver agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_agent_persona: Option<String>,
     /// Optional role assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_role: Option<String>,
@@ -3598,6 +3634,7 @@ mod tests {
             parent_thread_id,
             depth,
             agent_nickname,
+            agent_persona,
             agent_role,
             thread_note,
             allow_list,
@@ -3613,6 +3650,7 @@ mod tests {
         );
         assert_eq!(depth, 2);
         assert_eq!(agent_nickname, Some("atlas".to_string()));
+        assert_eq!(agent_persona, None);
         assert_eq!(agent_role, Some("explorer".to_string()));
         assert_eq!(thread_note, None);
         assert_eq!(allow_list, None);
@@ -3627,6 +3665,7 @@ mod tests {
             parent_thread_id: ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")?,
             depth: 3,
             agent_nickname: Some("atlas".to_string()),
+            agent_persona: Some("Runner".to_string()),
             agent_role: Some("explorer".to_string()),
             thread_note: Some("parallel worker".to_string()),
             allow_list: Some(vec!["spawn_agent".to_string(), "wait".to_string()]),
@@ -3642,6 +3681,7 @@ mod tests {
                         "parent_thread_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
                         "depth": 3,
                         "agent_nickname": "atlas",
+                        "agent_persona": "Runner",
                         "agent_role": "explorer",
                         "thread_note": "parallel worker",
                         "allow_list": ["spawn_agent", "wait"],

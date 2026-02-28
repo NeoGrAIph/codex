@@ -634,6 +634,33 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
             },
         ),
         (
+            "agent_nickname".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional persona nickname for the selected agent_type. Use a value listed under agent_nickname entries in agent_type metadata. If omitted, `default` is used."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "model".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional model override for the spawned agent. Highest priority over template defaults and inherited turn config."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "reasoning_effort".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional reasoning effort override for the spawned agent (none|minimal|low|medium|high|xhigh). Highest priority over template defaults and inherited turn config."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
             "thread_note".to_string(),
             JsonSchema::String {
                 description: Some(
@@ -2154,6 +2181,34 @@ mod tests {
                 "spawn_agents_on_csv",
             ],
         );
+    }
+
+    #[test]
+    fn spawn_agent_schema_exposes_model_and_reasoning_overrides() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let features = Features::with_defaults();
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
+        });
+        let ToolSpec::Function(ResponsesApiTool { parameters, .. }) =
+            create_spawn_agent_tool(&tools_config)
+        else {
+            panic!("spawn_agent must be a function tool");
+        };
+        let JsonSchema::Object { properties, .. } = parameters else {
+            panic!("spawn_agent parameters must be an object schema");
+        };
+
+        assert!(properties.contains_key("agent_type"));
+        assert!(properties.contains_key("agent_nickname"));
+        assert!(properties.contains_key("model"));
+        assert!(properties.contains_key("reasoning_effort"));
+        assert!(properties.contains_key("thread_note"));
     }
 
     #[test]

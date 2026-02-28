@@ -574,6 +574,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
             sender_thread_id,
             new_thread_id: Some(new_thread_id),
             new_agent_nickname: None,
+            new_agent_persona: None,
             new_agent_role: None,
             prompt: prompt.clone(),
             status: AgentStatus::Running,

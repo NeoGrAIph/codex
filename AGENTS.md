@@ -28,6 +28,15 @@ In the codex-rs folder where the rust code lives:
 - When API contracts or wire behavior change, update user/developer-facing docs in the same change set (at minimum `app-server/README.md` when app-server API is affected).
 - Keep documentation centralized and consistent: update the relevant feature and API docs instead of scattering duplicate notes across unrelated files.
 
+## Agent Role Templates (`.agents/*.md`)
+
+- Role templates are loaded from `./.codex/.agents/*.md` (nearest directory first), then `~/.codex/.agents/*.md`, then embedded fallback templates.
+- Every role template must include YAML frontmatter and `agent_names`.
+- `agent_names` must include `name: default` with a non-empty `description`.
+- Each `agent_nickname` entry in YAML must have an individual non-empty `description`.
+- Prompt blocks must be declared with `<!-- agent_nickname: <name> -->`; each YAML nickname must have a matching prompt block.
+- Discovery text in `spawn_agent` schema should expose metadata only (`description`, `read_only`, `agent_nickname` list with per-nickname descriptions) and must not expose prompt text.
+
 ## Upstream Porting Conflict Policy (Required)
 
 - When porting fork commits onto a newer upstream release, resolve conflicts in source-of-truth files first (`src/protocol/*.rs`, runtime handlers, exhaustive `match` arms, and imports).

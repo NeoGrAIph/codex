@@ -134,6 +134,7 @@ mod tests {
             parent_thread_id,
             depth: 1,
             agent_nickname: None,
+            agent_persona: None,
             agent_role: None,
             thread_note: None,
             allow_list: None,

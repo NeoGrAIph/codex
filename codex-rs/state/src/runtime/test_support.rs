@@ -48,6 +48,7 @@ pub(super) fn test_thread_metadata(
         source: "cli".to_string(),
         agent_nickname: None,
         agent_role: None,
+        agent_persona: None,
         model_provider: "test-provider".to_string(),
         cwd,
         cli_version: "0.0.0".to_string(),
