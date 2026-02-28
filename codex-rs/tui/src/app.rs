@@ -1,3 +1,5 @@
+use crate::agents_overlay::AgentSummaryEntry;
+use crate::agents_overlay::build_agents_overlay_lines;
 use crate::app_backtrack::BacktrackState;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
@@ -13,6 +15,7 @@ use crate::chatwidget::ChatWidget;
 use crate::chatwidget::ExternalEditorState;
 use crate::cwd_prompt::CwdPromptAction;
 use crate::diff_render::DiffSummary;
+use crate::exec_command::relativize_to_home;
 use crate::exec_command::strip_bash_lc_and_escape;
 use crate::external_editor;
 use crate::file_search::FileSearchManager;
@@ -27,6 +30,7 @@ use crate::multi_agents::AgentPickerThreadEntry;
 use crate::multi_agents::agent_picker_status_dot_spans;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::sort_agent_picker_threads;
+use crate::pager_overlay::AGENTS_OVERLAY_TITLE;
 use crate::pager_overlay::Overlay;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::Renderable;
@@ -60,12 +64,18 @@ use codex_protocol::config_types::Personality;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::items::TurnItem;
+use codex_protocol::models::WebSearchAction;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+use codex_protocol::plan_tool::PlanItemArg;
+use codex_protocol::plan_tool::StepStatus;
+use codex_protocol::plan_tool::UpdatePlanArgs;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::FinalOutput;
 use codex_protocol::protocol::ListSkillsResponseEvent;
 use codex_protocol::protocol::Op;
@@ -73,6 +83,7 @@ use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SkillErrorInfo;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use color_eyre::eyre::Result;
@@ -246,10 +257,23 @@ struct SessionSummary {
     resume_command: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CtrlTOverlayAction {
+    OpenTranscript,
+    OpenAgents,
+    CloseAgents,
+    None,
+}
+
 #[derive(Debug, Clone)]
 struct ThreadEventSnapshot {
     session_configured: Option<Event>,
     events: Vec<Event>,
+    created_at: Instant,
+    latest_status: AgentStatus,
+    status_changed_at: Instant,
+    active_reasoning_summary: Option<String>,
+    active_plan_update: Option<UpdatePlanArgs>,
 }
 
 #[derive(Debug)]
@@ -260,10 +284,16 @@ struct ThreadEventStore {
     pending_interactive_replay: PendingInteractiveReplayState,
     capacity: usize,
     active: bool,
+    created_at: Instant,
+    latest_status: AgentStatus,
+    status_changed_at: Instant,
+    active_reasoning_summary: Option<String>,
+    active_plan_update: Option<UpdatePlanArgs>,
 }
 
 impl ThreadEventStore {
     fn new(capacity: usize) -> Self {
+        let now = Instant::now();
         Self {
             session_configured: None,
             buffer: VecDeque::new(),
@@ -271,6 +301,11 @@ impl ThreadEventStore {
             pending_interactive_replay: PendingInteractiveReplayState::default(),
             capacity,
             active: false,
+            created_at: now,
+            latest_status: AgentStatus::PendingInit,
+            status_changed_at: now,
+            active_reasoning_summary: None,
+            active_plan_update: None,
         }
     }
 
@@ -280,14 +315,57 @@ impl ThreadEventStore {
         store
     }
 
+    fn has_fully_completed_plan(update: &UpdatePlanArgs) -> bool {
+        !update.plan.is_empty()
+            && update
+                .plan
+                .iter()
+                .all(|item| matches!(&item.status, StepStatus::Completed))
+    }
+
     fn push_event(&mut self, event: Event) {
         self.pending_interactive_replay.note_event(&event);
         match &event.msg {
             EventMsg::SessionConfigured(_) => {
+                if self.session_configured.is_none() {
+                    let now = Instant::now();
+                    self.created_at = now;
+                    self.latest_status = AgentStatus::PendingInit;
+                    self.status_changed_at = now;
+                }
                 self.session_configured = Some(event);
                 return;
             }
+            EventMsg::PlanUpdate(update) => {
+                self.active_plan_update = Some(update.clone());
+            }
+            EventMsg::TurnStarted(_) => {
+                self.active_reasoning_summary = None;
+                if self
+                    .active_plan_update
+                    .as_ref()
+                    .is_some_and(Self::has_fully_completed_plan)
+                {
+                    self.active_plan_update = None;
+                }
+            }
+            EventMsg::ItemStarted(started) => {
+                if let TurnItem::Reasoning(item) = &started.item {
+                    let summary = item.summary_text.iter().find_map(|text| {
+                        let normalized = text.trim();
+                        (!normalized.is_empty()).then(|| normalized.to_string())
+                    });
+                    self.active_reasoning_summary = summary;
+                }
+            }
             EventMsg::ItemCompleted(completed) => {
+                if let TurnItem::Reasoning(item) = &completed.item {
+                    let summary = item.summary_text.iter().find_map(|text| {
+                        let normalized = text.trim();
+                        (!normalized.is_empty()).then(|| normalized.to_string())
+                    });
+                    self.active_reasoning_summary = summary;
+                }
                 if let TurnItem::UserMessage(item) = &completed.item {
                     if !event.id.is_empty() && self.user_message_ids.contains(&event.id) {
                         return;
@@ -312,6 +390,22 @@ impl ThreadEventStore {
             && !self.user_message_ids.insert(event.id.clone())
         {
             return;
+        }
+        let next_status = match &event.msg {
+            EventMsg::TurnStarted(_) => Some(AgentStatus::Running),
+            EventMsg::TurnComplete(ev) => {
+                Some(AgentStatus::Completed(ev.last_agent_message.clone()))
+            }
+            EventMsg::TurnAborted(ev) => Some(AgentStatus::Errored(format!("{:?}", ev.reason))),
+            EventMsg::Error(ev) => Some(AgentStatus::Errored(ev.message.clone())),
+            EventMsg::ShutdownComplete => Some(AgentStatus::Shutdown),
+            _ => None,
+        };
+        if let Some(next_status) = next_status
+            && next_status != self.latest_status
+        {
+            self.latest_status = next_status;
+            self.status_changed_at = Instant::now();
         }
         self.buffer.push_back(event);
         if self.buffer.len() > self.capacity
@@ -338,6 +432,11 @@ impl ThreadEventStore {
                 })
                 .cloned()
                 .collect(),
+            created_at: self.created_at,
+            latest_status: self.latest_status.clone(),
+            status_changed_at: self.status_changed_at,
+            active_reasoning_summary: self.active_reasoning_summary.clone(),
+            active_plan_update: self.active_plan_update.clone(),
         }
     }
 
@@ -990,6 +1089,457 @@ impl App {
             self.pending_primary_events.push_back(event);
         }
         Ok(())
+    }
+
+    async fn available_thread_ids(&mut self) -> Vec<ThreadId> {
+        let thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
+        for thread_id in thread_ids {
+            if self.server.get_thread(thread_id).await.is_err() {
+                self.thread_event_channels.remove(&thread_id);
+            }
+        }
+
+        let mut thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
+        thread_ids.sort_by_key(ToString::to_string);
+        thread_ids
+    }
+
+    fn ctrl_t_overlay_action(&self) -> CtrlTOverlayAction {
+        match self.overlay.as_ref() {
+            None => CtrlTOverlayAction::OpenTranscript,
+            Some(overlay) if overlay.is_transcript() => CtrlTOverlayAction::OpenAgents,
+            Some(overlay) if overlay.is_agents() => CtrlTOverlayAction::CloseAgents,
+            Some(_) => CtrlTOverlayAction::None,
+        }
+    }
+
+    async fn collect_agents_overlay_lines(&mut self, line_width: u16) -> Vec<Line<'static>> {
+        let thread_ids = self.available_thread_ids().await;
+        let now = Instant::now();
+
+        const SAW_TOOL_DETAIL_MAX_CHARS: usize = 160;
+        const SAW_REDACTED: &str = "<redacted>";
+
+        fn saw_truncate_detail(detail: String) -> String {
+            let mut iter = detail.chars();
+            let mut out = String::new();
+
+            for _ in 0..SAW_TOOL_DETAIL_MAX_CHARS {
+                match iter.next() {
+                    Some(ch) => out.push(ch),
+                    None => return out,
+                }
+            }
+
+            if iter.next().is_some() {
+                out.pop();
+                out.push('…');
+            }
+
+            out
+        }
+
+        fn saw_normalize_ws(input: &str) -> String {
+            let mut out = String::new();
+            let mut prev_space = true;
+            for ch in input.chars() {
+                let ch = if ch.is_control() { ' ' } else { ch };
+                let is_space = ch.is_whitespace();
+                if is_space {
+                    if !prev_space {
+                        out.push(' ');
+                    }
+                } else {
+                    out.push(ch);
+                }
+                prev_space = is_space;
+            }
+            out.trim().to_string()
+        }
+
+        fn saw_strip_url_query_fragment(url: &str) -> String {
+            let mut out = url;
+            if let Some((prefix, _)) = out.split_once('#') {
+                out = prefix;
+            }
+            if let Some((prefix, _)) = out.split_once('?') {
+                out = prefix;
+            }
+            out.to_string()
+        }
+
+        fn saw_is_secret_key(key: &str) -> bool {
+            let key = key.to_ascii_lowercase();
+            matches!(
+                key.as_str(),
+                "authorization"
+                    | "api_key"
+                    | "apikey"
+                    | "access_token"
+                    | "refresh_token"
+                    | "token"
+                    | "secret"
+                    | "password"
+                    | "passphrase"
+                    | "sessionid"
+                    | "cookie"
+                    | "set-cookie"
+            )
+        }
+
+        fn saw_redact_json(value: &serde_json::Value, depth: usize) -> serde_json::Value {
+            if depth >= 3 {
+                return serde_json::Value::String("…".to_string());
+            }
+
+            match value {
+                serde_json::Value::Object(map) => {
+                    let mut next = serde_json::Map::new();
+                    for (k, v) in map {
+                        if saw_is_secret_key(k) {
+                            next.insert(
+                                k.clone(),
+                                serde_json::Value::String(SAW_REDACTED.to_string()),
+                            );
+                        } else {
+                            next.insert(k.clone(), saw_redact_json(v, depth + 1));
+                        }
+                    }
+                    serde_json::Value::Object(next)
+                }
+                serde_json::Value::Array(values) => serde_json::Value::Array(
+                    values
+                        .iter()
+                        .take(6)
+                        .map(|v| saw_redact_json(v, depth + 1))
+                        .collect(),
+                ),
+                serde_json::Value::String(s) => {
+                    let normalized = saw_normalize_ws(s);
+                    if normalized.len() > 80 {
+                        serde_json::Value::String(saw_truncate_detail(normalized))
+                    } else {
+                        serde_json::Value::String(normalized)
+                    }
+                }
+                _ => value.clone(),
+            }
+        }
+
+        fn saw_format_json_args(value: &serde_json::Value) -> String {
+            let redacted = saw_redact_json(value, 0);
+            saw_normalize_ws(&redacted.to_string())
+        }
+
+        fn saw_format_patch_changes_detail(
+            changes: &HashMap<PathBuf, FileChange>,
+        ) -> Option<String> {
+            if changes.is_empty() {
+                return None;
+            }
+
+            let mut adds = 0usize;
+            let mut updates = 0usize;
+            let mut deletes = 0usize;
+            for change in changes.values() {
+                match change {
+                    FileChange::Add { .. } => adds += 1,
+                    FileChange::Update { .. } => updates += 1,
+                    FileChange::Delete { .. } => deletes += 1,
+                }
+            }
+
+            let mut paths: Vec<String> = changes
+                .keys()
+                .map(|path| path.display().to_string())
+                .collect();
+            paths.sort();
+
+            let total_files = paths.len();
+            let files_label = if total_files == 1 { "file" } else { "files" };
+            let mut detail =
+                format!("A:{adds} M:{updates} D:{deletes} ({total_files} {files_label})");
+
+            let max_paths = 3usize;
+            let shown: Vec<&str> = paths.iter().take(max_paths).map(String::as_str).collect();
+            let remaining = total_files.saturating_sub(shown.len());
+            if !shown.is_empty() {
+                detail.push_str(": ");
+                detail.push_str(&shown.join(", "));
+                if remaining > 0 {
+                    detail.push_str(&format!(" (+{remaining} more)"));
+                }
+            }
+
+            Some(detail)
+        }
+
+        let mut agents: Vec<AgentSummaryEntry> = Vec::new();
+        for thread_id in thread_ids {
+            let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+                continue;
+            };
+            let snapshot = {
+                let store = channel.store.lock().await;
+                store.snapshot()
+            };
+
+            let thread = match self.server.get_thread(thread_id).await {
+                Ok(thread) => thread,
+                Err(_) => continue,
+            };
+            let config_snapshot = thread.config_snapshot().await;
+
+            let (parent_thread_id, role) =
+                if let SessionSource::SubAgent(_) = &config_snapshot.session_source {
+                    Self::parent_and_role_from_session_source(&config_snapshot.session_source)
+                } else {
+                    continue;
+                };
+
+            let context_left_percent = snapshot.events.iter().rev().find_map(|event| {
+                if let EventMsg::TokenCount(token) = &event.msg {
+                    token.info.as_ref().and_then(|info| {
+                        info.model_context_window.and_then(|window| {
+                            (window > 0).then(|| {
+                                info.last_token_usage
+                                    .percent_of_context_window_remaining(window)
+                            })
+                        })
+                    })
+                } else {
+                    None
+                }
+            });
+
+            let (last_tool, last_tool_detail) = snapshot
+                .events
+                .iter()
+                .rev()
+                .find_map(|event| match &event.msg {
+                    EventMsg::ExecApprovalRequest(ev) => Some((
+                        "shell".to_string(),
+                        Some(saw_truncate_detail(strip_bash_lc_and_escape(&ev.command))),
+                    )),
+                    EventMsg::ExecCommandBegin(ev) => Some((
+                        "shell".to_string(),
+                        Some(saw_truncate_detail(strip_bash_lc_and_escape(&ev.command))),
+                    )),
+                    EventMsg::ExecCommandEnd(ev) => Some((
+                        "shell".to_string(),
+                        Some(saw_truncate_detail(strip_bash_lc_and_escape(&ev.command))),
+                    )),
+                    EventMsg::ApplyPatchApprovalRequest(ev) => Some((
+                        "apply_patch".to_string(),
+                        saw_format_patch_changes_detail(&ev.changes).map(saw_truncate_detail),
+                    )),
+                    EventMsg::PatchApplyBegin(ev) => Some((
+                        "apply_patch".to_string(),
+                        saw_format_patch_changes_detail(&ev.changes).map(saw_truncate_detail),
+                    )),
+                    EventMsg::PatchApplyEnd(ev) => Some((
+                        "apply_patch".to_string(),
+                        saw_format_patch_changes_detail(&ev.changes).map(saw_truncate_detail),
+                    )),
+                    EventMsg::WebSearchEnd(ev) => Some((
+                        "web_search".to_string(),
+                        Some(saw_truncate_detail(match &ev.action {
+                            WebSearchAction::Search { .. } => {
+                                let query = saw_normalize_ws(&ev.query);
+                                format!("search: {query}")
+                            }
+                            WebSearchAction::OpenPage { url } => url
+                                .as_ref()
+                                .map(|value| {
+                                    let value = saw_strip_url_query_fragment(value);
+                                    format!("open: {value}")
+                                })
+                                .unwrap_or_else(|| {
+                                    let query = saw_normalize_ws(&ev.query);
+                                    format!("open: {query}")
+                                }),
+                            WebSearchAction::FindInPage { url, pattern } => {
+                                let mut detail = "find".to_string();
+                                if let Some(pattern) = pattern.as_ref() {
+                                    let pattern = saw_normalize_ws(pattern);
+                                    detail.push_str(&format!(": {pattern}"));
+                                }
+                                if let Some(url) = url.as_ref() {
+                                    let url = saw_strip_url_query_fragment(url);
+                                    detail.push_str(&format!(" in {url}"));
+                                } else {
+                                    let query = saw_normalize_ws(&ev.query);
+                                    detail.push_str(&format!(": {query}"));
+                                }
+                                detail
+                            }
+                            WebSearchAction::Other => saw_normalize_ws(&ev.query),
+                        })),
+                    )),
+                    EventMsg::WebSearchBegin(_) => Some(("web_search".to_string(), None)),
+                    EventMsg::ViewImageToolCall(ev) => Some((
+                        "view_image".to_string(),
+                        Some(saw_truncate_detail({
+                            let display = if let Some(rel) = relativize_to_home(&ev.path) {
+                                format!("~/{}", rel.display())
+                            } else {
+                                ev.path.display().to_string()
+                            };
+                            saw_normalize_ws(&display)
+                        })),
+                    )),
+                    EventMsg::McpToolCallBegin(ev) => {
+                        let server = ev.invocation.server.as_str();
+                        let tool = ev.invocation.tool.as_str();
+                        Some((
+                            format!("{server}.{tool}"),
+                            ev.invocation
+                                .arguments
+                                .as_ref()
+                                .map(|args| saw_truncate_detail(saw_format_json_args(args))),
+                        ))
+                    }
+                    EventMsg::McpToolCallEnd(ev) => {
+                        let server = ev.invocation.server.as_str();
+                        let tool = ev.invocation.tool.as_str();
+                        Some((
+                            format!("{server}.{tool}"),
+                            ev.invocation
+                                .arguments
+                                .as_ref()
+                                .map(|args| saw_truncate_detail(saw_format_json_args(args))),
+                        ))
+                    }
+                    EventMsg::DynamicToolCallRequest(req) => Some((
+                        req.tool.clone(),
+                        Some(saw_truncate_detail(saw_format_json_args(&req.arguments))),
+                    )),
+                    _ => None,
+                })
+                .map_or((None, None), |(tool, detail)| (Some(tool), detail));
+
+            let status_detail = if matches!(
+                snapshot.latest_status,
+                AgentStatus::PendingInit | AgentStatus::Running
+            ) {
+                snapshot
+                    .active_reasoning_summary
+                    .as_ref()
+                    .and_then(|summary| {
+                        let detail = saw_normalize_ws(summary);
+                        (!detail.is_empty()).then(|| saw_truncate_detail(detail))
+                    })
+                    .or_else(|| {
+                        snapshot.events.iter().rev().find_map(|event| {
+                            if let EventMsg::BackgroundEvent(ev) = &event.msg {
+                                let detail = saw_normalize_ws(&ev.message);
+                                (!detail.is_empty()).then(|| saw_truncate_detail(detail))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+            } else {
+                None
+            };
+
+            let plan_update = snapshot.active_plan_update.as_ref().and_then(|update| {
+                let explanation = update
+                    .explanation
+                    .as_ref()
+                    .map(|text| saw_truncate_detail(saw_normalize_ws(text)))
+                    .filter(|text| !text.is_empty());
+                let plan: Vec<PlanItemArg> = update
+                    .plan
+                    .iter()
+                    .filter_map(|item| {
+                        let step = saw_truncate_detail(saw_normalize_ws(&item.step));
+                        if step.is_empty() {
+                            return None;
+                        }
+                        Some(PlanItemArg {
+                            step,
+                            status: item.status.clone(),
+                        })
+                    })
+                    .collect();
+                if explanation.is_none() && plan.is_empty() {
+                    None
+                } else {
+                    Some(UpdatePlanArgs { explanation, plan })
+                }
+            });
+
+            agents.push(AgentSummaryEntry {
+                thread_id,
+                parent_thread_id,
+                role,
+                model: config_snapshot.model,
+                reasoning: Self::reasoning_label(config_snapshot.reasoning_effort).to_string(),
+                note: config_snapshot.thread_note.as_ref().and_then(|note| {
+                    let note = saw_truncate_detail(saw_normalize_ws(note));
+                    (!note.is_empty()).then_some(note)
+                }),
+                status: snapshot.latest_status,
+                created_at: snapshot.created_at,
+                status_changed_at: snapshot.status_changed_at,
+                status_detail,
+                plan_update,
+                context_left_percent,
+                last_tool,
+                last_tool_detail,
+            });
+        }
+
+        build_agents_overlay_lines(&agents, now, self.config.animations, line_width)
+    }
+
+    async fn open_agents_overlay(&mut self, tui: &mut tui::Tui) {
+        let line_width = tui.terminal.viewport_area.width;
+        let lines = self.collect_agents_overlay_lines(line_width).await;
+
+        self.backtrack.overlay_preview_active = false;
+        self.reset_backtrack_state();
+        if !tui.is_alt_screen_active() {
+            let _ = tui.enter_alt_screen();
+        }
+        self.overlay = Some(Overlay::new_static_with_lines(
+            lines,
+            AGENTS_OVERLAY_TITLE.to_string(),
+        ));
+        tui.frame_requester().schedule_frame();
+    }
+
+    async fn refresh_agents_overlay_if_active(&mut self, tui: &mut tui::Tui) {
+        if !self.overlay.as_ref().is_some_and(Overlay::is_agents) {
+            return;
+        }
+
+        let line_width = tui.terminal.viewport_area.width;
+        let lines = self.collect_agents_overlay_lines(line_width).await;
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.replace_static_lines_if_title(AGENTS_OVERLAY_TITLE, lines);
+        }
+
+        if self.config.animations {
+            tui.frame_requester()
+                .schedule_frame_in(tui::TARGET_FRAME_INTERVAL);
+        } else {
+            tui.frame_requester()
+                .schedule_frame_in(Duration::from_secs(1));
+        }
+    }
+
+    pub(crate) async fn handle_ctrl_t_key(&mut self, tui: &mut tui::Tui) {
+        match self.ctrl_t_overlay_action() {
+            CtrlTOverlayAction::OpenTranscript => self.open_transcript_overlay(tui),
+            CtrlTOverlayAction::OpenAgents => self.open_agents_overlay(tui).await,
+            CtrlTOverlayAction::CloseAgents => {
+                self.close_transcript_overlay(tui);
+                tui.frame_requester().schedule_frame();
+            }
+            CtrlTOverlayAction::None => {}
+        }
     }
 
     async fn open_agent_picker(&mut self) {
@@ -1722,6 +2272,9 @@ impl App {
         }
 
         if self.overlay.is_some() {
+            if matches!(event, TuiEvent::Draw) {
+                self.refresh_agents_overlay_if_active(tui).await;
+            }
             let _ = self.handle_backtrack_overlay_event(tui, event).await?;
         } else {
             match event {
@@ -3173,6 +3726,43 @@ impl App {
         }
     }
 
+    fn parent_and_role_from_session_source(
+        session_source: &SessionSource,
+    ) -> (Option<ThreadId>, String) {
+        match session_source {
+            SessionSource::SubAgent(SubAgentSource::Review) => (None, "review".to_string()),
+            SessionSource::SubAgent(SubAgentSource::Compact) => (None, "compact".to_string()),
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                agent_role,
+                agent_nickname,
+                ..
+            }) => {
+                let agent_role = agent_role
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string);
+                let agent_nickname = agent_nickname
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string);
+                let role = match (agent_role, agent_nickname) {
+                    (Some(agent_role), Some(agent_nickname)) => {
+                        format!("{agent_role}/{agent_nickname}")
+                    }
+                    (Some(agent_role), None) => agent_role,
+                    (None, Some(agent_nickname)) => agent_nickname,
+                    (None, None) => "subagent".to_string(),
+                };
+                (Some(*parent_thread_id), role)
+            }
+            SessionSource::SubAgent(SubAgentSource::Other(other)) => (None, other.clone()),
+            _ => (None, "subagent".to_string()),
+        }
+    }
+
     fn reasoning_label_for(
         model: &str,
         reasoning_effort: Option<ReasoningEffortConfig>,
@@ -3298,10 +3888,7 @@ impl App {
                 kind: KeyEventKind::Press,
                 ..
             } => {
-                // Enter alternate screen and set viewport to full size.
-                let _ = tui.enter_alt_screen();
-                self.overlay = Some(Overlay::new_transcript(self.transcript_cells.clone()));
-                tui.frame_requester().schedule_frame();
+                self.handle_ctrl_t_key(tui).await;
             }
             KeyEvent {
                 code: KeyCode::Char('l'),
@@ -3636,6 +4223,31 @@ mod tests {
             })
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn ctrl_t_overlay_action_cycles_transcript_and_agents_overlays() {
+        let mut app = make_test_app().await;
+
+        assert_eq!(
+            app.ctrl_t_overlay_action(),
+            CtrlTOverlayAction::OpenTranscript
+        );
+
+        app.overlay = Some(Overlay::new_transcript(Vec::new()));
+        assert_eq!(app.ctrl_t_overlay_action(), CtrlTOverlayAction::OpenAgents);
+
+        app.overlay = Some(Overlay::new_static_with_lines(
+            Vec::<Line<'static>>::new(),
+            AGENTS_OVERLAY_TITLE.to_string(),
+        ));
+        assert_eq!(app.ctrl_t_overlay_action(), CtrlTOverlayAction::CloseAgents);
+
+        app.overlay = Some(Overlay::new_static_with_lines(
+            Vec::<Line<'static>>::new(),
+            "D I F F".to_string(),
+        ));
+        assert_eq!(app.ctrl_t_overlay_action(), CtrlTOverlayAction::None);
     }
 
     #[tokio::test]
