@@ -68,6 +68,35 @@ Rules:
 - prompt text outside nickname blocks is invalid.
 - unknown YAML fields are invalid (`deny_unknown_fields` on frontmatter entries).
 
+## Manifest Template
+
+Use this ready-to-copy manifest as a starting point:
+
+- `docs/features/agent-role-template.manifest.example.md`
+
+The file can be copied to either:
+
+- project scope: `./.codex/.agents/<role>.md` (recommended for repository-specific roles),
+- user scope: `~/.codex/.agents/<role>.md` (shared across repositories).
+
+## How To Add A New Agent Manifest
+
+1. Create `<role>.md` in one of the supported `.agents` directories.
+2. Copy the example template and update:
+   - frontmatter `description`,
+   - `agent_names` entries and descriptions,
+   - optional role/persona `model` and `reasoning_effort`,
+   - optional `allow_list` / `deny_list`.
+3. Keep `agent_names` containing `name: default`.
+4. Add one prompt block per persona:
+   - `<!-- agent_nickname: default -->`
+   - `<!-- agent_nickname: <persona> -->`
+5. Ensure no prompt text exists outside persona blocks.
+6. Verify discovery and spawn behavior by calling `spawn_agent`:
+   - check that the new role appears in role metadata,
+   - spawn with and without `agent_nickname`,
+   - confirm expected validation errors for invalid nicknames.
+
 ## Spawn Behavior
 
 `spawn_agent` accepts:
