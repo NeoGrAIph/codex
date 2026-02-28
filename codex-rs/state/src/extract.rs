@@ -39,6 +39,7 @@ fn apply_session_meta_from_item(metadata: &mut ThreadMetadata, meta_line: &Sessi
     metadata.source = enum_to_string(&meta_line.meta.source);
     metadata.agent_nickname = meta_line.meta.agent_nickname.clone();
     metadata.agent_role = meta_line.meta.agent_role.clone();
+    metadata.agent_persona = meta_line.meta.agent_persona.clone();
     if let Some(provider) = meta_line.meta.model_provider.as_deref() {
         metadata.model_provider = provider.to_string();
     }
@@ -239,6 +240,7 @@ mod tests {
                     source: SessionSource::Cli,
                     agent_nickname: None,
                     agent_role: None,
+                    agent_persona: None,
                     model_provider: Some("openai".to_string()),
                     base_instructions: None,
                     dynamic_tools: None,
@@ -320,6 +322,7 @@ mod tests {
             source: "cli".to_string(),
             agent_nickname: None,
             agent_role: None,
+            agent_persona: None,
             model_provider: "openai".to_string(),
             cwd: PathBuf::from("/tmp"),
             cli_version: "0.0.0".to_string(),

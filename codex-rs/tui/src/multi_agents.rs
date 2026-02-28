@@ -26,12 +26,14 @@ const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
 pub(crate) struct AgentPickerThreadEntry {
     pub(crate) agent_nickname: Option<String>,
     pub(crate) agent_role: Option<String>,
+    pub(crate) agent_persona: Option<String>,
     pub(crate) is_closed: bool,
 }
 
 #[derive(Clone, Copy)]
 struct AgentLabel<'a> {
     thread_id: Option<ThreadId>,
+    persona: Option<&'a str>,
     nickname: Option<&'a str>,
     role: Option<&'a str>,
 }
@@ -46,6 +48,7 @@ pub(crate) fn agent_picker_status_dot_spans(is_closed: bool) -> Vec<Span<'static
 }
 
 pub(crate) fn format_agent_picker_item_name(
+    agent_persona: Option<&str>,
     agent_nickname: Option<&str>,
     agent_role: Option<&str>,
     is_primary: bool,
@@ -54,13 +57,22 @@ pub(crate) fn format_agent_picker_item_name(
         return "Main [default]".to_string();
     }
 
+    let agent_persona = normalized_persona(agent_persona);
     let agent_nickname = agent_nickname
         .map(str::trim)
         .filter(|nickname| !nickname.is_empty());
     let agent_role = agent_role.map(str::trim).filter(|role| !role.is_empty());
-    match (agent_nickname, agent_role) {
-        (Some(agent_nickname), Some(agent_role)) => format!("{agent_nickname} [{agent_role}]"),
-        (Some(agent_nickname), None) => agent_nickname.to_string(),
+    let subject = match (agent_persona, agent_nickname) {
+        (Some(agent_persona), Some(agent_nickname)) => {
+            Some(format!("{agent_persona} {agent_nickname}"))
+        }
+        (Some(agent_persona), None) => Some(agent_persona.to_string()),
+        (None, Some(agent_nickname)) => Some(agent_nickname.to_string()),
+        (None, None) => None,
+    };
+    match (subject, agent_role) {
+        (Some(subject), Some(agent_role)) => format!("{subject} [{agent_role}]"),
+        (Some(subject), None) => subject,
         (None, Some(agent_role)) => format!("[{agent_role}]"),
         (None, None) => "Agent".to_string(),
     }
@@ -81,6 +93,7 @@ pub(crate) fn spawn_end(ev: CollabAgentSpawnEndEvent) -> PlainHistoryCell {
         new_thread_id,
         new_agent_nickname,
         new_agent_role,
+        new_agent_persona,
         new_agent_thread_note: _,
         prompt,
         status: _,
@@ -91,6 +104,7 @@ pub(crate) fn spawn_end(ev: CollabAgentSpawnEndEvent) -> PlainHistoryCell {
             "Spawned",
             AgentLabel {
                 thread_id: Some(thread_id),
+                persona: new_agent_persona.as_deref(),
                 nickname: new_agent_nickname.as_deref(),
                 role: new_agent_role.as_deref(),
             },
@@ -112,6 +126,7 @@ pub(crate) fn interaction_end(ev: CollabAgentInteractionEndEvent) -> PlainHistor
         receiver_thread_id,
         receiver_agent_nickname,
         receiver_agent_role,
+        receiver_agent_persona,
         prompt,
         status: _,
     } = ev;
@@ -120,6 +135,7 @@ pub(crate) fn interaction_end(ev: CollabAgentInteractionEndEvent) -> PlainHistor
         "Sent input to",
         AgentLabel {
             thread_id: Some(receiver_thread_id),
+            persona: receiver_agent_persona.as_deref(),
             nickname: receiver_agent_nickname.as_deref(),
             role: receiver_agent_role.as_deref(),
         },
@@ -177,6 +193,7 @@ pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
         receiver_thread_id,
         receiver_agent_nickname,
         receiver_agent_role,
+        receiver_agent_persona,
         status: _,
     } = ev;
 
@@ -185,6 +202,7 @@ pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
             "Closed",
             AgentLabel {
                 thread_id: Some(receiver_thread_id),
+                persona: receiver_agent_persona.as_deref(),
                 nickname: receiver_agent_nickname.as_deref(),
                 role: receiver_agent_role.as_deref(),
             },
@@ -200,6 +218,7 @@ pub(crate) fn resume_begin(ev: CollabResumeBeginEvent) -> PlainHistoryCell {
         receiver_thread_id,
         receiver_agent_nickname,
         receiver_agent_role,
+        receiver_agent_persona,
     } = ev;
 
     collab_event(
@@ -207,6 +226,7 @@ pub(crate) fn resume_begin(ev: CollabResumeBeginEvent) -> PlainHistoryCell {
             "Resuming",
             AgentLabel {
                 thread_id: Some(receiver_thread_id),
+                persona: receiver_agent_persona.as_deref(),
                 nickname: receiver_agent_nickname.as_deref(),
                 role: receiver_agent_role.as_deref(),
             },
@@ -222,6 +242,7 @@ pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
         receiver_thread_id,
         receiver_agent_nickname,
         receiver_agent_role,
+        receiver_agent_persona,
         status,
     } = ev;
 
@@ -230,6 +251,7 @@ pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
             "Resumed",
             AgentLabel {
                 thread_id: Some(receiver_thread_id),
+                persona: receiver_agent_persona.as_deref(),
                 nickname: receiver_agent_nickname.as_deref(),
                 role: receiver_agent_role.as_deref(),
             },
@@ -266,6 +288,7 @@ fn title_spans_line(mut spans: Vec<Span<'static>>) -> Line<'static> {
 fn agent_label_from_ref(agent: &CollabAgentRef) -> AgentLabel<'_> {
     AgentLabel {
         thread_id: Some(agent.thread_id),
+        persona: agent.agent_persona.as_deref(),
         nickname: agent.agent_nickname.as_deref(),
         role: agent.agent_role.as_deref(),
     }
@@ -277,13 +300,20 @@ fn agent_label_line(agent: AgentLabel<'_>) -> Line<'static> {
 
 fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
+    let persona = normalized_persona(agent.persona);
     let nickname = agent
         .nickname
         .map(str::trim)
         .filter(|nickname| !nickname.is_empty());
     let role = agent.role.map(str::trim).filter(|role| !role.is_empty());
 
-    if let Some(nickname) = nickname {
+    if let Some(persona) = persona {
+        spans.push(Span::from(persona.to_string()).light_blue().bold());
+        if let Some(nickname) = nickname {
+            spans.push(Span::from(" ").dim());
+            spans.push(Span::from(nickname.to_string()).light_blue().bold());
+        }
+    } else if let Some(nickname) = nickname {
         spans.push(Span::from(nickname.to_string()).light_blue().bold());
     } else if let Some(thread_id) = agent.thread_id {
         spans.push(Span::from(thread_id.to_string()).dim());
@@ -322,6 +352,7 @@ fn merge_wait_receivers(
                 thread_id: *thread_id,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
                 thread_note: None,
             })
             .collect();
@@ -337,6 +368,7 @@ fn merge_wait_receivers(
                 thread_id: *thread_id,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
                 thread_note: None,
             });
         }
@@ -359,6 +391,7 @@ fn wait_complete_lines(
                 thread_id: *thread_id,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
                 thread_note: None,
                 status: status.clone(),
             })
@@ -378,6 +411,7 @@ fn wait_complete_lines(
                 thread_id: *thread_id,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
                 thread_note: None,
                 status: status.clone(),
             })
@@ -394,11 +428,13 @@ fn wait_complete_lines(
                 thread_id,
                 agent_nickname,
                 agent_role,
+                agent_persona,
                 thread_note: _,
                 status,
             } = entry;
             let mut spans = agent_label_spans(AgentLabel {
                 thread_id: Some(thread_id),
+                persona: agent_persona.as_deref(),
                 nickname: agent_nickname.as_deref(),
                 role: agent_role.as_deref(),
             });
@@ -448,6 +484,12 @@ fn status_summary_spans(status: &AgentStatus) -> Vec<Span<'static>> {
     }
 }
 
+fn normalized_persona(persona: Option<&str>) -> Option<&str> {
+    persona
+        .map(str::trim)
+        .filter(|persona| !persona.is_empty() && !persona.eq_ignore_ascii_case("default"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,6 +514,7 @@ mod tests {
             new_thread_id: Some(robie_id),
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_role: Some("explorer".to_string()),
+            new_agent_persona: None,
             new_agent_thread_note: None,
             prompt: "Compute 11! and reply with just the integer result.".to_string(),
             status: AgentStatus::PendingInit,
@@ -483,6 +526,7 @@ mod tests {
             receiver_thread_id: robie_id,
             receiver_agent_nickname: Some("Robie".to_string()),
             receiver_agent_role: Some("explorer".to_string()),
+            receiver_agent_persona: None,
             prompt: "Please continue and return the answer only.".to_string(),
             status: AgentStatus::Running,
         });
@@ -494,6 +538,7 @@ mod tests {
                 thread_id: robie_id,
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
                 thread_note: None,
             }],
             call_id: "call-wait".to_string(),
@@ -513,6 +558,7 @@ mod tests {
                     thread_id: robie_id,
                     agent_nickname: Some("Robie".to_string()),
                     agent_role: Some("explorer".to_string()),
+                    agent_persona: None,
                     thread_note: None,
                     status: AgentStatus::Completed(Some("39916800".to_string())),
                 },
@@ -520,6 +566,7 @@ mod tests {
                     thread_id: bob_id,
                     agent_nickname: Some("Bob".to_string()),
                     agent_role: Some("worker".to_string()),
+                    agent_persona: None,
                     thread_note: None,
                     status: AgentStatus::Errored("tool timeout".to_string()),
                 },
@@ -533,6 +580,7 @@ mod tests {
             receiver_thread_id: robie_id,
             receiver_agent_nickname: Some("Robie".to_string()),
             receiver_agent_role: Some("explorer".to_string()),
+            receiver_agent_persona: None,
             status: AgentStatus::Completed(Some("39916800".to_string())),
         });
 
@@ -556,6 +604,7 @@ mod tests {
             new_thread_id: Some(robie_id),
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_role: Some("explorer".to_string()),
+            new_agent_persona: None,
             new_agent_thread_note: None,
             prompt: String::new(),
             status: AgentStatus::PendingInit,

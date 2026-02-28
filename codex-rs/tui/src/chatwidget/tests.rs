@@ -1583,7 +1583,7 @@ async fn helpers_are_available_and_do_not_panic() {
     let auth_manager =
         codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("test"));
     let init = ChatWidgetInit {
-        config: cfg,
+        config: cfg.clone(),
         frame_requester: FrameRequester::test_dummy(),
         app_event_tx: tx,
         initial_user_message: None,
@@ -1595,6 +1595,7 @@ async fn helpers_are_available_and_do_not_panic() {
         feedback_audience: FeedbackAudience::External,
         model: Some(resolved_model),
         startup_tooltip_override: None,
+        initial_reasoning_effort: cfg.model_reasoning_effort,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         otel_manager,
     };
@@ -4494,7 +4495,7 @@ async fn collaboration_modes_defaults_to_code_on_startup() {
     let auth_manager =
         codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("test"));
     let init = ChatWidgetInit {
-        config: cfg,
+        config: cfg.clone(),
         frame_requester: FrameRequester::test_dummy(),
         app_event_tx: AppEventSender::new(unbounded_channel::<AppEvent>().0),
         initial_user_message: None,
@@ -4506,6 +4507,7 @@ async fn collaboration_modes_defaults_to_code_on_startup() {
         feedback_audience: FeedbackAudience::External,
         model: Some(resolved_model.clone()),
         startup_tooltip_override: None,
+        initial_reasoning_effort: cfg.model_reasoning_effort,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         otel_manager,
     };
@@ -4544,7 +4546,7 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
     let auth_manager =
         codex_core::test_support::auth_manager_from_auth(CodexAuth::from_api_key("test"));
     let init = ChatWidgetInit {
-        config: cfg,
+        config: cfg.clone(),
         frame_requester: FrameRequester::test_dummy(),
         app_event_tx: AppEventSender::new(unbounded_channel::<AppEvent>().0),
         initial_user_message: None,
@@ -4556,6 +4558,7 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
         feedback_audience: FeedbackAudience::External,
         model: Some(resolved_model.clone()),
         startup_tooltip_override: None,
+        initial_reasoning_effort: cfg.model_reasoning_effort,
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         otel_manager,
     };

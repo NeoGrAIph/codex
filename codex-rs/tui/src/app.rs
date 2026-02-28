@@ -721,6 +721,8 @@ impl App {
         &self,
         tui: &mut tui::Tui,
         cfg: codex_core::config::Config,
+        model: Option<String>,
+        reasoning_effort: Option<ReasoningEffortConfig>,
     ) -> crate::chatwidget::ChatWidgetInit {
         crate::chatwidget::ChatWidgetInit {
             config: cfg,
@@ -734,8 +736,9 @@ impl App {
             feedback: self.feedback.clone(),
             is_first_run: false,
             feedback_audience: self.feedback_audience,
-            model: Some(self.chat_widget.current_model().to_string()),
+            model,
             startup_tooltip_override: None,
+            initial_reasoning_effort: reasoning_effort,
             status_line_invalid_items_warned: self.status_line_invalid_items_warned.clone(),
             otel_manager: self.otel_manager.clone(),
         }
@@ -976,6 +979,7 @@ impl App {
                 };
                 if let Some(entry) = self.agent_picker_threads.get(&thread_id) {
                     let label = format_agent_picker_item_name(
+                        entry.agent_persona.as_deref(),
                         entry.agent_nickname.as_deref(),
                         entry.agent_role.as_deref(),
                         is_primary,
@@ -1065,6 +1069,7 @@ impl App {
                     let session_source = thread.config_snapshot().await.session_source;
                     self.upsert_agent_picker_thread(
                         thread_id,
+                        session_source.get_agent_persona(),
                         session_source.get_nickname(),
                         session_source.get_agent_role(),
                         false,
@@ -1100,6 +1105,7 @@ impl App {
                 let id = *thread_id;
                 let is_primary = self.primary_thread_id == Some(*thread_id);
                 let name = format_agent_picker_item_name(
+                    entry.agent_persona.as_deref(),
                     entry.agent_nickname.as_deref(),
                     entry.agent_role.as_deref(),
                     is_primary,
@@ -1133,6 +1139,7 @@ impl App {
     fn upsert_agent_picker_thread(
         &mut self,
         thread_id: ThreadId,
+        agent_persona: Option<String>,
         agent_nickname: Option<String>,
         agent_role: Option<String>,
         is_closed: bool,
@@ -1140,6 +1147,7 @@ impl App {
         self.agent_picker_threads.insert(
             thread_id,
             AgentPickerThreadEntry {
+                agent_persona,
                 agent_nickname,
                 agent_role,
                 is_closed,
@@ -1151,7 +1159,37 @@ impl App {
         if let Some(entry) = self.agent_picker_threads.get_mut(&thread_id) {
             entry.is_closed = true;
         } else {
-            self.upsert_agent_picker_thread(thread_id, None, None, true);
+            self.upsert_agent_picker_thread(thread_id, None, None, None, true);
+        }
+    }
+
+    async fn update_active_thread_session_config(
+        &mut self,
+        new_model: Option<String>,
+        new_effort: Option<Option<ReasoningEffortConfig>>,
+    ) {
+        let Some(thread_id) = self.active_thread_id.or(self.chat_widget.thread_id()) else {
+            return;
+        };
+
+        let Some(channel) = self.thread_event_channels.get(&thread_id) else {
+            return;
+        };
+
+        let mut store = channel.store.lock().await;
+        let Some(Event {
+            msg: EventMsg::SessionConfigured(session),
+            ..
+        }) = store.session_configured.as_mut()
+        else {
+            return;
+        };
+
+        if let Some(model) = new_model {
+            session.model = model;
+        }
+        if let Some(effort) = new_effort {
+            session.reasoning_effort = effort;
         }
     }
 
@@ -1160,12 +1198,15 @@ impl App {
             return Ok(());
         }
 
-        let live_thread = match self.server.get_thread(thread_id).await {
-            Ok(thread) => Some(thread),
+        let (live_thread, config_snapshot) = match self.server.get_thread(thread_id).await {
+            Ok(thread) => {
+                let config_snapshot = thread.config_snapshot().await;
+                (Some(thread), Some(config_snapshot))
+            }
             Err(err) => {
                 if self.thread_event_channels.contains_key(&thread_id) {
                     self.mark_agent_picker_thread_closed(thread_id);
-                    None
+                    (None, None)
                 } else {
                     self.chat_widget.add_error_message(format!(
                         "Failed to attach to agent thread {thread_id}: {err}"
@@ -1191,7 +1232,32 @@ impl App {
         self.active_thread_id = Some(thread_id);
         self.active_thread_rx = Some(receiver);
 
-        let init = self.chatwidget_init_for_forked_or_resumed_thread(tui, self.config.clone());
+        let (snapshot_model, snapshot_effort) = snapshot
+            .session_configured
+            .as_ref()
+            .and_then(|event| {
+                if let EventMsg::SessionConfigured(session) = &event.msg {
+                    Some((Some(session.model.clone()), session.reasoning_effort))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or((None, None));
+        let initial_model = snapshot_model
+            .clone()
+            .or_else(|| config_snapshot.as_ref().map(|cfg| cfg.model.clone()));
+        let initial_effort = snapshot_effort.or_else(|| {
+            config_snapshot
+                .as_ref()
+                .and_then(|cfg| cfg.reasoning_effort)
+        });
+
+        let init = self.chatwidget_init_for_forked_or_resumed_thread(
+            tui,
+            self.config.clone(),
+            initial_model,
+            initial_effort,
+        );
         let codex_op_tx = if let Some(thread) = live_thread {
             crate::chatwidget::spawn_op_forwarder(thread)
         } else {
@@ -1263,6 +1329,7 @@ impl App {
             feedback_audience: self.feedback_audience,
             model: Some(model),
             startup_tooltip_override: None,
+            initial_reasoning_effort: self.chat_widget.current_reasoning_effort(),
             status_line_invalid_items_warned: self.status_line_invalid_items_warned.clone(),
             otel_manager: self.otel_manager.clone(),
         };
@@ -1482,6 +1549,7 @@ impl App {
                     feedback_audience,
                     model: Some(model.clone()),
                     startup_tooltip_override,
+                    initial_reasoning_effort: config.model_reasoning_effort,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
                     otel_manager: otel_manager.clone(),
                 };
@@ -1517,6 +1585,7 @@ impl App {
                     feedback_audience,
                     model: config.model.clone(),
                     startup_tooltip_override: None,
+                    initial_reasoning_effort: config.model_reasoning_effort,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
                     otel_manager: otel_manager.clone(),
                 };
@@ -1554,6 +1623,7 @@ impl App {
                     feedback_audience,
                     model: config.model.clone(),
                     startup_tooltip_override: None,
+                    initial_reasoning_effort: config.model_reasoning_effort,
                     status_line_invalid_items_warned: status_line_invalid_items_warned.clone(),
                     otel_manager: otel_manager.clone(),
                 };
@@ -1850,9 +1920,13 @@ impl App {
                                 self.config = resume_config;
                                 tui.set_notification_method(self.config.tui_notification_method);
                                 self.file_search.update_search_dir(self.config.cwd.clone());
+                                let resume_model = Some(resumed.session_configured.model.clone());
+                                let resume_effort = resumed.session_configured.reasoning_effort;
                                 let init = self.chatwidget_init_for_forked_or_resumed_thread(
                                     tui,
                                     self.config.clone(),
+                                    resume_model,
+                                    resume_effort,
                                 );
                                 self.chat_widget = ChatWidget::new_from_existing(
                                     init,
@@ -1910,9 +1984,13 @@ impl App {
                         {
                             Ok(forked) => {
                                 self.shutdown_current_thread().await;
+                                let fork_model = Some(forked.session_configured.model.clone());
+                                let fork_effort = forked.session_configured.reasoning_effort;
                                 let init = self.chatwidget_init_for_forked_or_resumed_thread(
                                     tui,
                                     self.config.clone(),
+                                    fork_model,
+                                    fork_effort,
                                 );
                                 self.chat_widget = ChatWidget::new_from_existing(
                                     init,
@@ -2082,10 +2160,15 @@ impl App {
             }
             AppEvent::UpdateReasoningEffort(effort) => {
                 self.on_update_reasoning_effort(effort);
+                self.update_active_thread_session_config(None, Some(effort))
+                    .await;
                 self.refresh_status_line();
             }
             AppEvent::UpdateModel(model) => {
                 self.chat_widget.set_model(&model);
+                let effort = self.chat_widget.current_reasoning_effort();
+                self.update_active_thread_session_config(Some(model.clone()), Some(effort))
+                    .await;
                 self.refresh_status_line();
             }
             AppEvent::UpdateCollaborationMode(mask) => {
@@ -3159,6 +3242,7 @@ impl App {
         let config_snapshot = thread.config_snapshot().await;
         self.upsert_agent_picker_thread(
             thread_id,
+            config_snapshot.session_source.get_agent_persona(),
             config_snapshot.session_source.get_nickname(),
             config_snapshot.session_source.get_agent_role(),
             false,
@@ -3667,6 +3751,7 @@ mod tests {
         assert_eq!(
             app.agent_picker_threads.get(&thread_id),
             Some(&AgentPickerThreadEntry {
+                agent_persona: None,
                 agent_nickname: None,
                 agent_role: None,
                 is_closed: true,
@@ -3684,6 +3769,7 @@ mod tests {
         app.agent_picker_threads.insert(
             thread_id,
             AgentPickerThreadEntry {
+                agent_persona: None,
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 is_closed: false,
@@ -3696,6 +3782,7 @@ mod tests {
         assert_eq!(
             app.agent_picker_threads.get(&thread_id),
             Some(&AgentPickerThreadEntry {
+                agent_persona: None,
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 is_closed: true,
@@ -3745,6 +3832,7 @@ mod tests {
         app.agent_picker_threads.insert(
             agent_thread_id,
             AgentPickerThreadEntry {
+                agent_persona: None,
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 is_closed: false,
@@ -3769,27 +3857,27 @@ mod tests {
         let snapshot = [
             format!(
                 "{} | {}",
-                format_agent_picker_item_name(Some("Robie"), Some("explorer"), true),
+                format_agent_picker_item_name(None, Some("Robie"), Some("explorer"), true),
                 thread_id
             ),
             format!(
                 "{} | {}",
-                format_agent_picker_item_name(Some("Robie"), Some("explorer"), false),
+                format_agent_picker_item_name(None, Some("Robie"), Some("explorer"), false),
                 thread_id
             ),
             format!(
                 "{} | {}",
-                format_agent_picker_item_name(Some("Robie"), None, false),
+                format_agent_picker_item_name(None, Some("Robie"), None, false),
                 thread_id
             ),
             format!(
                 "{} | {}",
-                format_agent_picker_item_name(None, Some("explorer"), false),
+                format_agent_picker_item_name(None, None, Some("explorer"), false),
                 thread_id
             ),
             format!(
                 "{} | {}",
-                format_agent_picker_item_name(None, None, false),
+                format_agent_picker_item_name(None, None, None, false),
                 thread_id
             ),
         ]
@@ -4465,6 +4553,59 @@ mod tests {
             app.config.model_reasoning_effort,
             Some(ReasoningEffortConfig::High)
         );
+    }
+
+    #[tokio::test]
+    async fn update_active_thread_session_config_updates_model_in_runtime() {
+        let mut app = make_test_app().await;
+        let thread_id = ThreadId::new();
+        let session_configured_event = Event {
+            id: "session-configured".to_string(),
+            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
+                session_id: thread_id,
+                forked_from_id: None,
+                thread_name: None,
+                thread_note: None,
+                model: "gpt-test".to_string(),
+                model_provider_id: "test-provider".to_string(),
+                approval_policy: AskForApproval::Never,
+                sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                cwd: PathBuf::from("/tmp/project"),
+                reasoning_effort: Some(ReasoningEffortConfig::Medium),
+                history_log_id: 0,
+                history_entry_count: 0,
+                initial_messages: None,
+                network_proxy: None,
+                rollout_path: Some(PathBuf::new()),
+            }),
+        };
+        app.active_thread_id = Some(thread_id);
+        app.thread_event_channels.insert(
+            thread_id,
+            ThreadEventChannel::new_with_session_configured(1, session_configured_event),
+        );
+
+        app.update_active_thread_session_config(
+            Some("gpt-5.2-codex".to_string()),
+            Some(Some(ReasoningEffortConfig::High)),
+        )
+        .await;
+
+        let channel = app
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("thread channel should exist");
+        let store = channel.store.lock().await;
+        let Some(Event {
+            msg: EventMsg::SessionConfigured(session),
+            ..
+        }) = store.session_configured.as_ref()
+        else {
+            panic!("expected session configured event in store");
+        };
+
+        assert_eq!(session.model, "gpt-5.2-codex");
+        assert_eq!(session.reasoning_effort, Some(ReasoningEffortConfig::High));
     }
 
     #[tokio::test]

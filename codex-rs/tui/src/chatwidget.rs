@@ -463,6 +463,7 @@ pub(crate) struct ChatWidgetInit {
     pub(crate) feedback_audience: FeedbackAudience,
     pub(crate) model: Option<String>,
     pub(crate) startup_tooltip_override: Option<String>,
+    pub(crate) initial_reasoning_effort: Option<ReasoningEffortConfig>,
     // Shared latch so we only warn once about invalid status-line item IDs.
     pub(crate) status_line_invalid_items_warned: Arc<AtomicBool>,
     pub(crate) otel_manager: OtelManager,
@@ -2770,12 +2771,14 @@ impl ChatWidget {
             feedback_audience,
             model,
             startup_tooltip_override,
+            initial_reasoning_effort,
             status_line_invalid_items_warned,
             otel_manager,
         } = common;
         let model = model.filter(|m| !m.trim().is_empty());
         let mut config = config;
         config.model = model.clone();
+        config.model_reasoning_effort = initial_reasoning_effort;
         let prevent_idle_sleep = config.features.enabled(Feature::PreventIdleSleep);
         let mut rng = rand::rng();
         let placeholder = PLACEHOLDERS[rng.random_range(0..PLACEHOLDERS.len())].to_string();
@@ -2793,7 +2796,7 @@ impl ChatWidget {
             .unwrap_or_else(|| model_for_header.clone());
         let fallback_default = Settings {
             model: header_model.clone(),
-            reasoning_effort: None,
+            reasoning_effort: initial_reasoning_effort,
             developer_instructions: None,
         };
         // Collaboration modes start in Default mode.
@@ -2951,12 +2954,14 @@ impl ChatWidget {
             feedback_audience,
             model,
             startup_tooltip_override,
+            initial_reasoning_effort,
             status_line_invalid_items_warned,
             otel_manager,
         } = common;
         let model = model.filter(|m| !m.trim().is_empty());
         let mut config = config;
         config.model = model.clone();
+        config.model_reasoning_effort = initial_reasoning_effort;
         let prevent_idle_sleep = config.features.enabled(Feature::PreventIdleSleep);
         let mut rng = rand::rng();
         let placeholder = PLACEHOLDERS[rng.random_range(0..PLACEHOLDERS.len())].to_string();
@@ -2973,7 +2978,7 @@ impl ChatWidget {
             .unwrap_or_else(|| model_for_header.clone());
         let fallback_default = Settings {
             model: header_model.clone(),
-            reasoning_effort: None,
+            reasoning_effort: initial_reasoning_effort,
             developer_instructions: None,
         };
         // Collaboration modes start in Default mode.
@@ -3120,10 +3125,13 @@ impl ChatWidget {
             feedback_audience,
             model,
             startup_tooltip_override: _,
+            initial_reasoning_effort,
             status_line_invalid_items_warned,
             otel_manager,
         } = common;
         let model = model.filter(|m| !m.trim().is_empty());
+        let mut config = config;
+        config.model = model.clone();
         let prevent_idle_sleep = config.features.enabled(Feature::PreventIdleSleep);
         let mut rng = rand::rng();
         let placeholder = PLACEHOLDERS[rng.random_range(0..PLACEHOLDERS.len())].to_string();
@@ -3138,6 +3146,9 @@ impl ChatWidget {
             .as_ref()
             .and_then(|mask| mask.model.clone())
             .unwrap_or(header_model);
+        let effective_reasoning_effort =
+            initial_reasoning_effort.or(session_configured.reasoning_effort);
+        config.model_reasoning_effort = effective_reasoning_effort;
 
         let current_cwd = Some(session_configured.cwd.clone());
         let codex_op_tx =
@@ -3145,7 +3156,7 @@ impl ChatWidget {
 
         let fallback_default = Settings {
             model: header_model.clone(),
-            reasoning_effort: None,
+            reasoning_effort: effective_reasoning_effort,
             developer_instructions: None,
         };
         // Collaboration modes start in Default mode.

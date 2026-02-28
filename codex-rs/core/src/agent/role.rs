@@ -16,6 +16,10 @@ use toml::Value as TomlValue;
 pub const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
 
+pub(crate) fn is_declared_role(config: &Config, role_name: &str) -> bool {
+    config.agent_roles.contains_key(role_name) || built_in::configs().contains_key(role_name)
+}
+
 /// Applies a role config layer to a mutable config and preserves unspecified keys.
 pub(crate) async fn apply_role_to_config(
     config: &mut Config,
@@ -102,46 +106,138 @@ pub(crate) async fn apply_role_to_config(
 
 pub(crate) mod spawn_tool_spec {
     use super::*;
+    use crate::agent::role_templates::AgentNicknameDiscovery;
+    use crate::agent::role_templates::DEFAULT_AGENT_NICKNAME;
+    use crate::agent::role_templates::LoadedRoleTemplates;
+    use crate::agent::role_templates::RoleDiscoveryMetadata;
 
     /// Builds the spawn-agent tool description text from built-in and configured roles.
     pub(crate) fn build(user_defined_agent_roles: &BTreeMap<String, AgentRoleConfig>) -> String {
         let built_in_roles = built_in::configs();
-        build_from_configs(built_in_roles, user_defined_agent_roles)
+        let (loaded_templates, templates_load_error) = match LoadedRoleTemplates::load() {
+            Ok(templates) => (Some(templates), None),
+            Err(err) => (None, Some(err)),
+        };
+        let template_only_roles = loaded_templates
+            .as_ref()
+            .map(|templates| {
+                templates
+                    .role_names()
+                    .into_iter()
+                    .filter(|role_name| {
+                        !user_defined_agent_roles.contains_key(role_name)
+                            && !built_in_roles.contains_key(role_name)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        build_from_configs(
+            built_in_roles,
+            user_defined_agent_roles,
+            &template_only_roles,
+            |role_name| {
+                loaded_templates
+                    .as_ref()
+                    .and_then(|templates| templates.role_metadata(role_name).ok())
+                    .flatten()
+            },
+            templates_load_error,
+        )
     }
 
     // This function is not inlined for testing purpose.
-    fn build_from_configs(
+    pub(super) fn build_from_configs<F>(
         built_in_roles: &BTreeMap<String, AgentRoleConfig>,
         user_defined_roles: &BTreeMap<String, AgentRoleConfig>,
-    ) -> String {
+        template_only_roles: &[String],
+        mut role_metadata_lookup: F,
+        templates_load_error: Option<String>,
+    ) -> String
+    where
+        F: FnMut(&str) -> Option<RoleDiscoveryMetadata>,
+    {
         let mut seen = BTreeSet::new();
         let mut formatted_roles = Vec::new();
         for (name, declaration) in user_defined_roles {
             if seen.insert(name.as_str()) {
-                formatted_roles.push(format_role(name, declaration));
+                let metadata = role_metadata_lookup(name);
+                formatted_roles.push(format_role(name, declaration, metadata.as_ref()));
             }
         }
         for (name, declaration) in built_in_roles {
             if seen.insert(name.as_str()) {
-                formatted_roles.push(format_role(name, declaration));
+                let metadata = role_metadata_lookup(name);
+                formatted_roles.push(format_role(name, declaration, metadata.as_ref()));
+            }
+        }
+        for name in template_only_roles {
+            if seen.insert(name.as_str()) {
+                let metadata = role_metadata_lookup(name);
+                formatted_roles.push(format_role(
+                    name,
+                    &AgentRoleConfig::default(),
+                    metadata.as_ref(),
+                ));
             }
         }
 
-        format!(
+        let mut description = format!(
             r#"Optional type name for the new agent. If omitted, `{DEFAULT_ROLE_NAME}` is used.
 Available roles:
 {}
             "#,
             formatted_roles.join("\n"),
-        )
+        );
+        if let Some(err) = templates_load_error {
+            description.push_str(&format!(
+                "\nTemplate metadata warning: {err}\nRoles without template metadata expose only fallback default nickname.\n"
+            ));
+        }
+        description
     }
 
-    fn format_role(name: &str, declaration: &AgentRoleConfig) -> String {
-        if let Some(description) = &declaration.description {
-            format!("{name}: {{\n{description}\n}}")
-        } else {
-            format!("{name}: no description")
-        }
+    fn format_role(
+        name: &str,
+        declaration: &AgentRoleConfig,
+        metadata: Option<&RoleDiscoveryMetadata>,
+    ) -> String {
+        let (description, read_only, agent_nicknames) = match metadata {
+            Some(metadata) => (
+                metadata.description.as_str(),
+                metadata.read_only,
+                metadata.agent_nicknames.clone(),
+            ),
+            None => {
+                let fallback_description = declaration
+                    .description
+                    .as_deref()
+                    .unwrap_or("no description");
+                (
+                    fallback_description,
+                    false,
+                    vec![AgentNicknameDiscovery {
+                        name: DEFAULT_AGENT_NICKNAME.to_string(),
+                        description:
+                            "Use when no explicit agent_nickname is provided for this role."
+                                .to_string(),
+                    }],
+                )
+            }
+        };
+        let nickname_lines = agent_nicknames
+            .iter()
+            .map(|nickname| {
+                format!(
+                    "- {{name: {}, description: {}}}",
+                    nickname.name, nickname.description
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        format!(
+            "{name}: {{\ndescription: {description}\nread_only: {read_only}\nagent_nickname: [\n{nickname_lines}\n]\n}}"
+        )
     }
 }
 
@@ -472,6 +568,9 @@ writable_roots = ["./sandbox-root"]
 
     #[test]
     fn spawn_tool_spec_build_deduplicates_user_defined_built_in_roles() {
+        use crate::agent::role_templates::AgentNicknameDiscovery;
+        use crate::agent::role_templates::RoleDiscoveryMetadata;
+
         let user_defined_roles = BTreeMap::from([
             (
                 "explorer".to_string(),
@@ -483,12 +582,32 @@ writable_roots = ["./sandbox-root"]
             ("researcher".to_string(), AgentRoleConfig::default()),
         ]);
 
-        let spec = spawn_tool_spec::build(&user_defined_roles);
+        let spec = spawn_tool_spec::build_from_configs(
+            built_in::configs(),
+            &user_defined_roles,
+            &[],
+            |role_name| {
+                (role_name == "explorer").then_some(RoleDiscoveryMetadata {
+                    description:
+                        "Use explorer for specific codebase questions and focused investigation tasks."
+                            .to_string(),
+                    read_only: true,
+                    agent_nicknames: vec![AgentNicknameDiscovery {
+                        name: "default".to_string(),
+                        description: "Investigate quickly".to_string(),
+                    }],
+                })
+            },
+            None,
+        );
 
-        assert!(spec.contains("researcher: no description"));
-        assert!(spec.contains("explorer: {\nuser override\n}"));
-        assert!(spec.contains("default: {\nDefault agent.\n}"));
-        assert!(!spec.contains("Explorers are fast and authoritative."));
+        assert!(spec.contains("researcher: {"));
+        assert!(spec.contains("description: no description"));
+        assert!(spec.contains("explorer: {"));
+        assert!(spec.contains("description: Use explorer for specific codebase questions"));
+        assert!(spec.contains("default: {"));
+        assert!(spec.contains("agent_nickname: ["));
+        assert!(!spec.contains("user override"));
     }
 
     #[test]
@@ -501,13 +620,50 @@ writable_roots = ["./sandbox-root"]
             },
         )]);
 
-        let spec = spawn_tool_spec::build(&user_defined_roles);
-        let user_index = spec.find("aaa: {\nfirst\n}").expect("find user role");
-        let built_in_index = spec
-            .find("default: {\nDefault agent.\n}")
-            .expect("find built-in role");
+        let spec = spawn_tool_spec::build_from_configs(
+            built_in::configs(),
+            &user_defined_roles,
+            &[],
+            |_| None,
+            None,
+        );
+        let user_index = spec
+            .find("aaa: {\ndescription: first")
+            .expect("find user role");
+        let built_in_index = spec.find("default: {").expect("find built-in role");
 
         assert!(user_index < built_in_index);
+    }
+
+    #[test]
+    fn spawn_tool_spec_includes_template_only_roles() {
+        use crate::agent::role_templates::AgentNicknameDiscovery;
+        use crate::agent::role_templates::RoleDiscoveryMetadata;
+
+        let user_defined_roles = BTreeMap::new();
+        let template_only_roles = vec!["orchestrator".to_string()];
+
+        let spec = spawn_tool_spec::build_from_configs(
+            built_in::configs(),
+            &user_defined_roles,
+            &template_only_roles,
+            |role_name| {
+                (role_name == "orchestrator").then_some(RoleDiscoveryMetadata {
+                    description: "Coordinates multi-agent workflows.".to_string(),
+                    read_only: false,
+                    agent_nicknames: vec![AgentNicknameDiscovery {
+                        name: "default".to_string(),
+                        description: "Default orchestrator persona.".to_string(),
+                    }],
+                })
+            },
+            None,
+        );
+
+        assert!(spec.contains("orchestrator: {"));
+        assert!(spec.contains("description: Coordinates multi-agent workflows."));
+        assert!(spec.contains("agent_nickname: ["));
+        assert!(spec.contains("{name: default, description: Default orchestrator persona.}"));
     }
 
     #[test]
