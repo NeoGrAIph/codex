@@ -143,3 +143,4 @@ combinations during spawn validation.
 Role/persona template authoring and validation rules are documented in:
 
 - `docs/features/agent-role-templates.md`
+- `docs/features/saw.md`

@@ -1,0 +1,15 @@
+---
+source: tui/src/agents_overlay.rs
+expression: rendered
+---
+• Working (42s)  Role: orchestrator  Model: gpt-5  Reasoning: medium  Spawned: 5m 00s                              |  Note: Main flow
+  Context left: 67%  00000000-0000-0000-0000-000000000001
+  Last tool: shell                         |  Collecting context
+    └ cargo test -p codex-tui
+  Plan:
+    Note: Main flow
+    [x] Open AGENTS overlay
+    [>] Refresh summary
+  • Completed (8s)  Role: worker/runner  Model: gpt-5.3-codex  Reasoning: high  Spawned: 3m 20s
+    Context left: 12%  00000000-0000-0000-0000-000000000002
+    Last tool: —                             |  —

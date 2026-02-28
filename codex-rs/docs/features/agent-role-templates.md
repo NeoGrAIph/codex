@@ -152,3 +152,7 @@ Prompt text is intentionally excluded from schema discovery.
 
 If template metadata fails to load when the tool schema text is built, discovery includes a warning
 and roles without metadata fall back to a synthetic `default` nickname entry in the description.
+
+## Related Features
+
+- `docs/features/saw.md`

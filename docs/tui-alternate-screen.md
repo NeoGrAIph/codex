@@ -110,9 +110,15 @@ We use `auto` detection instead of always disabling in Zellij because:
 2. **Request Zellij to add a config option:** Not viable—Zellij maintainers explicitly chose this behavior to follow the spec
 3. **Disable alternate screen unconditionally:** Would degrade UX for non-Zellij users
 
-### Transcript Pager
+### Transcript And Agents Pager
 
-Codex's transcript pager (opened with Ctrl+T) provides an alternative way to review conversation history, even in fullscreen mode. However, this is not as seamless as natural scrollback.
+`Ctrl+T` cycles through overlay views:
+
+1. transcript (`/ T R A N S C R I P T /`);
+2. sub-agents summary (`/ A G E N T S /`);
+3. close overlay and return to main view.
+
+These overlays provide an alternative way to inspect conversation history and active agent state in fullscreen mode, though they are still not identical to natural terminal scrollback.
 
 ## For Developers
 

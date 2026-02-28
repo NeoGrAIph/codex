@@ -50,6 +50,8 @@ pub(crate) enum Overlay {
     Static(StaticOverlay),
 }
 
+pub(crate) const AGENTS_OVERLAY_TITLE: &str = "A G E N T S";
+
 impl Overlay {
     pub(crate) fn new_transcript(cells: Vec<Arc<dyn HistoryCell>>) -> Self {
         Self::Transcript(TranscriptOverlay::new(cells))
@@ -77,6 +79,28 @@ impl Overlay {
         match self {
             Overlay::Transcript(o) => o.is_done(),
             Overlay::Static(o) => o.is_done(),
+        }
+    }
+
+    pub(crate) fn is_transcript(&self) -> bool {
+        matches!(self, Overlay::Transcript(_))
+    }
+
+    pub(crate) fn is_agents(&self) -> bool {
+        matches!(self, Overlay::Static(o) if o.view.title == AGENTS_OVERLAY_TITLE)
+    }
+
+    pub(crate) fn replace_static_lines_if_title(
+        &mut self,
+        title: &str,
+        lines: Vec<Line<'static>>,
+    ) -> bool {
+        match self {
+            Overlay::Static(o) if o.view.title == title => {
+                o.replace_lines(lines);
+                true
+            }
+            _ => false,
         }
     }
 }
@@ -724,6 +748,15 @@ impl StaticOverlay {
             view: PagerView::new(renderables, title, 0),
             is_done: false,
         }
+    }
+
+    fn replace_lines(&mut self, lines: Vec<Line<'static>>) {
+        let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+        self.view.renderables = vec![Box::new(CachedRenderable::new(paragraph))];
+        self.view.scroll_offset = 0;
+        self.view.last_content_height = None;
+        self.view.last_rendered_height = None;
+        self.view.pending_scroll_chunk = None;
     }
 
     fn render_hints(&self, area: Rect, buf: &mut Buffer) {

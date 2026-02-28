@@ -110,6 +110,17 @@ impl App {
         tui: &mut tui::Tui,
         event: TuiEvent,
     ) -> Result<bool> {
+        if let TuiEvent::Key(KeyEvent {
+            code: KeyCode::Char('t'),
+            modifiers: crossterm::event::KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            ..
+        }) = event
+        {
+            self.handle_ctrl_t_key(tui).await;
+            return Ok(true);
+        }
+
         if self.backtrack.overlay_preview_active {
             match event {
                 TuiEvent::Key(KeyEvent {
