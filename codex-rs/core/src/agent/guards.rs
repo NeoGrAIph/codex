@@ -212,7 +212,7 @@ mod tests {
     fn thread_spawn_depth_increments_and_enforces_limit() {
         let session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id: ThreadId::new(),
-            depth: 1,
+            depth: 2,
             agent_nickname: None,
             agent_role: None,
             agent_persona: None,
@@ -221,8 +221,8 @@ mod tests {
             deny_list: None,
         });
         let child_depth = next_thread_spawn_depth(&session_source);
-        assert_eq!(child_depth, 2);
-        assert!(exceeds_thread_spawn_depth_limit(child_depth, 1));
+        assert_eq!(child_depth, 3);
+        assert!(exceeds_thread_spawn_depth_limit(child_depth, 2));
     }
 
     #[test]

@@ -14,6 +14,8 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Weak;
 use tokio::sync::watch;
@@ -229,10 +231,76 @@ impl AgentControl {
     /// Submit a shutdown request to an existing agent thread.
     pub(crate) async fn shutdown_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
-        let result = state.send_op(agent_id, Op::Shutdown {}).await;
+        let descendants = self.list_thread_spawn_descendants(agent_id).await?;
+        let mut first_child_error: Option<CodexErr> = None;
+
+        for child_id in descendants.into_iter().rev() {
+            let result = state.send_op(child_id, Op::Shutdown {}).await;
+            let _ = state.remove_thread(&child_id).await;
+            self.state.release_spawned_thread(child_id);
+            if let Err(err) = result
+                && !matches!(
+                    err,
+                    CodexErr::ThreadNotFound(_) | CodexErr::InternalAgentDied
+                )
+                && first_child_error.is_none()
+            {
+                first_child_error = Some(err);
+            }
+        }
+
+        let parent_result = state.send_op(agent_id, Op::Shutdown {}).await;
         let _ = state.remove_thread(&agent_id).await;
         self.state.release_spawned_thread(agent_id);
-        result
+        let parent_response = parent_result?;
+        if let Some(err) = first_child_error {
+            return Err(err);
+        }
+        Ok(parent_response)
+    }
+
+    pub(crate) async fn list_thread_spawn_descendants(
+        &self,
+        parent_thread_id: ThreadId,
+    ) -> CodexResult<Vec<ThreadId>> {
+        let state = self.upgrade()?;
+        let threads = state.list_threads().await;
+        let mut children_by_parent: HashMap<ThreadId, Vec<ThreadId>> = HashMap::new();
+
+        for (thread_id, thread) in threads {
+            let snapshot = thread.config_snapshot().await;
+            if let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }) = snapshot.session_source
+            {
+                children_by_parent
+                    .entry(parent_thread_id)
+                    .or_default()
+                    .push(thread_id);
+            }
+        }
+
+        for children in children_by_parent.values_mut() {
+            children.sort_by_key(std::string::ToString::to_string);
+        }
+
+        let mut descendants = Vec::new();
+        let mut seen = HashSet::new();
+        collect_descendants(
+            parent_thread_id,
+            &children_by_parent,
+            &mut descendants,
+            &mut seen,
+        );
+
+        Ok(descendants)
+    }
+
+    pub(crate) async fn is_descendant_of(&self, ancestor: ThreadId, candidate: ThreadId) -> bool {
+        let Ok(descendants) = self.list_thread_spawn_descendants(ancestor).await else {
+            return false;
+        };
+        descendants.contains(&candidate)
     }
 
     /// Fetch the last known status for `agent_id`, returning `NotFound` when unavailable.
@@ -388,6 +456,23 @@ impl AgentControl {
             .ok_or_else(|| CodexErr::UnsupportedOperation("thread manager dropped".to_string()))
     }
 }
+
+fn collect_descendants(
+    parent_thread_id: ThreadId,
+    children_by_parent: &HashMap<ThreadId, Vec<ThreadId>>,
+    descendants: &mut Vec<ThreadId>,
+    seen: &mut HashSet<ThreadId>,
+) {
+    if let Some(children) = children_by_parent.get(&parent_thread_id) {
+        for child in children {
+            if seen.insert(*child) {
+                descendants.push(*child);
+                collect_descendants(*child, children_by_parent, descendants, seen);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
