@@ -39,8 +39,8 @@ pub struct MultiAgentHandler;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
-pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
-pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
+pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 600_000;
+pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 2_700_000;
 
 #[derive(Debug, Deserialize)]
 struct CloseAgentArgs {
