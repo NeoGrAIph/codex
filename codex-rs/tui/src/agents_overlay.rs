@@ -7,6 +7,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use std::collections::HashMap;
 use std::time::Instant;
+use textwrap::wrap;
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
@@ -30,19 +31,48 @@ pub(crate) struct AgentSummaryEntry {
     pub(crate) context_left_percent: Option<i64>,
     pub(crate) last_tool: Option<String>,
     pub(crate) last_tool_detail: Option<String>,
+    pub(crate) thread_directory: String,
+    pub(crate) request_text: Option<String>,
 }
 
-pub(crate) fn build_agents_overlay_lines(
+pub(crate) const AGENTS_OVERLAY_ACTION_LABELS: [&str; 2] = ["Inspect", "Close"];
+pub(crate) const AGENTS_OVERLAY_CONFIRM_LABELS: [&str; 2] = ["No", "Yes"];
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct AgentsOverlayRender {
+    pub(crate) lines: Vec<Line<'static>>,
+    pub(crate) thread_order: Vec<ThreadId>,
+    pub(crate) first_line_by_thread: HashMap<ThreadId, usize>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct AgentsOverlayRenderOptions {
+    pub(crate) selected_thread_id: Option<ThreadId>,
+    pub(crate) menu_open: bool,
+    pub(crate) menu_selected_idx: Option<usize>,
+    pub(crate) inspect_enabled_for_selected: bool,
+    pub(crate) confirm_open: bool,
+    pub(crate) confirm_selected_idx: Option<usize>,
+    pub(crate) confirm_thread_id: Option<ThreadId>,
+    pub(crate) inspected_thread_id: Option<ThreadId>,
+}
+
+pub(crate) fn build_agents_overlay_render(
     agents: &[AgentSummaryEntry],
     now: Instant,
     animations_enabled: bool,
     line_width: u16,
-) -> Vec<Line<'static>> {
+    options: AgentsOverlayRenderOptions,
+) -> AgentsOverlayRender {
     const LAST_TOOL_COLUMN_WIDTH: usize = 28;
     const NOTE_COLUMN_START: usize = 115;
 
     if agents.is_empty() {
-        return vec!["No active sub-agent threads.".italic().into()];
+        return AgentsOverlayRender {
+            lines: vec!["No active sub-agent threads.".italic().into()],
+            thread_order: Vec::new(),
+            first_line_by_thread: HashMap::new(),
+        };
     }
 
     let mut index_by_thread_id: HashMap<ThreadId, usize> = HashMap::new();
@@ -98,6 +128,9 @@ pub(crate) fn build_agents_overlay_lines(
     }
 
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut thread_order: Vec<ThreadId> = Vec::new();
+    let mut first_line_by_thread: HashMap<ThreadId, usize> = HashMap::new();
+
     for (index, depth) in ordered {
         let entry = &agents[index];
         let indent = "  ".repeat(depth);
@@ -111,9 +144,15 @@ pub(crate) fn build_agents_overlay_lines(
             entry.status,
             AgentStatus::PendingInit | AgentStatus::Running
         );
+        let is_selected = options.selected_thread_id == Some(entry.thread_id);
         let activity_label = activity_label(&entry.status);
         let mut first_line_spans: Vec<Span<'static>> = vec![
             indent.to_string().into(),
+            if is_selected {
+                "▶ ".cyan()
+            } else {
+                "".into()
+            },
             if is_active {
                 spinner(Some(entry.status_changed_at), animations_enabled)
             } else {
@@ -163,6 +202,9 @@ pub(crate) fn build_agents_overlay_lines(
                 first_line_spans.push(note.dim());
             }
         }
+
+        first_line_by_thread.insert(entry.thread_id, lines.len());
+        thread_order.push(entry.thread_id);
         lines.push(first_line_spans.into());
 
         let mut second_line_spans: Vec<Span<'static>> =
@@ -229,7 +271,67 @@ pub(crate) fn build_agents_overlay_lines(
         }
     }
 
-    lines
+    if options.menu_open && !thread_order.is_empty() {
+        lines.push(Line::default());
+        lines.push("Actions:".dim().into());
+        for (idx, label) in AGENTS_OVERLAY_ACTION_LABELS.iter().enumerate() {
+            let label = if idx == 0 && options.inspect_enabled_for_selected {
+                "Disable Inspect"
+            } else {
+                *label
+            };
+            let prefix = if options.menu_selected_idx == Some(idx) {
+                "> ".cyan()
+            } else {
+                "  ".into()
+            };
+            lines.push(vec![prefix, label.into()].into());
+        }
+    }
+
+    if options.confirm_open {
+        lines.push(Line::default());
+        lines.push("Confirm close:".dim().into());
+        if let Some(thread_id) = options.confirm_thread_id {
+            lines.push(vec!["  Thread: ".dim(), thread_id.to_string().dim()].into());
+        }
+        for (idx, label) in AGENTS_OVERLAY_CONFIRM_LABELS.iter().enumerate() {
+            let prefix = if options.confirm_selected_idx == Some(idx) {
+                "> ".cyan()
+            } else {
+                "  ".into()
+            };
+            lines.push(vec![prefix, (*label).into()].into());
+        }
+    }
+
+    if let Some(inspected_thread_id) = options.inspected_thread_id
+        && let Some(entry) = agents
+            .iter()
+            .find(|entry| entry.thread_id == inspected_thread_id)
+    {
+        lines.push(Line::default());
+        lines.push("Inspect:".dim().into());
+        let directory_prefix = "  Directory: ";
+        push_wrapped_lines(
+            &mut lines,
+            directory_prefix,
+            &entry.thread_directory,
+            line_width,
+        );
+        lines.push(vec!["  Request:".dim()].into());
+        if let Some(request_text) = entry.request_text.as_ref() {
+            push_multiline_wrapped_lines(&mut lines, "    ", request_text, line_width);
+        } else {
+            lines.push(vec!["    ".dim(), "—".dim()].into());
+        }
+    }
+
+    AgentsOverlayRender {
+        lines,
+        thread_order,
+        first_line_by_thread,
+    }
 }
 
 fn truncate_note_to_width(note: &str, max_width: usize) -> String {
@@ -277,6 +379,43 @@ fn context_left_display_spans(percent: Option<i64>) -> Vec<Span<'static>> {
     }
 }
 
+fn push_wrapped_lines(lines: &mut Vec<Line<'static>>, prefix: &str, text: &str, line_width: u16) {
+    let prefix_width = UnicodeWidthStr::width(prefix);
+    let content_width = usize::from(line_width).saturating_sub(prefix_width).max(1);
+    let wrapped = wrap(text, content_width);
+    if wrapped.is_empty() {
+        lines.push(vec![prefix.to_string().dim()].into());
+        return;
+    }
+
+    for (idx, piece) in wrapped.iter().enumerate() {
+        if idx == 0 {
+            lines.push(vec![prefix.to_string().dim(), piece.to_string().into()].into());
+        } else {
+            lines.push(vec![" ".repeat(prefix_width).dim(), piece.to_string().into()].into());
+        }
+    }
+}
+
+fn push_multiline_wrapped_lines(
+    lines: &mut Vec<Line<'static>>,
+    prefix: &str,
+    text: &str,
+    line_width: u16,
+) {
+    let prefix_width = UnicodeWidthStr::width(prefix);
+    let content_width = usize::from(line_width).saturating_sub(prefix_width).max(1);
+    for raw_line in text.lines() {
+        if raw_line.is_empty() {
+            lines.push(vec![prefix.to_string().dim()].into());
+            continue;
+        }
+        for piece in wrap(raw_line, content_width) {
+            lines.push(vec![prefix.to_string().dim(), piece.to_string().into()].into());
+        }
+    }
+}
+
 fn activity_label(status: &AgentStatus) -> &'static str {
     match status {
         AgentStatus::PendingInit | AgentStatus::Running => "Working",
@@ -313,29 +452,12 @@ mod tests {
             .join("\n")
     }
 
-    #[test]
-    fn agents_overlay_empty_state_snapshot() {
-        let rendered = render_lines(build_agents_overlay_lines(&[], Instant::now(), false, 160));
-        assert_snapshot!("agents_overlay_empty_state", rendered);
-    }
-
-    #[test]
-    fn truncate_note_adds_ellipsis_when_needed() {
-        assert_eq!(truncate_note_to_width("short", 10), "short");
-        assert_eq!(
-            truncate_note_to_width("очень длинная заметка", 7),
-            "очен..."
-        );
-    }
-
-    #[test]
-    fn agents_overlay_running_with_plan_snapshot() {
-        let now = Instant::now();
+    fn sample_entries(now: Instant) -> Vec<AgentSummaryEntry> {
         let root =
             ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid thread");
         let child =
             ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("valid thread");
-        let entries = vec![
+        vec![
             AgentSummaryEntry {
                 thread_id: root,
                 parent_thread_id: None,
@@ -363,6 +485,8 @@ mod tests {
                 context_left_percent: Some(67),
                 last_tool: Some("shell".to_string()),
                 last_tool_detail: Some("cargo test -p codex-tui".to_string()),
+                thread_directory: "~/repo/AGENTS/codex".to_string(),
+                request_text: Some("Collect thread metadata and return a checklist.".to_string()),
             },
             AgentSummaryEntry {
                 thread_id: child,
@@ -379,10 +503,165 @@ mod tests {
                 context_left_percent: Some(12),
                 last_tool: None,
                 last_tool_detail: None,
+                thread_directory: "~/repo/AGENTS/codex/codex-rs".to_string(),
+                request_text: Some(
+                    "Нужно собрать полный отчёт по изменениям в AGENTS.\nДобавь отдельный раздел по inspect mode и edge-cases с длинным текстом."
+                        .to_string(),
+                ),
             },
-        ];
+        ]
+    }
 
-        let rendered = render_lines(build_agents_overlay_lines(&entries, now, false, 160));
+    #[test]
+    fn agents_overlay_empty_state_snapshot() {
+        let rendered = render_lines(
+            build_agents_overlay_render(
+                &[],
+                Instant::now(),
+                false,
+                160,
+                AgentsOverlayRenderOptions::default(),
+            )
+            .lines,
+        );
+        assert_snapshot!("agents_overlay_empty_state", rendered);
+    }
+
+    #[test]
+    fn truncate_note_adds_ellipsis_when_needed() {
+        assert_eq!(truncate_note_to_width("short", 10), "short");
+        assert_eq!(
+            truncate_note_to_width("очень длинная заметка", 7),
+            "очен..."
+        );
+    }
+
+    #[test]
+    fn agents_overlay_running_with_plan_snapshot() {
+        let now = Instant::now();
+        let entries = sample_entries(now);
+        let rendered = render_lines(
+            build_agents_overlay_render(
+                &entries,
+                now,
+                false,
+                160,
+                AgentsOverlayRenderOptions::default(),
+            )
+            .lines,
+        );
         assert_snapshot!("agents_overlay_running_with_plan", rendered);
+    }
+
+    #[test]
+    fn agents_overlay_selected_with_actions_snapshot() {
+        let now = Instant::now();
+        let entries = sample_entries(now);
+        let root =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid thread");
+        let rendered = render_lines(
+            build_agents_overlay_render(
+                &entries,
+                now,
+                false,
+                160,
+                AgentsOverlayRenderOptions {
+                    selected_thread_id: Some(root),
+                    menu_open: true,
+                    menu_selected_idx: Some(0),
+                    inspect_enabled_for_selected: false,
+                    confirm_open: false,
+                    confirm_selected_idx: None,
+                    confirm_thread_id: None,
+                    inspected_thread_id: None,
+                },
+            )
+            .lines,
+        );
+        assert_snapshot!("agents_overlay_selected_with_actions", rendered);
+    }
+
+    #[test]
+    fn agents_overlay_inspect_snapshot() {
+        let now = Instant::now();
+        let entries = sample_entries(now);
+        let child =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("valid thread");
+        let rendered = render_lines(
+            build_agents_overlay_render(
+                &entries,
+                now,
+                false,
+                160,
+                AgentsOverlayRenderOptions {
+                    selected_thread_id: Some(child),
+                    menu_open: false,
+                    menu_selected_idx: None,
+                    inspect_enabled_for_selected: true,
+                    confirm_open: false,
+                    confirm_selected_idx: None,
+                    confirm_thread_id: None,
+                    inspected_thread_id: Some(child),
+                },
+            )
+            .lines,
+        );
+        assert_snapshot!("agents_overlay_inspect", rendered);
+    }
+
+    #[test]
+    fn agents_overlay_confirm_close_snapshot() {
+        let now = Instant::now();
+        let entries = sample_entries(now);
+        let child =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("valid thread");
+        let rendered = render_lines(
+            build_agents_overlay_render(
+                &entries,
+                now,
+                false,
+                160,
+                AgentsOverlayRenderOptions {
+                    selected_thread_id: Some(child),
+                    menu_open: false,
+                    menu_selected_idx: None,
+                    inspect_enabled_for_selected: false,
+                    confirm_open: true,
+                    confirm_selected_idx: Some(1),
+                    confirm_thread_id: Some(child),
+                    inspected_thread_id: None,
+                },
+            )
+            .lines,
+        );
+        assert_snapshot!("agents_overlay_confirm_close", rendered);
+    }
+
+    #[test]
+    fn agents_overlay_selected_with_inspect_enabled_snapshot() {
+        let now = Instant::now();
+        let entries = sample_entries(now);
+        let child =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("valid thread");
+        let rendered = render_lines(
+            build_agents_overlay_render(
+                &entries,
+                now,
+                false,
+                160,
+                AgentsOverlayRenderOptions {
+                    selected_thread_id: Some(child),
+                    menu_open: true,
+                    menu_selected_idx: Some(0),
+                    inspect_enabled_for_selected: true,
+                    confirm_open: false,
+                    confirm_selected_idx: None,
+                    confirm_thread_id: None,
+                    inspected_thread_id: Some(child),
+                },
+            )
+            .lines,
+        );
+        assert_snapshot!("agents_overlay_selected_with_inspect_enabled", rendered);
     }
 }

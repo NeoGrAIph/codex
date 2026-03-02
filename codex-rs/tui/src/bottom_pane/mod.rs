@@ -101,6 +101,7 @@ mod selection_popup_common;
 mod textarea;
 mod unified_exec_footer;
 pub(crate) use feedback_view::FeedbackNoteView;
+pub(crate) use scroll_state::ScrollState;
 
 /// How long the "press again to quit" hint stays visible.
 ///

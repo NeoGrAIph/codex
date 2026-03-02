@@ -85,6 +85,21 @@
 - wildcard-шаблоны `*` и `?` поддерживаются;
 - policy для `codex_apps` инструментов по-прежнему определяется connector-политикой и не переопределяется этим шагом.
 
+### 5) `close_agent` ownership guardrails
+
+Для sub-agent execution контекста закреплены ограничения завершения агентов:
+
+- запрещено завершать агента вне собственного subtree;
+- запрещено self-close (`close_agent` для `session.conversation_id`);
+- в обоих случаях инструмент возвращает model-facing ошибку и не отправляет `Op::Shutdown` для запрещённой цели.
+
+### 6) Runtime spawn capacity default
+
+Runtime default ceiling для количества одновременно живых sub-agent тредов увеличен:
+
+- `DEFAULT_AGENT_MAX_THREADS`: `6 -> 15` (`core/src/config/mod.rs`);
+- изменение применяется как default policy и не меняет wire-формат `ThreadSpawn`.
+
 ## Compatibility guarantees
 
 - Legacy входной payload с `agent_type` (совместимость добавлена ранее, в `0f9eed3a6`) поддерживается и маппится в `agent_role`.
@@ -118,3 +133,5 @@
 - 2026-02-27: Initial document added for commit `935e4739d` (`ThreadSpawn contract hardening`, protocol and metadata propagation).
 - 2026-02-27: Corrected historical note for backward compatibility (`agent_type` alias introduced in `0f9eed3a6`) and fixed `depth` type to `i32`.
 - 2026-02-27: Documented runtime non-app MCP allow/deny enforcement in Apps mode for Stage 1 bugfix (`3ce86025b`, adapted to `rust-v0.106.0`).
+- 2026-03-01: Added `close_agent` guardrails note: subtree-only shutdown and explicit self-close rejection for sub-agents.
+- 2026-03-02: Documented runtime default spawn capacity increase (`DEFAULT_AGENT_MAX_THREADS = 15`).

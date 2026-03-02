@@ -90,17 +90,47 @@ impl Overlay {
         matches!(self, Overlay::Static(o) if o.view.title == AGENTS_OVERLAY_TITLE)
     }
 
-    pub(crate) fn replace_static_lines_if_title(
+    pub(crate) fn replace_static_lines_preserve_scroll_if_title(
         &mut self,
         title: &str,
         lines: Vec<Line<'static>>,
     ) -> bool {
         match self {
             Overlay::Static(o) if o.view.title == title => {
-                o.replace_lines(lines);
+                o.replace_lines(lines, true);
                 true
             }
             _ => false,
+        }
+    }
+
+    pub(crate) fn set_static_scroll_offset_if_title(
+        &mut self,
+        title: &str,
+        scroll_offset: usize,
+    ) -> bool {
+        match self {
+            Overlay::Static(o) if o.view.title == title => {
+                o.set_scroll_offset(scroll_offset);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn static_title(&self) -> Option<&str> {
+        match self {
+            Overlay::Static(o) => Some(o.view.title.as_str()),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn static_scroll_offset(&self) -> Option<usize> {
+        match self {
+            Overlay::Static(o) => Some(o.scroll_offset()),
+            _ => None,
         }
     }
 }
@@ -750,21 +780,54 @@ impl StaticOverlay {
         }
     }
 
-    fn replace_lines(&mut self, lines: Vec<Line<'static>>) {
+    fn replace_lines(&mut self, lines: Vec<Line<'static>>, preserve_scroll: bool) {
+        let previous_scroll = self.view.scroll_offset;
         let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
         self.view.renderables = vec![Box::new(CachedRenderable::new(paragraph))];
-        self.view.scroll_offset = 0;
+        if preserve_scroll {
+            self.view.scroll_offset = previous_scroll;
+        } else {
+            self.view.scroll_offset = 0;
+        }
         self.view.last_content_height = None;
         self.view.last_rendered_height = None;
         self.view.pending_scroll_chunk = None;
+    }
+
+    fn set_scroll_offset(&mut self, scroll_offset: usize) {
+        self.view.scroll_offset = scroll_offset;
+    }
+
+    #[cfg(test)]
+    fn scroll_offset(&self) -> usize {
+        self.view.scroll_offset
     }
 
     fn render_hints(&self, area: Rect, buf: &mut Buffer) {
         let line1 = Rect::new(area.x, area.y, area.width, 1);
         let line2 = Rect::new(area.x, area.y.saturating_add(1), area.width, 1);
         render_key_hints(line1, buf, PAGER_KEY_HINTS);
-        let pairs: Vec<(&[KeyBinding], &str)> = vec![(&[KEY_Q], "to quit")];
-        render_key_hints(line2, buf, &pairs);
+        if self.view.title == AGENTS_OVERLAY_TITLE {
+            let line = Line::from(vec![
+                " ".into(),
+                Span::from(&KEY_ENTER),
+                " to actions".into(),
+                "   ".into(),
+                "I".dim(),
+                " toggle inspect".into(),
+                "   ".into(),
+                Span::from(&KEY_CTRL_T),
+                " to cycle".into(),
+                "   ".into(),
+                Span::from(&KEY_Q),
+                " to quit".into(),
+            ])
+            .dim();
+            Paragraph::new(vec![line]).render_ref(line2, buf);
+        } else {
+            let pairs: Vec<(&[KeyBinding], &str)> = vec![(&[KEY_Q], "to quit")];
+            render_key_hints(line2, buf, &pairs);
+        }
     }
 
     pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
@@ -1226,6 +1289,65 @@ mod tests {
         term.draw(|f| overlay.render(f.area(), f.buffer_mut()))
             .expect("draw");
         assert_snapshot!(term.backend());
+    }
+
+    #[test]
+    fn overlay_replace_static_lines_preserves_scroll_when_requested() {
+        let mut overlay = Overlay::new_static_with_lines(
+            vec!["one".into(), "two".into(), "three".into()],
+            AGENTS_OVERLAY_TITLE.to_string(),
+        );
+        assert_eq!(overlay.static_title(), Some(AGENTS_OVERLAY_TITLE));
+        assert_eq!(overlay.static_scroll_offset(), Some(0));
+
+        assert!(overlay.set_static_scroll_offset_if_title(AGENTS_OVERLAY_TITLE, 7));
+        assert_eq!(overlay.static_scroll_offset(), Some(7));
+
+        assert!(overlay.replace_static_lines_preserve_scroll_if_title(
+            AGENTS_OVERLAY_TITLE,
+            vec!["updated".into()]
+        ));
+        assert_eq!(overlay.static_scroll_offset(), Some(7));
+    }
+
+    #[test]
+    fn overlay_replace_static_lines_resets_scroll_without_preserve() {
+        let mut overlay = StaticOverlay::with_title(
+            vec!["one".into(), "two".into(), "three".into()],
+            AGENTS_OVERLAY_TITLE.to_string(),
+        );
+        overlay.set_scroll_offset(5);
+        assert_eq!(overlay.scroll_offset(), 5);
+
+        overlay.replace_lines(vec!["updated".into()], false);
+        assert_eq!(overlay.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn static_agents_footer_hints_include_agents_shortcuts() {
+        let mut overlay =
+            StaticOverlay::with_title(vec!["line".into()], AGENTS_OVERLAY_TITLE.to_string());
+        let area = Rect::new(0, 0, 160, 8);
+        let mut buf = Buffer::empty(area);
+        overlay.render(area, &mut buf);
+
+        let footer_y = area.y + area.height - 2;
+        let footer_text = (0..area.width)
+            .map(|x| buf[(area.x + x, footer_y)].symbol())
+            .collect::<String>();
+
+        assert!(
+            footer_text.contains("enter") && footer_text.contains("to actions"),
+            "expected enter/actions hint in footer, got: {footer_text:?}"
+        );
+        assert!(
+            footer_text.contains("I") && footer_text.contains("toggle inspect"),
+            "expected I/toggle inspect hint in footer, got: {footer_text:?}"
+        );
+        assert!(
+            footer_text.contains("q") && footer_text.contains("to quit"),
+            "expected q/quit hint in footer, got: {footer_text:?}"
+        );
     }
 
     #[test]

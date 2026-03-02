@@ -199,11 +199,11 @@ impl AgentControl {
         };
         reservation.commit(new_thread.thread_id);
 
-        if let Some(note) = thread_note {
-            if let Err(err) = self.set_thread_note(new_thread.thread_id, Some(note)).await {
-                let _ = self.shutdown_agent(new_thread.thread_id).await;
-                return Err(err);
-            }
+        if let Some(note) = thread_note
+            && let Err(err) = self.set_thread_note(new_thread.thread_id, Some(note)).await
+        {
+            let _ = self.shutdown_agent(new_thread.thread_id).await;
+            return Err(err);
         }
 
         // Notify a new thread has been created. This notification will be processed by clients

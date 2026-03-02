@@ -371,6 +371,14 @@ impl ThreadManager {
         Ok(())
     }
 
+    /// Shuts down a spawned-agent subtree rooted at `thread_id`.
+    ///
+    /// This delegates to [`AgentControl::shutdown_agent`], which handles
+    /// descendant discovery and leaf-first cascade shutdown.
+    pub async fn shutdown_agent_subtree(&self, thread_id: ThreadId) -> CodexResult<String> {
+        self.agent_control().shutdown_agent(thread_id).await
+    }
+
     /// Fork an existing thread by taking messages up to the given position (not including
     /// the message at the given position) and starting a new thread with identical
     /// configuration (unless overridden by the caller's `config`). The new thread will have
