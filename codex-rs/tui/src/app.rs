@@ -1,5 +1,9 @@
+use crate::agents_overlay::AGENTS_OVERLAY_ACTION_LABELS;
+use crate::agents_overlay::AGENTS_OVERLAY_CONFIRM_LABELS;
 use crate::agents_overlay::AgentSummaryEntry;
-use crate::agents_overlay::build_agents_overlay_lines;
+use crate::agents_overlay::AgentsOverlayRender;
+use crate::agents_overlay::AgentsOverlayRenderOptions;
+use crate::agents_overlay::build_agents_overlay_render;
 use crate::app_backtrack::BacktrackState;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
@@ -8,6 +12,7 @@ use crate::app_event::WindowsSandboxEnableMode;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::FeedbackAudience;
+use crate::bottom_pane::ScrollState;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
@@ -91,6 +96,7 @@ use color_eyre::eyre::WrapErr;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
+use crossterm::event::KeyModifiers;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
@@ -263,6 +269,208 @@ enum CtrlTOverlayAction {
     OpenAgents,
     CloseAgents,
     None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentsOverlayAction {
+    Inspect,
+    Close,
+}
+
+impl AgentsOverlayAction {
+    fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::Inspect),
+            1 => Some(Self::Close),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct AgentsOverlayUiState {
+    selection: ScrollState,
+    action_selection: ScrollState,
+    confirm_selection: ScrollState,
+    menu_open: bool,
+    confirm_open: bool,
+    confirm_thread_id: Option<ThreadId>,
+    inspected_thread_id: Option<ThreadId>,
+    thread_order: Vec<ThreadId>,
+    first_line_by_thread: HashMap<ThreadId, usize>,
+}
+
+impl AgentsOverlayUiState {
+    fn selected_thread_id(&self) -> Option<ThreadId> {
+        self.selection
+            .selected_idx
+            .and_then(|idx| self.thread_order.get(idx).copied())
+    }
+
+    fn sync_with_render(&mut self, render: &AgentsOverlayRender) -> bool {
+        let previous_selected = self.selected_thread_id();
+        let previous_menu_open = self.menu_open;
+        let previous_confirm_open = self.confirm_open;
+        let previous_confirm_thread_id = self.confirm_thread_id;
+        let previous_inspected = self.inspected_thread_id;
+
+        self.thread_order = render.thread_order.clone();
+        self.first_line_by_thread = render.first_line_by_thread.clone();
+
+        let len = self.thread_order.len();
+        self.selection.selected_idx = previous_selected
+            .and_then(|thread_id| self.thread_order.iter().position(|id| *id == thread_id));
+        if let Some(selected_idx) = self.selection.selected_idx
+            && selected_idx >= len
+        {
+            self.selection.selected_idx = None;
+        }
+        if len == 0 {
+            self.selection.selected_idx = None;
+        }
+        self.selection.ensure_visible(len, len.max(1));
+
+        if len == 0 {
+            self.menu_open = false;
+            self.action_selection.reset();
+            self.confirm_open = false;
+            self.confirm_selection.reset();
+            self.confirm_thread_id = None;
+            self.inspected_thread_id = None;
+        } else {
+            self.action_selection
+                .clamp_selection(AGENTS_OVERLAY_ACTION_LABELS.len());
+            self.confirm_selection
+                .clamp_selection(AGENTS_OVERLAY_CONFIRM_LABELS.len());
+            if self
+                .confirm_thread_id
+                .is_some_and(|thread_id| !self.thread_order.contains(&thread_id))
+            {
+                self.confirm_thread_id = None;
+                self.confirm_open = false;
+            }
+            if self
+                .inspected_thread_id
+                .is_some_and(|thread_id| !self.thread_order.contains(&thread_id))
+            {
+                self.inspected_thread_id = None;
+            }
+            if self.selected_thread_id().is_none() {
+                self.menu_open = false;
+                self.confirm_open = false;
+            }
+        }
+
+        previous_selected != self.selected_thread_id()
+            || previous_menu_open != self.menu_open
+            || previous_confirm_open != self.confirm_open
+            || previous_confirm_thread_id != self.confirm_thread_id
+            || previous_inspected != self.inspected_thread_id
+    }
+
+    fn select_prev_thread(&mut self) {
+        let len = self.thread_order.len();
+        if len == 0 {
+            self.selection.selected_idx = None;
+            return;
+        }
+        self.selection.selected_idx = match self.selection.selected_idx {
+            Some(0) | None => None,
+            Some(idx) => Some(idx - 1),
+        };
+    }
+
+    fn select_next_thread(&mut self) {
+        let len = self.thread_order.len();
+        if len == 0 {
+            self.selection.selected_idx = None;
+            return;
+        }
+        self.selection.selected_idx = match self.selection.selected_idx {
+            None => Some(0),
+            Some(idx) if idx + 1 < len => Some(idx + 1),
+            Some(idx) => Some(idx),
+        };
+    }
+
+    fn open_actions_menu(&mut self) {
+        if self.selected_thread_id().is_none() {
+            return;
+        }
+        self.confirm_open = false;
+        self.confirm_thread_id = None;
+        self.menu_open = true;
+        self.action_selection.selected_idx = Some(0);
+        self.action_selection
+            .clamp_selection(AGENTS_OVERLAY_ACTION_LABELS.len());
+    }
+
+    fn close_actions_menu(&mut self) {
+        self.menu_open = false;
+        self.close_confirm_menu();
+    }
+
+    fn action_menu_prev(&mut self) {
+        self.action_selection
+            .move_up_wrap(AGENTS_OVERLAY_ACTION_LABELS.len());
+    }
+
+    fn action_menu_next(&mut self) {
+        self.action_selection
+            .move_down_wrap(AGENTS_OVERLAY_ACTION_LABELS.len());
+    }
+
+    fn selected_action(&self) -> Option<AgentsOverlayAction> {
+        self.action_selection
+            .selected_idx
+            .and_then(AgentsOverlayAction::from_index)
+    }
+
+    fn is_selected_thread_inspected(&self) -> bool {
+        matches!(
+            (self.selected_thread_id(), self.inspected_thread_id),
+            (Some(selected), Some(inspected)) if selected == inspected
+        )
+    }
+
+    fn toggle_inspect_for_selected(&mut self) {
+        let Some(selected_thread_id) = self.selected_thread_id() else {
+            return;
+        };
+        if self.inspected_thread_id == Some(selected_thread_id) {
+            self.inspected_thread_id = None;
+        } else {
+            self.inspected_thread_id = Some(selected_thread_id);
+        }
+    }
+
+    fn open_confirm_menu(&mut self, thread_id: ThreadId) {
+        self.confirm_open = true;
+        self.confirm_thread_id = Some(thread_id);
+        self.confirm_selection.selected_idx = Some(0);
+        self.confirm_selection
+            .clamp_selection(AGENTS_OVERLAY_CONFIRM_LABELS.len());
+    }
+
+    fn close_confirm_menu(&mut self) {
+        self.confirm_open = false;
+        self.confirm_thread_id = None;
+        self.confirm_selection.reset();
+    }
+
+    fn confirm_menu_prev(&mut self) {
+        self.confirm_selection
+            .move_up_wrap(AGENTS_OVERLAY_CONFIRM_LABELS.len());
+    }
+
+    fn confirm_menu_next(&mut self) {
+        self.confirm_selection
+            .move_down_wrap(AGENTS_OVERLAY_CONFIRM_LABELS.len());
+    }
+
+    fn confirm_is_yes(&self) -> bool {
+        self.confirm_selection.selected_idx == Some(1)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -674,6 +882,7 @@ pub(crate) struct App {
 
     // Pager overlay state (Transcript or Static like Diff)
     pub(crate) overlay: Option<Overlay>,
+    agents_overlay_ui: AgentsOverlayUiState,
     pub(crate) deferred_history_lines: Vec<Line<'static>>,
     has_emitted_history_lines: bool,
 
@@ -1113,7 +1322,7 @@ impl App {
         }
     }
 
-    async fn collect_agents_overlay_lines(&mut self, line_width: u16) -> Vec<Line<'static>> {
+    async fn collect_agents_overlay_render(&mut self, line_width: u16) -> AgentsOverlayRender {
         let thread_ids = self.available_thread_ids().await;
         let now = Instant::now();
 
@@ -1470,6 +1679,20 @@ impl App {
                 }
             });
 
+            let thread_directory = if let Some(rel) = relativize_to_home(&config_snapshot.cwd) {
+                format!("~/{}", rel.display())
+            } else {
+                config_snapshot.cwd.display().to_string()
+            };
+
+            let request_text = snapshot.events.iter().rev().find_map(|event| {
+                if let EventMsg::UserMessage(ev) = &event.msg {
+                    (!ev.message.trim().is_empty()).then(|| ev.message.clone())
+                } else {
+                    None
+                }
+            });
+
             agents.push(AgentSummaryEntry {
                 thread_id,
                 parent_thread_id,
@@ -1488,15 +1711,57 @@ impl App {
                 context_left_percent,
                 last_tool,
                 last_tool_detail,
+                thread_directory,
+                request_text,
             });
         }
 
-        build_agents_overlay_lines(&agents, now, self.config.animations, line_width)
+        let mut render = build_agents_overlay_render(
+            &agents,
+            now,
+            self.config.animations,
+            line_width,
+            AgentsOverlayRenderOptions {
+                selected_thread_id: self.agents_overlay_ui.selected_thread_id(),
+                menu_open: self.agents_overlay_ui.menu_open,
+                menu_selected_idx: self.agents_overlay_ui.action_selection.selected_idx,
+                inspect_enabled_for_selected: self.agents_overlay_ui.is_selected_thread_inspected(),
+                confirm_open: self.agents_overlay_ui.confirm_open,
+                confirm_selected_idx: self.agents_overlay_ui.confirm_selection.selected_idx,
+                confirm_thread_id: self.agents_overlay_ui.confirm_thread_id,
+                inspected_thread_id: self.agents_overlay_ui.inspected_thread_id,
+            },
+        );
+
+        if self.agents_overlay_ui.sync_with_render(&render) {
+            render = build_agents_overlay_render(
+                &agents,
+                now,
+                self.config.animations,
+                line_width,
+                AgentsOverlayRenderOptions {
+                    selected_thread_id: self.agents_overlay_ui.selected_thread_id(),
+                    menu_open: self.agents_overlay_ui.menu_open,
+                    menu_selected_idx: self.agents_overlay_ui.action_selection.selected_idx,
+                    inspect_enabled_for_selected: self
+                        .agents_overlay_ui
+                        .is_selected_thread_inspected(),
+                    confirm_open: self.agents_overlay_ui.confirm_open,
+                    confirm_selected_idx: self.agents_overlay_ui.confirm_selection.selected_idx,
+                    confirm_thread_id: self.agents_overlay_ui.confirm_thread_id,
+                    inspected_thread_id: self.agents_overlay_ui.inspected_thread_id,
+                },
+            );
+            let _ = self.agents_overlay_ui.sync_with_render(&render);
+        }
+
+        render
     }
 
     async fn open_agents_overlay(&mut self, tui: &mut tui::Tui) {
         let line_width = tui.terminal.viewport_area.width;
-        let lines = self.collect_agents_overlay_lines(line_width).await;
+        self.agents_overlay_ui = AgentsOverlayUiState::default();
+        let render = self.collect_agents_overlay_render(line_width).await;
 
         self.backtrack.overlay_preview_active = false;
         self.reset_backtrack_state();
@@ -1504,7 +1769,7 @@ impl App {
             let _ = tui.enter_alt_screen();
         }
         self.overlay = Some(Overlay::new_static_with_lines(
-            lines,
+            render.lines,
             AGENTS_OVERLAY_TITLE.to_string(),
         ));
         tui.frame_requester().schedule_frame();
@@ -1516,9 +1781,10 @@ impl App {
         }
 
         let line_width = tui.terminal.viewport_area.width;
-        let lines = self.collect_agents_overlay_lines(line_width).await;
+        let render = self.collect_agents_overlay_render(line_width).await;
         if let Some(overlay) = self.overlay.as_mut() {
-            overlay.replace_static_lines_if_title(AGENTS_OVERLAY_TITLE, lines);
+            overlay
+                .replace_static_lines_preserve_scroll_if_title(AGENTS_OVERLAY_TITLE, render.lines);
         }
 
         if self.config.animations {
@@ -1530,11 +1796,239 @@ impl App {
         }
     }
 
+    fn ensure_selected_agent_visible(&mut self) {
+        let Some(thread_id) = self.agents_overlay_ui.selected_thread_id() else {
+            return;
+        };
+        let Some(line_idx) = self
+            .agents_overlay_ui
+            .first_line_by_thread
+            .get(&thread_id)
+            .copied()
+        else {
+            return;
+        };
+        let Some(overlay) = self.overlay.as_mut() else {
+            return;
+        };
+        let target_offset = line_idx.saturating_sub(1);
+        let _ = overlay.set_static_scroll_offset_if_title(AGENTS_OVERLAY_TITLE, target_offset);
+    }
+
+    fn forward_overlay_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.handle_event(tui, event)?;
+            if overlay.is_done() {
+                let reset_agents_overlay_ui = overlay.is_agents();
+                self.close_transcript_overlay(tui);
+                if reset_agents_overlay_ui {
+                    self.agents_overlay_ui = AgentsOverlayUiState::default();
+                }
+                tui.frame_requester().schedule_frame();
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_agents_overlay_event(
+        &mut self,
+        tui: &mut tui::Tui,
+        event: TuiEvent,
+    ) -> Result<bool> {
+        if let TuiEvent::Key(KeyEvent {
+            code: KeyCode::Char('t'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            ..
+        }) = event
+        {
+            self.handle_ctrl_t_key(tui).await;
+            return Ok(true);
+        }
+
+        let TuiEvent::Key(key_event) = event else {
+            self.forward_overlay_event(tui, event)?;
+            return Ok(true);
+        };
+
+        if self.agents_overlay_ui.confirm_open {
+            match key_event {
+                KeyEvent {
+                    code: KeyCode::Esc,
+                    kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                    ..
+                } => {
+                    self.agents_overlay_ui.close_confirm_menu();
+                    tui.frame_requester().schedule_frame();
+                    Ok(true)
+                }
+                KeyEvent {
+                    code: KeyCode::Up | KeyCode::Char('k'),
+                    kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                    ..
+                } => {
+                    self.agents_overlay_ui.confirm_menu_prev();
+                    tui.frame_requester().schedule_frame();
+                    Ok(true)
+                }
+                KeyEvent {
+                    code: KeyCode::Down | KeyCode::Char('j'),
+                    kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                    ..
+                } => {
+                    self.agents_overlay_ui.confirm_menu_next();
+                    tui.frame_requester().schedule_frame();
+                    Ok(true)
+                }
+                KeyEvent {
+                    code: KeyCode::Enter,
+                    kind: KeyEventKind::Press,
+                    ..
+                } => {
+                    if self.agents_overlay_ui.confirm_is_yes() {
+                        if let Some(thread_id) = self.agents_overlay_ui.confirm_thread_id {
+                            match self.server.shutdown_agent_subtree(thread_id).await {
+                                Ok(_) => {
+                                    self.chat_widget.add_info_message(
+                                        format!(
+                                            "Shutdown requested for agent subtree {thread_id}."
+                                        ),
+                                        None,
+                                    );
+                                }
+                                Err(err) => {
+                                    self.chat_widget.add_error_message(format!(
+                                        "Failed to close agent {thread_id}: {err}"
+                                    ));
+                                }
+                            }
+                        }
+                        self.agents_overlay_ui.close_confirm_menu();
+                        self.agents_overlay_ui.close_actions_menu();
+                    } else {
+                        self.agents_overlay_ui.close_confirm_menu();
+                    }
+                    tui.frame_requester().schedule_frame();
+                    Ok(true)
+                }
+                _ => {
+                    self.forward_overlay_event(tui, TuiEvent::Key(key_event))?;
+                    Ok(true)
+                }
+            }
+        } else if self.agents_overlay_ui.menu_open {
+            match key_event {
+                KeyEvent {
+                    code: KeyCode::Esc,
+                    kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                    ..
+                } => {
+                    self.agents_overlay_ui.close_actions_menu();
+                    tui.frame_requester().schedule_frame();
+                    Ok(true)
+                }
+                KeyEvent {
+                    code: KeyCode::Up | KeyCode::Char('k'),
+                    kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                    ..
+                } => {
+                    self.agents_overlay_ui.action_menu_prev();
+                    tui.frame_requester().schedule_frame();
+                    Ok(true)
+                }
+                KeyEvent {
+                    code: KeyCode::Down | KeyCode::Char('j'),
+                    kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                    ..
+                } => {
+                    self.agents_overlay_ui.action_menu_next();
+                    tui.frame_requester().schedule_frame();
+                    Ok(true)
+                }
+                KeyEvent {
+                    code: KeyCode::Enter,
+                    kind: KeyEventKind::Press,
+                    ..
+                } => {
+                    if let Some(action) = self.agents_overlay_ui.selected_action() {
+                        match action {
+                            AgentsOverlayAction::Inspect => {
+                                self.agents_overlay_ui.toggle_inspect_for_selected();
+                            }
+                            AgentsOverlayAction::Close => {
+                                if let Some(selected_thread_id) =
+                                    self.agents_overlay_ui.selected_thread_id()
+                                {
+                                    self.agents_overlay_ui.open_confirm_menu(selected_thread_id);
+                                }
+                            }
+                        }
+                    }
+                    if !self.agents_overlay_ui.confirm_open {
+                        self.agents_overlay_ui.close_actions_menu();
+                    }
+                    tui.frame_requester().schedule_frame();
+                    Ok(true)
+                }
+                _ => {
+                    self.forward_overlay_event(tui, TuiEvent::Key(key_event))?;
+                    Ok(true)
+                }
+            }
+        } else {
+            match key_event {
+                KeyEvent {
+                    code: KeyCode::Up | KeyCode::Char('k'),
+                    kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                    ..
+                } => {
+                    self.agents_overlay_ui.select_prev_thread();
+                    self.ensure_selected_agent_visible();
+                    tui.frame_requester().schedule_frame();
+                    Ok(true)
+                }
+                KeyEvent {
+                    code: KeyCode::Down | KeyCode::Char('j'),
+                    kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                    ..
+                } => {
+                    self.agents_overlay_ui.select_next_thread();
+                    self.ensure_selected_agent_visible();
+                    tui.frame_requester().schedule_frame();
+                    Ok(true)
+                }
+                KeyEvent {
+                    code: KeyCode::Enter,
+                    kind: KeyEventKind::Press,
+                    ..
+                } => {
+                    self.agents_overlay_ui.open_actions_menu();
+                    tui.frame_requester().schedule_frame();
+                    Ok(true)
+                }
+                KeyEvent {
+                    code: KeyCode::Char('I'),
+                    kind: KeyEventKind::Press | KeyEventKind::Repeat,
+                    ..
+                } => {
+                    self.agents_overlay_ui.toggle_inspect_for_selected();
+                    tui.frame_requester().schedule_frame();
+                    Ok(true)
+                }
+                _ => {
+                    self.forward_overlay_event(tui, TuiEvent::Key(key_event))?;
+                    Ok(true)
+                }
+            }
+        }
+    }
+
     pub(crate) async fn handle_ctrl_t_key(&mut self, tui: &mut tui::Tui) {
         match self.ctrl_t_overlay_action() {
             CtrlTOverlayAction::OpenTranscript => self.open_transcript_overlay(tui),
             CtrlTOverlayAction::OpenAgents => self.open_agents_overlay(tui).await,
             CtrlTOverlayAction::CloseAgents => {
+                self.agents_overlay_ui = AgentsOverlayUiState::default();
                 self.close_transcript_overlay(tui);
                 tui.frame_requester().schedule_frame();
             }
@@ -2120,6 +2614,7 @@ impl App {
             enhanced_keys_supported,
             transcript_cells: Vec::new(),
             overlay: None,
+            agents_overlay_ui: AgentsOverlayUiState::default(),
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
             commit_anim_running: Arc::new(AtomicBool::new(false)),
@@ -2275,7 +2770,11 @@ impl App {
             if matches!(event, TuiEvent::Draw) {
                 self.refresh_agents_overlay_if_active(tui).await;
             }
-            let _ = self.handle_backtrack_overlay_event(tui, event).await?;
+            if self.overlay.as_ref().is_some_and(Overlay::is_agents) {
+                let _ = self.handle_agents_overlay_event(tui, event).await?;
+            } else {
+                let _ = self.handle_backtrack_overlay_event(tui, event).await?;
+            }
         } else {
             match event {
                 TuiEvent::Key(key_event) => {
@@ -4250,6 +4749,139 @@ mod tests {
         assert_eq!(app.ctrl_t_overlay_action(), CtrlTOverlayAction::None);
     }
 
+    #[test]
+    fn agents_overlay_ui_state_keeps_no_selection_on_initial_sync() {
+        let mut state = AgentsOverlayUiState::default();
+        let first =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid thread");
+        let second =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("valid thread");
+        let render = AgentsOverlayRender {
+            lines: vec![],
+            thread_order: vec![first, second],
+            first_line_by_thread: HashMap::from([(first, 0usize), (second, 4usize)]),
+        };
+
+        assert!(!state.sync_with_render(&render));
+        assert_eq!(state.selected_thread_id(), None);
+    }
+
+    #[test]
+    fn agents_overlay_ui_state_preserves_selection_by_thread_id() {
+        let first =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid thread");
+        let second =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("valid thread");
+        let mut state = AgentsOverlayUiState::default();
+        let initial = AgentsOverlayRender {
+            lines: vec![],
+            thread_order: vec![first, second],
+            first_line_by_thread: HashMap::from([(first, 0usize), (second, 4usize)]),
+        };
+        assert!(!state.sync_with_render(&initial));
+        state.selection.selected_idx = Some(1);
+
+        let reshuffled = AgentsOverlayRender {
+            lines: vec![],
+            thread_order: vec![second, first],
+            first_line_by_thread: HashMap::from([(second, 1usize), (first, 7usize)]),
+        };
+        assert!(!state.sync_with_render(&reshuffled));
+        assert_eq!(state.selected_thread_id(), Some(second));
+    }
+
+    #[test]
+    fn agents_overlay_ui_state_drops_confirm_for_missing_thread() {
+        let first =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid thread");
+        let second =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("valid thread");
+        let mut state = AgentsOverlayUiState::default();
+        state.menu_open = true;
+        state.open_confirm_menu(second);
+
+        let render = AgentsOverlayRender {
+            lines: vec![],
+            thread_order: vec![first],
+            first_line_by_thread: HashMap::from([(first, 0usize)]),
+        };
+
+        assert!(state.sync_with_render(&render));
+        assert_eq!(state.selected_thread_id(), None);
+        assert!(!state.confirm_open);
+        assert_eq!(state.confirm_thread_id, None);
+    }
+
+    #[test]
+    fn agents_overlay_ui_state_navigation_supports_none_anchor_without_wrap() {
+        let first =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid thread");
+        let second =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("valid thread");
+        let mut state = AgentsOverlayUiState::default();
+        state.thread_order = vec![first, second];
+
+        assert_eq!(state.selected_thread_id(), None);
+
+        state.select_prev_thread();
+        assert_eq!(state.selected_thread_id(), None);
+
+        state.select_next_thread();
+        assert_eq!(state.selected_thread_id(), Some(first));
+
+        state.select_prev_thread();
+        assert_eq!(state.selected_thread_id(), None);
+
+        state.select_next_thread();
+        state.select_next_thread();
+        assert_eq!(state.selected_thread_id(), Some(second));
+
+        state.select_next_thread();
+        assert_eq!(state.selected_thread_id(), Some(second));
+    }
+
+    #[test]
+    fn agents_overlay_ui_state_confirm_yes_selection() {
+        let first =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid thread");
+        let mut state = AgentsOverlayUiState::default();
+        state.thread_order = vec![first];
+        state.selection.selected_idx = Some(0);
+        state.open_confirm_menu(first);
+
+        state.confirm_menu_next();
+        assert!(state.confirm_is_yes());
+    }
+
+    #[test]
+    fn agents_overlay_ui_state_toggle_inspect_for_selected_is_reversible() {
+        let first =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid thread");
+        let mut state = AgentsOverlayUiState::default();
+        state.thread_order = vec![first];
+        state.selection.selected_idx = Some(0);
+
+        assert!(!state.is_selected_thread_inspected());
+        state.toggle_inspect_for_selected();
+        assert_eq!(state.inspected_thread_id, Some(first));
+        assert!(state.is_selected_thread_inspected());
+
+        state.toggle_inspect_for_selected();
+        assert_eq!(state.inspected_thread_id, None);
+        assert!(!state.is_selected_thread_inspected());
+    }
+
+    #[test]
+    fn agents_overlay_ui_state_toggle_inspect_no_selection_is_noop() {
+        let first =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000001").expect("valid thread");
+        let mut state = AgentsOverlayUiState::default();
+        state.thread_order = vec![first];
+
+        state.toggle_inspect_for_selected();
+        assert_eq!(state.inspected_thread_id, None);
+    }
+
     #[tokio::test]
     async fn refresh_pending_thread_approvals_only_lists_inactive_threads() {
         let mut app = make_test_app().await;
@@ -4575,6 +5207,7 @@ mod tests {
             file_search,
             transcript_cells: Vec::new(),
             overlay: None,
+            agents_overlay_ui: AgentsOverlayUiState::default(),
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
             enhanced_keys_supported: false,
@@ -4634,6 +5267,7 @@ mod tests {
                 file_search,
                 transcript_cells: Vec::new(),
                 overlay: None,
+                agents_overlay_ui: AgentsOverlayUiState::default(),
                 deferred_history_lines: Vec::new(),
                 has_emitted_history_lines: false,
                 enhanced_keys_supported: false,

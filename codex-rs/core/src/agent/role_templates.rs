@@ -462,8 +462,7 @@ fn parse_role_template(stem: &str, contents: &str) -> Result<ParsedRoleTemplate,
     for prompt_nickname in prompts_by_nickname.keys() {
         if !seen_nicknames.contains(prompt_nickname) {
             return Err(format!(
-                "prompt block references undeclared agent_nickname '{}'",
-                prompt_nickname
+                "prompt block references undeclared agent_nickname '{prompt_nickname}'"
             ));
         }
     }

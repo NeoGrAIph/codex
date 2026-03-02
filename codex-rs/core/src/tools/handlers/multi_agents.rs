@@ -1066,6 +1066,28 @@ pub mod close_agent {
                 .into(),
             )
             .await;
+        if agent_id == session.conversation_id {
+            let status =
+                AgentStatus::Errored("not permitted to close the current agent".to_string());
+            session
+                .send_event(
+                    &turn,
+                    CollabCloseEndEvent {
+                        call_id: call_id.clone(),
+                        sender_thread_id: session.conversation_id,
+                        receiver_thread_id: agent_id,
+                        receiver_agent_nickname: receiver_agent_nickname.clone(),
+                        receiver_agent_persona: receiver_agent_persona.clone(),
+                        receiver_agent_role: receiver_agent_role.clone(),
+                        status,
+                    }
+                    .into(),
+                )
+                .await;
+            return Err(FunctionCallError::RespondToModel(
+                "Not permitted to close the current agent.".to_string(),
+            ));
+        }
         if matches!(
             turn.session_source,
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
@@ -3549,6 +3571,73 @@ Use this worker template prompt.
         assert_eq!(success, Some(true));
         assert_eq!(
             manager.agent_control().get_status(child_id).await,
+            AgentStatus::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn close_agent_rejects_self_shutdown_for_subagents() {
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let config = turn.config.as_ref().clone();
+        let parent = manager
+            .start_thread(config.clone())
+            .await
+            .expect("start parent");
+        let parent_id = parent.thread_id;
+
+        let caller_id = manager
+            .agent_control()
+            .spawn_agent(
+                config,
+                vec![UserInput::Text {
+                    text: "caller".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(
+                    parent_id, 1, None, None, None, None, None,
+                )),
+                None,
+            )
+            .await
+            .expect("spawn caller");
+
+        session.conversation_id = caller_id;
+        turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: parent_id,
+            depth: 1,
+            agent_nickname: None,
+            agent_persona: None,
+            agent_role: None,
+            thread_note: None,
+            allow_list: None,
+            deny_list: None,
+        });
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "close_agent",
+            function_payload(json!({"id": caller_id.to_string()})),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("close_agent should reject self termination");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "Not permitted to close the current agent.".to_string()
+            )
+        );
+
+        let ops = manager.captured_ops();
+        let submitted_self_shutdown = ops
+            .iter()
+            .any(|(id, op)| *id == caller_id && matches!(op, Op::Shutdown));
+        assert_eq!(submitted_self_shutdown, false);
+        assert_ne!(
+            manager.agent_control().get_status(caller_id).await,
             AgentStatus::NotFound
         );
     }
