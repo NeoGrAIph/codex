@@ -193,6 +193,11 @@ mod document_helpers {
         if !config.enabled {
             entry["enabled"] = value(false);
         }
+        if let Some(description) = config.description.as_deref()
+            && !description.trim().is_empty()
+        {
+            entry["description"] = value(description.to_string());
+        }
         if config.required {
             entry["required"] = value(true);
         }
@@ -1509,6 +1514,7 @@ gpt-5 = "gpt-5.1"
                     env_vars: vec!["FOO".to_string()],
                     cwd: None,
                 },
+                description: Some("Local stdio server".to_string()),
                 enabled: true,
                 required: false,
                 disabled_reason: None,
@@ -1534,6 +1540,7 @@ gpt-5 = "gpt-5.1"
                     ),
                     env_http_headers: None,
                 },
+                description: None,
                 enabled: false,
                 required: false,
                 disabled_reason: None,
@@ -1570,6 +1577,7 @@ Z-Header = \"z\"
 command = \"cmd\"
 args = [\"--flag\"]
 env_vars = [\"FOO\"]
+description = \"Local stdio server\"
 enabled_tools = [\"one\", \"two\"]
 
 [mcp_servers.stdio.env]
@@ -1603,6 +1611,7 @@ foo = { command = "cmd" }
                     env_vars: Vec::new(),
                     cwd: None,
                 },
+                description: None,
                 enabled: true,
                 required: false,
                 disabled_reason: None,
@@ -1650,6 +1659,7 @@ foo = { command = "cmd" } # keep me
                     env_vars: Vec::new(),
                     cwd: None,
                 },
+                description: None,
                 enabled: false,
                 required: false,
                 disabled_reason: None,
@@ -1696,6 +1706,7 @@ foo = { command = "cmd", args = ["--flag"] } # keep me
                     env_vars: Vec::new(),
                     cwd: None,
                 },
+                description: None,
                 enabled: true,
                 required: false,
                 disabled_reason: None,
@@ -1743,6 +1754,7 @@ foo = { command = "cmd" }
                     env_vars: Vec::new(),
                     cwd: None,
                 },
+                description: None,
                 enabled: false,
                 required: false,
                 disabled_reason: None,

@@ -1112,16 +1112,6 @@ pub(crate) fn filter_codex_apps_mcp_tools_only(
         .collect()
 }
 
-pub(crate) fn filter_non_codex_apps_mcp_tools_only(
-    mcp_tools: &HashMap<String, ToolInfo>,
-) -> HashMap<String, ToolInfo> {
-    mcp_tools
-        .iter()
-        .filter(|(_, tool)| tool.server_name != CODEX_APPS_MCP_SERVER_NAME)
-        .map(|(name, tool)| (name.clone(), tool.clone()))
-        .collect()
-}
-
 pub(crate) fn filter_mcp_tools_by_name(
     mcp_tools: &HashMap<String, ToolInfo>,
     selected_tools: &[String],
@@ -2107,6 +2097,7 @@ mod tests {
                     http_headers: None,
                     env_http_headers: None,
                 },
+                description: None,
                 enabled: true,
                 required: false,
                 disabled_reason: None,
@@ -2155,6 +2146,7 @@ mod tests {
                     http_headers: None,
                     env_http_headers: None,
                 },
+                description: None,
                 enabled: true,
                 required: false,
                 disabled_reason: None,

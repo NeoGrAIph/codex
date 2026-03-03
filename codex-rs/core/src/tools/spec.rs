@@ -5,6 +5,8 @@ use crate::client_common::tools::ToolSpec;
 use crate::config::AgentRoleConfig;
 use crate::features::Feature;
 use crate::features::Features;
+use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
+use crate::mcp::split_qualified_tool_name;
 use crate::mcp_connection_manager::ToolInfo;
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use crate::tools::handlers::PLAN_TOOL;
@@ -17,6 +19,7 @@ use crate::tools::handlers::multi_agents::DEFAULT_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents::MAX_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents::MIN_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::request_user_input_tool_description;
+use crate::tools::registry::MCP_FALLBACK_HANDLER_NAME;
 use crate::tools::registry::ToolRegistryBuilder;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -1411,6 +1414,49 @@ fn create_js_repl_reset_tool() -> ToolSpec {
     })
 }
 
+fn create_list_mcp_servers_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "server".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional MCP server name filter. When omitted, lists all configured MCP servers."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "include_tools".to_string(),
+            JsonSchema::Boolean {
+                description: Some(
+                    "Include per-server tool metadata in the response. Defaults to false."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "activate_server".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Activate all tools for this MCP server for future turns.".to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "list_mcp_servers".to_string(),
+        description: "List configured MCP servers with lightweight metadata and optionally activate server tools. Calling this tool unlocks non-app MCP tools for subsequent turns."
+            .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+    })
+}
+
 fn create_list_mcp_resources_tool() -> ToolSpec {
     let properties = BTreeMap::from([
         (
@@ -1512,6 +1558,13 @@ fn create_read_mcp_resource_tool() -> ToolSpec {
             required: Some(vec!["server".to_string(), "uri".to_string()]),
             additional_properties: Some(false.into()),
         },
+    })
+}
+
+fn has_non_apps_mcp_tools(mcp_tools: &HashMap<String, rmcp::model::Tool>) -> bool {
+    mcp_tools.keys().any(|name| {
+        split_qualified_tool_name(name)
+            .is_some_and(|(server, _)| server != CODEX_APPS_MCP_SERVER_NAME)
     })
 }
 
@@ -1723,6 +1776,7 @@ pub(crate) fn build_specs(
     use crate::tools::handlers::ListDirHandler;
     use crate::tools::handlers::McpHandler;
     use crate::tools::handlers::McpResourceHandler;
+    use crate::tools::handlers::McpServersHandler;
     use crate::tools::handlers::MultiAgentHandler;
     use crate::tools::handlers::PlanHandler;
     use crate::tools::handlers::ReadFileHandler;
@@ -1745,6 +1799,7 @@ pub(crate) fn build_specs(
     let view_image_handler = Arc::new(ViewImageHandler);
     let mcp_handler = Arc::new(McpHandler);
     let mcp_resource_handler = Arc::new(McpResourceHandler);
+    let mcp_servers_handler = Arc::new(McpServersHandler);
     let shell_command_handler = Arc::new(ShellCommandHandler::from(config.shell_command_backend));
     let request_user_input_handler = Arc::new(RequestUserInputHandler {
         default_mode_request_user_input: config.default_mode_request_user_input,
@@ -1792,13 +1847,20 @@ pub(crate) fn build_specs(
         builder.register_handler("shell_command", shell_command_handler);
     }
 
+    let expose_mcp_resource_tools = mcp_tools.as_ref().is_some_and(has_non_apps_mcp_tools);
     if mcp_tools.is_some() {
-        builder.push_spec_with_parallel_support(create_list_mcp_resources_tool(), true);
-        builder.push_spec_with_parallel_support(create_list_mcp_resource_templates_tool(), true);
-        builder.push_spec_with_parallel_support(create_read_mcp_resource_tool(), true);
-        builder.register_handler("list_mcp_resources", mcp_resource_handler.clone());
-        builder.register_handler("list_mcp_resource_templates", mcp_resource_handler.clone());
-        builder.register_handler("read_mcp_resource", mcp_resource_handler);
+        builder.register_handler(MCP_FALLBACK_HANDLER_NAME, mcp_handler.clone());
+        builder.push_spec_with_parallel_support(create_list_mcp_servers_tool(), true);
+        builder.register_handler("list_mcp_servers", mcp_servers_handler);
+        if expose_mcp_resource_tools {
+            builder.push_spec_with_parallel_support(create_list_mcp_resources_tool(), true);
+            builder
+                .push_spec_with_parallel_support(create_list_mcp_resource_templates_tool(), true);
+            builder.push_spec_with_parallel_support(create_read_mcp_resource_tool(), true);
+            builder.register_handler("list_mcp_resources", mcp_resource_handler.clone());
+            builder.register_handler("list_mcp_resource_templates", mcp_resource_handler.clone());
+            builder.register_handler("read_mcp_resource", mcp_resource_handler);
+        }
     }
 
     builder.push_spec(PLAN_TOOL.clone());
@@ -2465,14 +2527,17 @@ mod tests {
         assert!(
             !tools.iter().any(|tool| matches!(
                 tool.spec.name(),
-                "list_mcp_resources" | "list_mcp_resource_templates" | "read_mcp_resource"
+                "list_mcp_servers"
+                    | "list_mcp_resources"
+                    | "list_mcp_resource_templates"
+                    | "read_mcp_resource"
             )),
-            "MCP resource tools should be omitted when no MCP servers are configured"
+            "MCP tools should be omitted when no MCP servers are configured"
         );
     }
 
     #[test]
-    fn mcp_resource_tools_are_included_when_mcp_servers_are_present() {
+    fn mcp_resource_tools_are_hidden_without_non_app_mcp_tools() {
         let config = test_config();
         let model_info =
             ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
@@ -2485,9 +2550,80 @@ mod tests {
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), None, &[]).build();
 
+        assert_contains_tool_names(&tools, &["list_mcp_servers"]);
+        assert!(
+            !tools.iter().any(|tool| matches!(
+                tool.spec.name(),
+                "list_mcp_resources" | "list_mcp_resource_templates" | "read_mcp_resource"
+            )),
+            "MCP resource tools should stay hidden until non-app MCP tools are selected"
+        );
+    }
+
+    #[test]
+    fn mcp_resource_tools_are_hidden_when_only_codex_apps_tools_are_present() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let features = Features::with_defaults();
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
+        });
+        let mcp_tools = HashMap::from([(
+            "mcp__codex_apps__calendar_create_event".to_string(),
+            mcp_tool(
+                "calendar_create_event",
+                "Create event",
+                json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            ),
+        )]);
+        let (tools, _) = build_specs(&tools_config, Some(mcp_tools), None, &[]).build();
+
+        assert_contains_tool_names(&tools, &["list_mcp_servers"]);
+        assert!(
+            !tools.iter().any(|tool| matches!(
+                tool.spec.name(),
+                "list_mcp_resources" | "list_mcp_resource_templates" | "read_mcp_resource"
+            )),
+            "MCP resource tools should stay hidden for codex_apps-only toolsets"
+        );
+    }
+
+    #[test]
+    fn mcp_resource_tools_are_included_when_non_app_mcp_tools_are_present() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let features = Features::with_defaults();
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
+        });
+        let mcp_tools = HashMap::from([(
+            "mcp__rmcp__echo".to_string(),
+            mcp_tool(
+                "echo",
+                "Echo from rmcp",
+                json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            ),
+        )]);
+        let (tools, _) = build_specs(&tools_config, Some(mcp_tools), None, &[]).build();
+
         assert_contains_tool_names(
             &tools,
             &[
+                "list_mcp_servers",
                 "list_mcp_resources",
                 "list_mcp_resource_templates",
                 "read_mcp_resource",

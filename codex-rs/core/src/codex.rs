@@ -112,6 +112,7 @@ use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ReadResourceResult;
 use rmcp::model::RequestId;
+use rmcp::model::Tool;
 use serde_json;
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -130,6 +131,7 @@ use tracing::instrument;
 use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
+use url::Url;
 use uuid::Uuid;
 
 use crate::ModelProviderInfo;
@@ -146,6 +148,7 @@ use crate::config::GhostSnapshotConfig;
 use crate::config::StartedNetworkProxy;
 use crate::config::resolve_web_search_mode_for_turn;
 use crate::config::types::McpServerConfig;
+use crate::config::types::McpServerTransportConfig;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::context_manager::ContextManager;
 use crate::context_manager::TotalTokenUsageBreakdown;
@@ -176,12 +179,12 @@ use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp::effective_mcp_servers;
 use crate::mcp::maybe_prompt_and_install_mcp_dependencies;
+use crate::mcp::split_qualified_tool_name;
 use crate::mcp::with_codex_apps_mcp;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::mcp_connection_manager::codex_apps_tools_cache_key;
 use crate::mcp_connection_manager::filter_codex_apps_mcp_tools_only;
 use crate::mcp_connection_manager::filter_mcp_tools_by_name;
-use crate::mcp_connection_manager::filter_non_codex_apps_mcp_tools_only;
 use crate::memories;
 use crate::mentions::build_connector_slug_counts;
 use crate::mentions::build_skill_name_counts;
@@ -256,6 +259,7 @@ use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskContext;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
+use crate::tools::handlers::LIST_MCP_SERVERS_TOOL_NAME;
 use crate::tools::handlers::SEARCH_TOOL_BM25_TOOL_NAME;
 use crate::tools::js_repl::JsReplHandle;
 use crate::tools::js_repl::resolve_compatible_node;
@@ -1768,6 +1772,26 @@ impl Session {
         state.clear_mcp_tool_selection();
     }
 
+    pub(crate) async fn mark_mcp_server_hydrated(&self, server: String) {
+        let mut state = self.state.lock().await;
+        state.mark_mcp_server_hydrated(server);
+    }
+
+    pub(crate) async fn get_hydrated_mcp_servers(&self) -> HashSet<String> {
+        let state = self.state.lock().await;
+        state.get_hydrated_mcp_servers()
+    }
+
+    pub(crate) async fn set_hydrated_mcp_servers(&self, servers: HashSet<String>) {
+        let mut state = self.state.lock().await;
+        state.set_hydrated_mcp_servers(servers);
+    }
+
+    pub(crate) async fn clear_hydrated_mcp_servers(&self) {
+        let mut state = self.state.lock().await;
+        state.clear_hydrated_mcp_servers();
+    }
+
     // Merges connector IDs into the session-level explicit connector selection.
     pub(crate) async fn merge_connector_selection(
         &self,
@@ -1792,6 +1816,7 @@ impl Session {
     async fn record_initial_history(&self, conversation_history: InitialHistory) {
         let turn_context = self.new_default_turn().await;
         self.clear_mcp_tool_selection().await;
+        self.clear_hydrated_mcp_servers().await;
         match conversation_history {
             InitialHistory::New => {
                 // Build and record initial items (user instructions + environment context)
@@ -1816,6 +1841,8 @@ impl Session {
                     .reconstruct_history_from_rollout(&turn_context, &rollout_items)
                     .await;
                 let previous_model = reconstructed_rollout.previous_model.clone();
+                let restored_hydrated_servers =
+                    Self::extract_hydrated_mcp_servers_from_rollout(&rollout_items);
                 let curr = turn_context.model_info.slug.as_str();
                 {
                     let mut state = self.state.lock().await;
@@ -1854,6 +1881,8 @@ impl Session {
                 if let Some(selected_tools) = restored_tool_selection {
                     self.set_mcp_tool_selection(selected_tools).await;
                 }
+                self.set_hydrated_mcp_servers(restored_hydrated_servers)
+                    .await;
 
                 // Defer seeding the session's initial context until the first turn starts so
                 // turn/start overrides can be merged before we write to the rollout.
@@ -1866,6 +1895,8 @@ impl Session {
                     .reconstruct_history_from_rollout(&turn_context, &rollout_items)
                     .await;
                 let previous_model = reconstructed_rollout.previous_model.clone();
+                let restored_hydrated_servers =
+                    Self::extract_hydrated_mcp_servers_from_rollout(&rollout_items);
                 self.set_previous_model(previous_model).await;
 
                 // Always add response items to conversation history
@@ -1884,6 +1915,8 @@ impl Session {
                 if let Some(selected_tools) = restored_tool_selection {
                     self.set_mcp_tool_selection(selected_tools).await;
                 }
+                self.set_hydrated_mcp_servers(restored_hydrated_servers)
+                    .await;
 
                 // If persisting, persist all rollout items as-is (recorder filters)
                 if !rollout_items.is_empty() {
@@ -1927,7 +1960,7 @@ impl Session {
             };
             match response_item {
                 ResponseItem::FunctionCall { name, call_id, .. } => {
-                    if name == SEARCH_TOOL_BM25_TOOL_NAME {
+                    if name == SEARCH_TOOL_BM25_TOOL_NAME || name == LIST_MCP_SERVERS_TOOL_NAME {
                         search_call_ids.insert(call_id.clone());
                     }
                 }
@@ -1961,6 +1994,19 @@ impl Session {
         }
 
         active_selected_tools
+    }
+
+    fn extract_hydrated_mcp_servers_from_rollout(rollout_items: &[RolloutItem]) -> HashSet<String> {
+        let mut servers = HashSet::new();
+        for item in rollout_items {
+            let RolloutItem::ResponseItem(ResponseItem::FunctionCall { name, .. }) = item else {
+                continue;
+            };
+            if let Some((server, _tool)) = split_qualified_tool_name(name) {
+                servers.insert(server);
+            }
+        }
+        servers
     }
 
     async fn previous_model(&self) -> Option<String> {
@@ -3023,6 +3069,26 @@ impl Session {
         }
         if turn_context.features.enabled(Feature::Apps) {
             developer_sections.push(render_apps_section());
+        }
+        let auth = self.services.auth_manager.auth().await;
+        let mcp_servers = effective_mcp_servers(&turn_context.config, auth.as_ref());
+        if !mcp_servers.is_empty() {
+            let server_origins = {
+                let manager = self.services.mcp_connection_manager.read().await;
+                mcp_servers
+                    .keys()
+                    .filter_map(|server_name| {
+                        manager
+                            .server_origin(server_name)
+                            .map(|origin| (server_name.clone(), origin.to_string()))
+                    })
+                    .collect::<HashMap<_, _>>()
+            };
+            if let Some(mcp_servers_section) =
+                render_mcp_servers_section(&mcp_servers, &server_origins)
+            {
+                developer_sections.push(mcp_servers_section);
+            }
         }
         if turn_context.features.enabled(Feature::CodexGitCommit)
             && let Some(commit_message_instruction) = commit_message_trailer_instruction(
@@ -5470,6 +5536,80 @@ fn filter_non_apps_mcp_tools_by_tool_policy(
         .collect()
 }
 
+fn mcp_server_origin_hint(config: &McpServerConfig) -> String {
+    match &config.transport {
+        McpServerTransportConfig::StreamableHttp { url, .. } => Url::parse(url)
+            .ok()
+            .map(|parsed| parsed.origin().ascii_serialization())
+            .unwrap_or_else(|| "streamable_http".to_string()),
+        McpServerTransportConfig::Stdio { .. } => "stdio".to_string(),
+    }
+}
+
+fn render_mcp_servers_section(
+    mcp_servers: &HashMap<String, McpServerConfig>,
+    server_origins: &HashMap<String, String>,
+) -> Option<String> {
+    let mut servers = mcp_servers
+        .iter()
+        .filter(|(_, config)| config.enabled)
+        .map(|(server_name, config)| {
+            let origin = server_origins
+                .get(server_name)
+                .cloned()
+                .unwrap_or_else(|| mcp_server_origin_hint(config));
+            let label = config
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .unwrap_or(origin);
+            (server_name.clone(), label)
+        })
+        .collect::<Vec<_>>();
+    if servers.is_empty() {
+        return None;
+    }
+    servers.sort_by(|a, b| a.0.cmp(&b.0));
+    let lines = servers
+        .into_iter()
+        .map(|(server_name, origin)| format!("- {server_name}: {origin}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!("## MCP Servers\n{lines}"))
+}
+
+const MCP_STUB_SCHEMA_DESCRIPTION_NOTE: &str = "Input schema is temporarily stubbed to reduce context size. \
+Call this tool once and retry to load the full schema for this MCP server.";
+
+fn mcp_tool_with_stub_schema(tool: &Tool) -> Tool {
+    let mut cloned = tool.clone();
+    cloned.input_schema = Arc::new(rmcp::model::object(serde_json::json!({
+        "type": "object",
+        "properties": {},
+        "additionalProperties": true
+    })));
+    cloned.description = Some(MCP_STUB_SCHEMA_DESCRIPTION_NOTE.to_string().into());
+    cloned
+}
+
+fn apply_mcp_tool_prompt_schema_strategy(
+    mcp_tools: HashMap<String, crate::mcp_connection_manager::ToolInfo>,
+    hydrated_servers: &HashSet<String>,
+) -> HashMap<String, crate::mcp_connection_manager::ToolInfo> {
+    mcp_tools
+        .into_iter()
+        .map(|(qualified_name, mut tool_info)| {
+            let should_stub = !hydrated_servers.contains(tool_info.server_name.as_str());
+            if should_stub {
+                tool_info.tool = mcp_tool_with_stub_schema(&tool_info.tool);
+            }
+            (qualified_name, tool_info)
+        })
+        .collect()
+}
+
 fn build_prompt(
     input: Vec<ResponseItem>,
     router: &ToolRouter,
@@ -5647,6 +5787,7 @@ async fn built_tools(
     let app_tools = connectors.as_ref().map(|connectors| {
         filter_codex_apps_mcp_tools(&mcp_tools, connectors, &turn_context.config)
     });
+    let selected_mcp_tools = sess.get_mcp_tool_selection().await;
 
     if let Some(connectors) = connectors.as_ref() {
         let skill_name_counts_lower = skills_outcome.map_or_else(HashMap::new, |outcome| {
@@ -5662,11 +5803,11 @@ async fn built_tools(
             &skill_name_counts_lower,
         );
 
-        let mut selected_mcp_tools = filter_non_codex_apps_mcp_tools_only(&mcp_tools);
-
-        if let Some(selected_tools) = sess.get_mcp_tool_selection().await {
-            selected_mcp_tools.extend(filter_mcp_tools_by_name(&mcp_tools, &selected_tools));
-        }
+        let mut selected_mcp_tools = selected_mcp_tools
+            .as_ref()
+            .map_or_else(HashMap::new, |tools| {
+                filter_mcp_tools_by_name(&mcp_tools, tools)
+            });
 
         selected_mcp_tools.extend(filter_codex_apps_mcp_tools_only(
             &mcp_tools,
@@ -5680,7 +5821,16 @@ async fn built_tools(
 
         mcp_tools =
             connectors::filter_codex_apps_tools_by_policy(selected_mcp_tools, &turn_context.config);
+    } else {
+        mcp_tools = selected_mcp_tools
+            .as_ref()
+            .map_or_else(HashMap::new, |tools| {
+                filter_mcp_tools_by_name(&mcp_tools, tools)
+            });
     }
+
+    let hydrated_mcp_servers = sess.get_hydrated_mcp_servers().await;
+    mcp_tools = apply_mcp_tool_prompt_schema_strategy(mcp_tools, &hydrated_mcp_servers);
 
     Ok(Arc::new(ToolRouter::from_config(
         &turn_context.tools_config,
@@ -6791,6 +6941,89 @@ mod tests {
         }
     }
 
+    fn make_mcp_tool_with_schema(
+        server_name: &str,
+        tool_name: &str,
+        input_schema: serde_json::Value,
+    ) -> ToolInfo {
+        ToolInfo {
+            server_name: server_name.to_string(),
+            tool_name: tool_name.to_string(),
+            tool: Tool {
+                name: tool_name.to_string().into(),
+                title: None,
+                description: Some(format!("Verbose description for {tool_name}").into()),
+                input_schema: Arc::new(rmcp::model::object(input_schema)),
+                output_schema: None,
+                annotations: None,
+                execution: None,
+                icons: None,
+                meta: None,
+            },
+            connector_id: None,
+            connector_name: None,
+        }
+    }
+
+    fn make_mcp_server_config_stdio(command: &str, enabled: bool) -> McpServerConfig {
+        McpServerConfig {
+            transport: McpServerTransportConfig::Stdio {
+                command: command.to_string(),
+                args: Vec::new(),
+                env: None,
+                env_vars: Vec::new(),
+                cwd: None,
+            },
+            description: None,
+            enabled,
+            required: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+        }
+    }
+
+    fn make_mcp_server_config_streamable_http(url: &str, enabled: bool) -> McpServerConfig {
+        McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: url.to_string(),
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
+            },
+            description: None,
+            enabled,
+            required: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+        }
+    }
+
+    fn developer_message_text(items: &[ResponseItem]) -> String {
+        let Some(ResponseItem::Message { content, .. }) = items
+            .iter()
+            .find(|item| matches!(item, ResponseItem::Message { role, .. } if role == "developer"))
+        else {
+            panic!("expected developer message in initial context");
+        };
+
+        content
+            .iter()
+            .filter_map(|item| match item {
+                ContentItem::InputText { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn function_call_rollout_item(name: &str, call_id: &str) -> RolloutItem {
         RolloutItem::ResponseItem(ResponseItem::FunctionCall {
             id: None,
@@ -7029,7 +7262,7 @@ mod tests {
     }
 
     #[test]
-    fn non_app_mcp_tools_remain_visible_without_search_selection() {
+    fn non_app_mcp_tools_stay_hidden_without_selection() {
         let mcp_tools = HashMap::from([
             (
                 "mcp__codex_apps__calendar_create_event".to_string(),
@@ -7046,12 +7279,6 @@ mod tests {
             ),
         ]);
 
-        let mut selected_mcp_tools = mcp_tools
-            .iter()
-            .filter(|(_, tool)| tool.server_name != CODEX_APPS_MCP_SERVER_NAME)
-            .map(|(name, tool)| (name.clone(), tool.clone()))
-            .collect::<HashMap<_, _>>();
-
         let connectors = connectors::accessible_connectors_from_mcp_tools(&mcp_tools);
         let explicitly_enabled_connectors = HashSet::new();
         let connectors = filter_connectors_for_input(
@@ -7060,12 +7287,13 @@ mod tests {
             &explicitly_enabled_connectors,
             &HashMap::new(),
         );
+        let mut selected_mcp_tools = HashMap::new();
         let apps_mcp_tools = filter_codex_apps_mcp_tools_only(&mcp_tools, &connectors);
         selected_mcp_tools.extend(apps_mcp_tools);
 
         let mut tool_names: Vec<String> = selected_mcp_tools.into_keys().collect();
         tool_names.sort();
-        assert_eq!(tool_names, vec!["mcp__rmcp__echo".to_string()]);
+        assert!(tool_names.is_empty());
     }
 
     #[test]
@@ -7236,6 +7464,216 @@ mod tests {
     }
 
     #[test]
+    fn render_mcp_servers_section_sorts_servers_and_uses_origin_sources() {
+        let mut alpha_server =
+            make_mcp_server_config_stdio("npx @modelcontextprotocol/server-memory", true);
+        alpha_server.description = Some("Local memory tools".to_string());
+        let mcp_servers = HashMap::from([
+            (
+                "zeta".to_string(),
+                make_mcp_server_config_streamable_http("https://zeta.example.com/mcp", true),
+            ),
+            ("alpha".to_string(), alpha_server),
+        ]);
+        let server_origins =
+            HashMap::from([("zeta".to_string(), "https://zeta.example.com".to_string())]);
+
+        let section =
+            render_mcp_servers_section(&mcp_servers, &server_origins).expect("section is rendered");
+        assert_eq!(
+            section,
+            "## MCP Servers\n- alpha: Local memory tools\n- zeta: https://zeta.example.com"
+        );
+    }
+
+    #[test]
+    fn render_mcp_servers_section_uses_transport_hint_when_url_invalid() {
+        let mcp_servers = HashMap::from([(
+            "broken".to_string(),
+            make_mcp_server_config_streamable_http(":/broken", true),
+        )]);
+        let section =
+            render_mcp_servers_section(&mcp_servers, &HashMap::new()).expect("section is rendered");
+        assert_eq!(section, "## MCP Servers\n- broken: streamable_http");
+    }
+
+    #[test]
+    fn render_mcp_servers_section_skips_disabled_servers() {
+        let mcp_servers = HashMap::from([(
+            "disabled".to_string(),
+            make_mcp_server_config_stdio("echo", false),
+        )]);
+        assert_eq!(
+            render_mcp_servers_section(&mcp_servers, &HashMap::new()),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn build_initial_context_includes_mcp_servers_overview_for_effective_servers() {
+        let (session, mut turn_context) = make_session_and_context().await;
+        let mut config = (*turn_context.config).clone();
+        config.features.disable(Feature::Apps);
+        config.mcp_servers = Constrained::allow_any(HashMap::from([(
+            "docs".to_string(),
+            make_mcp_server_config_streamable_http("https://docs.example.com/mcp", true),
+        )]));
+        turn_context.config = Arc::new(config);
+
+        let initial_context = session.build_initial_context(&turn_context, None).await;
+        let developer_text = developer_message_text(&initial_context);
+        assert!(developer_text.contains("## MCP Servers"));
+        assert!(developer_text.contains("- docs: https://docs.example.com"));
+    }
+
+    #[tokio::test]
+    async fn build_initial_context_omits_mcp_servers_overview_without_effective_servers() {
+        let (session, mut turn_context) = make_session_and_context().await;
+        let mut config = (*turn_context.config).clone();
+        config.features.disable(Feature::Apps);
+        config.mcp_servers = Constrained::allow_any(HashMap::new());
+        turn_context.config = Arc::new(config);
+
+        let initial_context = session.build_initial_context(&turn_context, None).await;
+        let developer_text = developer_message_text(&initial_context);
+        assert!(!developer_text.contains("## MCP Servers"));
+    }
+
+    #[tokio::test]
+    async fn build_initial_context_prefers_mcp_server_description_over_origin() {
+        let (session, mut turn_context) = make_session_and_context().await;
+        let mut config = (*turn_context.config).clone();
+        config.features.disable(Feature::Apps);
+        let mut docs_server =
+            make_mcp_server_config_streamable_http("https://docs.example.com/mcp", true);
+        docs_server.description = Some("Knowledge Base".to_string());
+        config.mcp_servers =
+            Constrained::allow_any(HashMap::from([("docs".to_string(), docs_server)]));
+        turn_context.config = Arc::new(config);
+
+        let initial_context = session.build_initial_context(&turn_context, None).await;
+        let developer_text = developer_message_text(&initial_context);
+        assert!(developer_text.contains("- docs: Knowledge Base"));
+        assert!(!developer_text.contains("- docs: https://docs.example.com"));
+    }
+
+    #[tokio::test]
+    async fn build_initial_context_mcp_overview_respects_apps_feature_for_codex_apps() {
+        let (session, mut turn_context) = make_session_and_context().await;
+        let mut config = (*turn_context.config).clone();
+        config.features.enable(Feature::Apps);
+        config.mcp_servers = Constrained::allow_any(HashMap::new());
+        turn_context.config = Arc::new(config);
+
+        let with_apps = session.build_initial_context(&turn_context, None).await;
+        let with_apps_text = developer_message_text(&with_apps);
+        assert!(with_apps_text.contains("## MCP Servers"));
+        assert!(with_apps_text.contains(&format!("- {CODEX_APPS_MCP_SERVER_NAME}:")));
+
+        let mut config_without_apps = (*turn_context.config).clone();
+        config_without_apps.features.disable(Feature::Apps);
+        turn_context.config = Arc::new(config_without_apps);
+        let without_apps = session.build_initial_context(&turn_context, None).await;
+        let without_apps_text = developer_message_text(&without_apps);
+        assert!(!without_apps_text.contains(&format!("- {CODEX_APPS_MCP_SERVER_NAME}:")));
+    }
+
+    #[test]
+    fn apply_mcp_tool_prompt_schema_strategy_stubs_non_app_unhydrated_servers() {
+        let mcp_tools = HashMap::from([(
+            "mcp__rmcp__echo".to_string(),
+            make_mcp_tool_with_schema(
+                "rmcp",
+                "echo",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "message": { "type": "string" }
+                    },
+                    "required": ["message"]
+                }),
+            ),
+        )]);
+
+        let transformed = apply_mcp_tool_prompt_schema_strategy(mcp_tools, &HashSet::new());
+        let tool = transformed.get("mcp__rmcp__echo").expect("tool must exist");
+        let properties = tool
+            .tool
+            .input_schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("stub schema should define properties");
+        assert!(properties.is_empty());
+        assert_eq!(
+            tool.tool.input_schema.get("additionalProperties"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(
+            tool.tool.description.as_deref(),
+            Some(MCP_STUB_SCHEMA_DESCRIPTION_NOTE)
+        );
+    }
+
+    #[test]
+    fn apply_mcp_tool_prompt_schema_strategy_keeps_hydrated_server_schema() {
+        let mcp_tools = HashMap::from([(
+            "mcp__rmcp__echo".to_string(),
+            make_mcp_tool_with_schema(
+                "rmcp",
+                "echo",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "message": { "type": "string" }
+                    },
+                    "required": ["message"]
+                }),
+            ),
+        )]);
+        let hydrated_servers = HashSet::from(["rmcp".to_string()]);
+
+        let transformed = apply_mcp_tool_prompt_schema_strategy(mcp_tools, &hydrated_servers);
+        let tool = transformed.get("mcp__rmcp__echo").expect("tool must exist");
+        let properties = tool
+            .tool
+            .input_schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("schema should define properties");
+        assert!(properties.contains_key("message"));
+    }
+
+    #[test]
+    fn apply_mcp_tool_prompt_schema_strategy_stubs_codex_apps_when_unhydrated() {
+        let mcp_tools = HashMap::from([(
+            "mcp__codex_apps__calendar_create_event".to_string(),
+            make_mcp_tool_with_schema(
+                CODEX_APPS_MCP_SERVER_NAME,
+                "calendar_create_event",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" }
+                    },
+                    "required": ["title"]
+                }),
+            ),
+        )]);
+
+        let transformed = apply_mcp_tool_prompt_schema_strategy(mcp_tools, &HashSet::new());
+        let tool = transformed
+            .get("mcp__codex_apps__calendar_create_event")
+            .expect("tool must exist");
+        let properties = tool
+            .tool
+            .input_schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("stub schema should define properties");
+        assert!(properties.is_empty());
+    }
+
+    #[test]
     fn extract_mcp_tool_selection_from_rollout_reads_search_tool_output() {
         let rollout_items = vec![
             function_call_rollout_item(SEARCH_TOOL_BM25_TOOL_NAME, "search-1"),
@@ -7257,6 +7695,32 @@ mod tests {
             Some(vec![
                 "mcp__codex_apps__calendar_create_event".to_string(),
                 "mcp__codex_apps__calendar_list_events".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn extract_mcp_tool_selection_from_rollout_reads_list_mcp_servers_output() {
+        let rollout_items = vec![
+            function_call_rollout_item(LIST_MCP_SERVERS_TOOL_NAME, "servers-1"),
+            function_call_output_rollout_item(
+                "servers-1",
+                &json!({
+                    "active_selected_tools": [
+                        "mcp__rmcp__echo",
+                        "mcp__rmcp__image"
+                    ],
+                })
+                .to_string(),
+            ),
+        ];
+
+        let selected = Session::extract_mcp_tool_selection_from_rollout(&rollout_items);
+        assert_eq!(
+            selected,
+            Some(vec![
+                "mcp__rmcp__echo".to_string(),
+                "mcp__rmcp__image".to_string(),
             ])
         );
     }
@@ -7333,6 +7797,22 @@ mod tests {
         )];
         let selected = Session::extract_mcp_tool_selection_from_rollout(&rollout_items);
         assert_eq!(selected, None);
+    }
+
+    #[test]
+    fn extract_hydrated_mcp_servers_from_rollout_collects_unique_mcp_servers() {
+        let rollout_items = vec![
+            function_call_rollout_item("shell", "shell-1"),
+            function_call_rollout_item("mcp__rmcp__echo", "mcp-1"),
+            function_call_rollout_item("mcp__rmcp__image", "mcp-2"),
+            function_call_rollout_item("mcp__codex_apps__calendar_create_event", "mcp-3"),
+        ];
+
+        let hydrated = Session::extract_hydrated_mcp_servers_from_rollout(&rollout_items);
+        assert_eq!(
+            hydrated,
+            HashSet::from(["rmcp".to_string(), CODEX_APPS_MCP_SERVER_NAME.to_string(),])
+        );
     }
 
     #[tokio::test]

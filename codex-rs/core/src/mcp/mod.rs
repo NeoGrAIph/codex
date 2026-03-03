@@ -131,6 +131,7 @@ fn codex_apps_mcp_server_config(config: &Config, auth: Option<&CodexAuth>) -> Mc
             http_headers,
             env_http_headers: None,
         },
+        description: None,
         enabled: true,
         required: false,
         disabled_reason: None,

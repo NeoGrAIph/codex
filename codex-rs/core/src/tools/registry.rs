@@ -59,6 +59,8 @@ pub struct ToolRegistry {
     handlers: HashMap<String, Arc<dyn ToolHandler>>,
 }
 
+pub(crate) const MCP_FALLBACK_HANDLER_NAME: &str = "__mcp_fallback__";
+
 impl ToolRegistry {
     pub fn new(handlers: HashMap<String, Arc<dyn ToolHandler>>) -> Self {
         Self { handlers }
@@ -120,6 +122,26 @@ impl ToolRegistry {
 
         let handler = match self.handler(tool_name.as_ref()) {
             Some(handler) => handler,
+            None if matches!(&invocation.payload, ToolPayload::Mcp { .. }) => {
+                if let Some(handler) = self.handler(MCP_FALLBACK_HANDLER_NAME) {
+                    handler
+                } else {
+                    let message =
+                        unsupported_tool_call_message(&invocation.payload, tool_name.as_ref());
+                    otel.tool_result_with_tags(
+                        tool_name.as_ref(),
+                        &call_id_owned,
+                        log_payload.as_ref(),
+                        Duration::ZERO,
+                        false,
+                        &message,
+                        &metric_tags,
+                        mcp_server_ref,
+                        mcp_server_origin_ref,
+                    );
+                    return Err(FunctionCallError::RespondToModel(message));
+                }
+            }
             None => {
                 let message =
                     unsupported_tool_call_message(&invocation.payload, tool_name.as_ref());

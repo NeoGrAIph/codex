@@ -232,7 +232,7 @@ async fn js_repl_can_invoke_builtin_tools() -> Result<()> {
         "use js_repl to call a tool",
         &[(
             "call-1",
-            "const toolOut = await codex.tool(\"list_mcp_resources\", {}); console.log(toolOut.type);",
+            "const toolOut = await codex.tool(\"list_mcp_servers\", {}); console.log(toolOut.type);",
         )],
     )
     .await?;
