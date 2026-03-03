@@ -1685,15 +1685,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
-        fn pick_allowed_sandbox_policy(
+    async fn spawn_agent_applies_role_template_sandbox_after_runtime_override() {
+        fn pick_allowed_runtime_override(
             constraint: &crate::config::Constrained<SandboxPolicy>,
             base: SandboxPolicy,
         ) -> SandboxPolicy {
             let candidates = [
                 SandboxPolicy::DangerFullAccess,
                 SandboxPolicy::new_workspace_write_policy(),
-                SandboxPolicy::new_read_only_policy(),
             ];
             candidates
                 .into_iter()
@@ -1710,7 +1709,7 @@ mod tests {
         let (mut session, mut turn) = make_session_and_context().await;
         let manager = thread_manager();
         session.services.agent_control = manager.agent_control();
-        let expected_sandbox = pick_allowed_sandbox_policy(
+        let runtime_sandbox_override = pick_allowed_runtime_override(
             &turn.config.permissions.sandbox_policy,
             turn.config.permissions.sandbox_policy.get().clone(),
         );
@@ -1718,12 +1717,17 @@ mod tests {
             .set(AskForApproval::OnRequest)
             .expect("approval policy should be set");
         turn.sandbox_policy
-            .set(expected_sandbox.clone())
+            .set(runtime_sandbox_override.clone())
             .expect("sandbox policy should be set");
         assert_ne!(
-            expected_sandbox,
+            runtime_sandbox_override,
             turn.config.permissions.sandbox_policy.get().clone(),
             "test requires a runtime sandbox override that differs from base config"
+        );
+        assert_ne!(
+            runtime_sandbox_override,
+            SandboxPolicy::new_read_only_policy(),
+            "test requires a runtime sandbox override that differs from explorer template sandbox"
         );
 
         let invocation = invocation(
@@ -1762,7 +1766,10 @@ mod tests {
             .expect("spawned agent thread should exist")
             .config_snapshot()
             .await;
-        assert_eq!(snapshot.sandbox_policy, expected_sandbox);
+        assert_eq!(
+            snapshot.sandbox_policy,
+            SandboxPolicy::new_read_only_policy()
+        );
         assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
     }
 
