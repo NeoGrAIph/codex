@@ -2483,6 +2483,7 @@ mod tests {
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             cwd: PathBuf::from("/tmp/project"),
             reasoning_effort: None,
+            thread_note: None,
             history_log_id: 0,
             history_entry_count: 0,
             initial_messages: None,
