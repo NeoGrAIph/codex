@@ -1101,6 +1101,10 @@
           "default": null,
           "type": "string"
         },
+        "description": {
+          "default": null,
+          "type": "string"
+        },
         "disabled_tools": {
           "default": null,
           "items": {

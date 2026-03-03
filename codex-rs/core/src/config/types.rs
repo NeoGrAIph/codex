@@ -64,6 +64,10 @@ pub struct McpServerConfig {
     #[serde(flatten)]
     pub transport: McpServerTransportConfig,
 
+    /// Human-friendly server description shown in UI and model-facing overviews.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
     /// When `false`, Codex skips initializing this MCP server.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -127,6 +131,8 @@ pub(crate) struct RawMcpServerConfig {
 
     // shared
     #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
     pub startup_timeout_sec: Option<f64>,
     #[serde(default)]
     pub startup_timeout_ms: Option<u64>,
@@ -163,6 +169,10 @@ impl<'de> Deserialize<'de> for McpServerConfig {
         let tool_timeout_sec = raw.tool_timeout_sec;
         let enabled = raw.enabled.unwrap_or_else(default_enabled);
         let required = raw.required.unwrap_or_default();
+        let description = raw.description.clone().and_then(|value| {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        });
         let enabled_tools = raw.enabled_tools.clone();
         let disabled_tools = raw.disabled_tools.clone();
         let scopes = raw.scopes.clone();
@@ -214,6 +224,7 @@ impl<'de> Deserialize<'de> for McpServerConfig {
 
         Ok(Self {
             transport,
+            description,
             startup_timeout_sec,
             tool_timeout_sec,
             enabled,
@@ -1163,5 +1174,18 @@ mod tests {
             err.to_string().contains("bearer_token is not supported"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn deserialize_server_config_with_description() {
+        let cfg: McpServerConfig = toml::from_str(
+            r#"
+            command = "echo"
+            description = "Friendly MCP server"
+        "#,
+        )
+        .expect("should deserialize description");
+
+        assert_eq!(cfg.description.as_deref(), Some("Friendly MCP server"));
     }
 }

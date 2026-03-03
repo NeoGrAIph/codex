@@ -125,6 +125,7 @@ fn rmcp_server_config(command: String) -> McpServerConfig {
             env_vars: Vec::new(),
             cwd: None,
         },
+        description: None,
         enabled: true,
         required: false,
         disabled_reason: None,
@@ -249,8 +250,7 @@ async fn search_tool_adds_discovery_instructions_to_tool_description() -> Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn search_tool_hides_apps_tools_without_search_but_keeps_non_app_tools_visible() -> Result<()>
-{
+async fn search_tool_hides_apps_and_non_app_tools_without_search_or_server_unlock() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -286,12 +286,8 @@ async fn search_tool_hides_apps_tools_without_search_but_keeps_non_app_tools_vis
         "tools list should include {SEARCH_TOOL_BM25_TOOL_NAME}: {tools:?}"
     );
     assert!(
-        tools.iter().any(|name| name == RMCP_ECHO_TOOL),
-        "non-app MCP tools should remain visible in Apps mode: {tools:?}"
-    );
-    assert!(
-        tools.iter().any(|name| name == RMCP_IMAGE_TOOL),
-        "non-app MCP tools should remain visible in Apps mode: {tools:?}"
+        tools.iter().any(|name| name == "list_mcp_servers"),
+        "tools list should include list_mcp_servers before unlock: {tools:?}"
     );
     assert!(
         !tools.iter().any(|name| name == CALENDAR_CREATE_TOOL),
@@ -300,6 +296,14 @@ async fn search_tool_hides_apps_tools_without_search_but_keeps_non_app_tools_vis
     assert!(
         !tools.iter().any(|name| name == CALENDAR_LIST_TOOL),
         "apps tools should stay hidden before search/mention: {tools:?}"
+    );
+    assert!(
+        !tools.iter().any(|name| name == RMCP_ECHO_TOOL),
+        "non-app MCP tools should stay hidden before server unlock: {tools:?}"
+    );
+    assert!(
+        !tools.iter().any(|name| name == RMCP_IMAGE_TOOL),
+        "non-app MCP tools should stay hidden before server unlock: {tools:?}"
     );
 
     Ok(())
@@ -338,8 +342,8 @@ async fn explicit_app_mentions_expose_apps_tools_without_search() -> Result<()> 
     let body = mock.single_request().body_json();
     let tools = tool_names(&body);
     assert!(
-        tools.iter().any(|name| name == RMCP_ECHO_TOOL),
-        "non-app tools should remain visible: {tools:?}"
+        !tools.iter().any(|name| name == RMCP_ECHO_TOOL),
+        "non-app tools should stay hidden before list_mcp_servers unlock: {tools:?}"
     );
     assert!(
         tools.iter().any(|name| name == CALENDAR_CREATE_TOOL),
@@ -415,8 +419,8 @@ async fn search_tool_selection_persists_across_turns() -> Result<()> {
 
     let first_tools = tool_names(&requests[0].body_json());
     assert!(
-        first_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
-        "non-app MCP tools should be available before search: {first_tools:?}"
+        !first_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
+        "non-app MCP tools should stay hidden before list_mcp_servers unlock: {first_tools:?}"
     );
     assert!(
         !first_tools.iter().any(|name| name == CALENDAR_CREATE_TOOL),
@@ -452,8 +456,8 @@ async fn search_tool_selection_persists_across_turns() -> Result<()> {
 
     let second_tools = tool_names(&requests[1].body_json());
     assert!(
-        second_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
-        "non-app MCP tools should remain visible after search: {second_tools:?}"
+        !second_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
+        "non-app MCP tools should stay hidden after search until list_mcp_servers unlock: {second_tools:?}"
     );
     for selected_tool in &selected_tools {
         assert!(
@@ -464,8 +468,8 @@ async fn search_tool_selection_persists_across_turns() -> Result<()> {
 
     let third_tools = tool_names(&requests[2].body_json());
     assert!(
-        third_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
-        "non-app MCP tools should remain visible on later turns: {third_tools:?}"
+        !third_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
+        "non-app MCP tools should stay hidden on later turns until list_mcp_servers unlock: {third_tools:?}"
     );
     for selected_tool in &selected_tools {
         assert!(
@@ -543,8 +547,8 @@ async fn search_tool_selection_unions_results_within_turn() -> Result<()> {
 
     let first_tools = tool_names(&requests[0].body_json());
     assert!(
-        first_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
-        "non-app MCP tools should be visible before search: {first_tools:?}"
+        !first_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
+        "non-app MCP tools should stay hidden before list_mcp_servers unlock: {first_tools:?}"
     );
     assert!(
         !first_tools.iter().any(|name| name == CALENDAR_CREATE_TOOL),
@@ -580,8 +584,8 @@ async fn search_tool_selection_unions_results_within_turn() -> Result<()> {
 
     let third_tools = tool_names(&requests[2].body_json());
     assert!(
-        third_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
-        "non-app MCP tools should remain visible after repeated search: {third_tools:?}"
+        !third_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
+        "non-app MCP tools should stay hidden after repeated search until list_mcp_servers unlock: {third_tools:?}"
     );
     assert!(
         third_tools.iter().any(|name| name == CALENDAR_CREATE_TOOL),
@@ -688,8 +692,8 @@ async fn search_tool_selection_restores_when_resumed() -> Result<()> {
     );
     let resumed_tools = tool_names(&requests[2].body_json());
     assert!(
-        resumed_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
-        "non-app tools should remain visible after resume: {resumed_tools:?}"
+        !resumed_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
+        "non-app tools should stay hidden after resume until list_mcp_servers unlock: {resumed_tools:?}"
     );
     for selected_tool in &selected_tools {
         assert!(
@@ -854,8 +858,8 @@ async fn search_tool_selection_union_restores_when_resumed_after_multiple_search
 
     let resumed_tools = tool_names(&requests[4].body_json());
     assert!(
-        resumed_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
-        "non-app tools should remain visible after resume: {resumed_tools:?}"
+        !resumed_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
+        "non-app tools should stay hidden after resume until list_mcp_servers unlock: {resumed_tools:?}"
     );
     assert!(
         resumed_tools
@@ -954,8 +958,8 @@ async fn search_tool_selection_restores_when_forked_with_full_history() -> Resul
     );
     let forked_tools = tool_names(&requests[2].body_json());
     assert!(
-        forked_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
-        "non-app tools should remain visible in forked thread: {forked_tools:?}"
+        !forked_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
+        "non-app tools should stay hidden in forked thread until list_mcp_servers unlock: {forked_tools:?}"
     );
     for selected_tool in &selected_tools {
         assert!(
@@ -1048,8 +1052,8 @@ async fn search_tool_selection_drops_when_fork_excludes_search_turn() -> Result<
     );
     let forked_tools = tool_names(&requests[2].body_json());
     assert!(
-        forked_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
-        "non-app tools should remain visible in forked thread: {forked_tools:?}"
+        !forked_tools.iter().any(|name| name == RMCP_ECHO_TOOL),
+        "non-app tools should stay hidden in forked thread until list_mcp_servers unlock: {forked_tools:?}"
     );
     assert!(
         !forked_tools

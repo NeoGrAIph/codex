@@ -30,6 +30,7 @@ pub(crate) struct SessionState {
     /// Startup regular task pre-created during session initialization.
     pub(crate) startup_regular_task: Option<JoinHandle<CodexResult<RegularTask>>>,
     pub(crate) active_mcp_tool_selection: Option<Vec<String>>,
+    pub(crate) hydrated_mcp_servers: HashSet<String>,
     pub(crate) active_connector_selection: HashSet<String>,
 }
 
@@ -47,6 +48,7 @@ impl SessionState {
             previous_model: None,
             startup_regular_task: None,
             active_mcp_tool_selection: None,
+            hydrated_mcp_servers: HashSet::new(),
             active_connector_selection: HashSet::new(),
         }
     }
@@ -212,6 +214,24 @@ impl SessionState {
 
     pub(crate) fn clear_mcp_tool_selection(&mut self) {
         self.active_mcp_tool_selection = None;
+    }
+
+    pub(crate) fn mark_mcp_server_hydrated(&mut self, server: String) {
+        if !server.is_empty() {
+            self.hydrated_mcp_servers.insert(server);
+        }
+    }
+
+    pub(crate) fn get_hydrated_mcp_servers(&self) -> HashSet<String> {
+        self.hydrated_mcp_servers.clone()
+    }
+
+    pub(crate) fn set_hydrated_mcp_servers(&mut self, servers: HashSet<String>) {
+        self.hydrated_mcp_servers = servers;
+    }
+
+    pub(crate) fn clear_hydrated_mcp_servers(&mut self) {
+        self.hydrated_mcp_servers.clear();
     }
 
     // Adds connector IDs to the active set and returns the merged selection.

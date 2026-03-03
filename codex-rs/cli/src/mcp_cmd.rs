@@ -242,6 +242,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
 
     let new_entry = McpServerConfig {
         transport: transport.clone(),
+        description: None,
         enabled: true,
         required: false,
         disabled_reason: None,
