@@ -34,6 +34,7 @@ pub struct ThreadConfigSnapshot {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub personality: Option<Personality>,
     pub session_source: SessionSource,
+    pub thread_note: Option<String>,
 }
 
 pub struct CodexThread {

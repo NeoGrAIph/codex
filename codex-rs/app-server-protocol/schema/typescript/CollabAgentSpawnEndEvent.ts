@@ -26,6 +26,10 @@ new_agent_nickname?: string | null,
  */
 new_agent_role?: string | null, 
 /**
+ * Optional note assigned to the new agent thread.
+ */
+new_agent_thread_note?: string | null, 
+/**
  * Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
  * beginning.
  */

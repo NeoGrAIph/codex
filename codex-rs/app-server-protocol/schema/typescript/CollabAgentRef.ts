@@ -15,4 +15,8 @@ agent_nickname?: string | null,
 /**
  * Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
  */
-agent_role?: string | null, };
+agent_role?: string | null, 
+/**
+ * Optional user-facing note assigned to the agent thread.
+ */
+thread_note?: string | null, };

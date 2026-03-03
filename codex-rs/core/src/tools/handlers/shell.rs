@@ -69,7 +69,11 @@ impl ShellHandler {
             command: params.command.clone(),
             cwd: turn_context.resolve_path(params.workdir.clone()),
             expiration: params.timeout_ms.into(),
-            env: create_env(&turn_context.shell_environment_policy, Some(thread_id)),
+            env: create_env(
+                &turn_context.shell_environment_policy,
+                Some(thread_id),
+                turn_context.thread_note.as_deref(),
+            ),
             network: turn_context.network.clone(),
             sandbox_permissions: params.sandbox_permissions.unwrap_or_default(),
             windows_sandbox_level: turn_context.windows_sandbox_level,
@@ -119,7 +123,11 @@ impl ShellCommandHandler {
             command,
             cwd: turn_context.resolve_path(params.workdir.clone()),
             expiration: params.timeout_ms.into(),
-            env: create_env(&turn_context.shell_environment_policy, Some(thread_id)),
+            env: create_env(
+                &turn_context.shell_environment_policy,
+                Some(thread_id),
+                turn_context.thread_note.as_deref(),
+            ),
             network: turn_context.network.clone(),
             sandbox_permissions: params.sandbox_permissions.unwrap_or_default(),
             windows_sandbox_level: turn_context.windows_sandbox_level,
@@ -524,6 +532,7 @@ mod tests {
         let expected_env = create_env(
             &turn_context.shell_environment_policy,
             Some(session.conversation_id),
+            turn_context.thread_note.as_deref(),
         );
 
         let params = ShellCommandToolCallParams {

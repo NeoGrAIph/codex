@@ -69,9 +69,16 @@ impl AgentControl {
         config: crate::config::Config,
         items: Vec<UserInput>,
         session_source: Option<SessionSource>,
+        thread_note: Option<String>,
     ) -> CodexResult<ThreadId> {
-        self.spawn_agent_with_options(config, items, session_source, SpawnAgentOptions::default())
-            .await
+        self.spawn_agent_with_options(
+            config,
+            items,
+            session_source,
+            SpawnAgentOptions::default(),
+            thread_note,
+        )
+        .await
     }
 
     pub(crate) async fn spawn_agent_with_options(
@@ -80,14 +87,17 @@ impl AgentControl {
         items: Vec<UserInput>,
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
+        thread_note: Option<String>,
     ) -> CodexResult<ThreadId> {
         let state = self.upgrade()?;
         let mut reservation = self.state.reserve_spawn_slot(config.agent_max_threads)?;
+        let thread_note = crate::util::normalize_thread_note(thread_note.as_deref());
         let session_source = match session_source {
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,
                 agent_role,
+                thread_note: source_thread_note,
                 allow_list,
                 deny_list,
                 ..
@@ -98,6 +108,7 @@ impl AgentControl {
                     depth,
                     agent_nickname: Some(agent_nickname),
                     agent_role,
+                    thread_note: thread_note.clone().or(source_thread_note),
                     allow_list,
                     deny_list,
                 }))
@@ -183,6 +194,13 @@ impl AgentControl {
         };
         reservation.commit(new_thread.thread_id);
 
+        if let Some(note) = thread_note {
+            if let Err(err) = self.set_thread_note(new_thread.thread_id, Some(note)).await {
+                let _ = self.shutdown_agent(new_thread.thread_id).await;
+                return Err(err);
+            }
+        }
+
         // Notify a new thread has been created. This notification will be processed by clients
         // to subscribe or drain this newly created thread.
         // TODO(jif) add helper for drain
@@ -207,6 +225,7 @@ impl AgentControl {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,
+                thread_note,
                 allow_list,
                 deny_list,
                 ..
@@ -236,6 +255,7 @@ impl AgentControl {
                     depth,
                     agent_nickname: reserved_agent_nickname,
                     agent_role: resumed_agent_role,
+                    thread_note,
                     allow_list,
                     deny_list,
                 })
@@ -319,17 +339,42 @@ impl AgentControl {
         &self,
         agent_id: ThreadId,
     ) -> Option<(Option<String>, Option<String>)> {
+        self.get_agent_nickname_role_and_note(agent_id)
+            .await
+            .map(|(agent_nickname, agent_role, _thread_note)| (agent_nickname, agent_role))
+    }
+
+    pub(crate) async fn get_agent_nickname_role_and_note(
+        &self,
+        agent_id: ThreadId,
+    ) -> Option<(Option<String>, Option<String>, Option<String>)> {
         let Ok(state) = self.upgrade() else {
             return None;
         };
         let Ok(thread) = state.get_thread(agent_id).await else {
             return None;
         };
-        let session_source = thread.config_snapshot().await.session_source;
+        let config_snapshot = thread.config_snapshot().await;
         Some((
-            session_source.get_nickname(),
-            session_source.get_agent_role(),
+            config_snapshot.session_source.get_nickname(),
+            config_snapshot.session_source.get_agent_role(),
+            config_snapshot.thread_note,
         ))
+    }
+
+    /// Set a user-facing thread note for an existing agent thread.
+    pub(crate) async fn set_thread_note(
+        &self,
+        agent_id: ThreadId,
+        note: Option<String>,
+    ) -> CodexResult<String> {
+        let state = self.upgrade()?;
+        let result = state.send_op(agent_id, Op::SetThreadNote { note }).await;
+        if matches!(result, Err(CodexErr::InternalAgentDied)) {
+            let _ = state.remove_thread(&agent_id).await;
+            self.state.release_spawned_thread(agent_id);
+        }
+        result
     }
 
     /// Subscribe to status updates for `agent_id`, yielding the latest value and changes.
@@ -665,7 +710,7 @@ mod tests {
         let control = AgentControl::default();
         let (_home, config) = test_config().await;
         let err = control
-            .spawn_agent(config, text_input("hello"), None)
+            .spawn_agent(config, text_input("hello"), None, None)
             .await
             .expect_err("spawn_agent should fail without a manager");
         assert_eq!(
@@ -793,7 +838,7 @@ mod tests {
         let harness = AgentControlHarness::new().await;
         let thread_id = harness
             .control
-            .spawn_agent(harness.config.clone(), text_input("spawned"), None)
+            .spawn_agent(harness.config.clone(), text_input("spawned"), None, None)
             .await
             .expect("spawn_agent should succeed");
         let _thread = harness
@@ -860,6 +905,7 @@ mod tests {
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: Some(parent_spawn_call_id),
                 },
+                None,
             )
             .await
             .expect("forked spawn should succeed");
@@ -942,6 +988,7 @@ mod tests {
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
                 },
+                None,
             )
             .await
             .expect("forked spawn should succeed");
@@ -1011,6 +1058,7 @@ mod tests {
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
                 },
+                None,
             )
             .await
             .expect("forked spawn should flush parent rollout before loading history");
@@ -1076,12 +1124,12 @@ mod tests {
             .expect("start thread");
 
         let first_agent_id = control
-            .spawn_agent(config.clone(), text_input("hello"), None)
+            .spawn_agent(config.clone(), text_input("hello"), None, None)
             .await
             .expect("spawn_agent should succeed");
 
         let err = control
-            .spawn_agent(config, text_input("hello again"), None)
+            .spawn_agent(config, text_input("hello again"), None, None)
             .await
             .expect_err("spawn_agent should respect max threads");
         let CodexErr::AgentLimitReached {
@@ -1114,7 +1162,7 @@ mod tests {
         let control = manager.agent_control();
 
         let first_agent_id = control
-            .spawn_agent(config.clone(), text_input("hello"), None)
+            .spawn_agent(config.clone(), text_input("hello"), None, None)
             .await
             .expect("spawn_agent should succeed");
         let _ = control
@@ -1123,7 +1171,7 @@ mod tests {
             .expect("shutdown agent");
 
         let second_agent_id = control
-            .spawn_agent(config.clone(), text_input("hello again"), None)
+            .spawn_agent(config.clone(), text_input("hello again"), None, None)
             .await
             .expect("spawn_agent should succeed after shutdown");
         let _ = control
@@ -1149,12 +1197,12 @@ mod tests {
         let cloned = control.clone();
 
         let first_agent_id = cloned
-            .spawn_agent(config.clone(), text_input("hello"), None)
+            .spawn_agent(config.clone(), text_input("hello"), None, None)
             .await
             .expect("spawn_agent should succeed");
 
         let err = control
-            .spawn_agent(config, text_input("hello again"), None)
+            .spawn_agent(config, text_input("hello again"), None, None)
             .await
             .expect_err("spawn_agent should respect shared guard");
         let CodexErr::AgentLimitReached { max_threads } = err else {
@@ -1184,7 +1232,7 @@ mod tests {
         let control = manager.agent_control();
 
         let resumable_id = control
-            .spawn_agent(config.clone(), text_input("hello"), None)
+            .spawn_agent(config.clone(), text_input("hello"), None, None)
             .await
             .expect("spawn_agent should succeed");
         let _ = control
@@ -1193,7 +1241,7 @@ mod tests {
             .expect("shutdown resumable thread");
 
         let active_id = control
-            .spawn_agent(config.clone(), text_input("occupy"), None)
+            .spawn_agent(config.clone(), text_input("occupy"), None, None)
             .await
             .expect("spawn_agent should succeed for active slot");
 
@@ -1236,7 +1284,7 @@ mod tests {
             .expect_err("resume should fail for missing rollout path");
 
         let resumed_id = control
-            .spawn_agent(config, text_input("hello"), None)
+            .spawn_agent(config, text_input("hello"), None, None)
             .await
             .expect("spawn should succeed after failed resume");
         let _ = control
@@ -1260,9 +1308,11 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
+                    thread_note: None,
                     allow_list: None,
                     deny_list: None,
                 })),
+                None,
             )
             .await
             .expect("child spawn should succeed");
@@ -1295,9 +1345,11 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
+                    thread_note: None,
                     allow_list: None,
                     deny_list: None,
                 })),
+                None,
             )
             .await
             .expect("child spawn should succeed");
@@ -1353,9 +1405,11 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
+                    thread_note: None,
                     allow_list: None,
                     deny_list: None,
                 })),
+                None,
             )
             .await
             .expect("child spawn should succeed");
@@ -1423,6 +1477,7 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: None,
+                    thread_note: None,
                     allow_list: None,
                     deny_list: None,
                 }),

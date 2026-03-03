@@ -64,6 +64,7 @@ use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::TerminalInteractionNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadNameUpdatedNotification;
+use codex_app_server_protocol::ThreadNoteUpdatedNotification;
 use codex_app_server_protocol::ThreadRealtimeClosedNotification;
 use codex_app_server_protocol::ThreadRealtimeErrorNotification;
 use codex_app_server_protocol::ThreadRealtimeItemAddedNotification;
@@ -1482,6 +1483,17 @@ pub(crate) async fn apply_bespoke_event_handling(
                 };
                 outgoing
                     .send_server_notification(ServerNotification::ThreadNameUpdated(notification))
+                    .await;
+            }
+        }
+        EventMsg::ThreadNoteUpdated(thread_note_event) => {
+            if let ApiVersion::V2 = api_version {
+                let notification = ThreadNoteUpdatedNotification {
+                    thread_id: thread_note_event.thread_id.to_string(),
+                    thread_note: thread_note_event.thread_note,
+                };
+                outgoing
+                    .send_server_notification(ServerNotification::ThreadNoteUpdated(notification))
                     .await;
             }
         }
