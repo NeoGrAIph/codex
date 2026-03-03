@@ -4383,6 +4383,7 @@ url = "https://example.com/mcp"
                     http_headers: None,
                     env_http_headers: None,
                 },
+                description: None,
                 enabled: true,
                 required: false,
                 disabled_reason: None,
