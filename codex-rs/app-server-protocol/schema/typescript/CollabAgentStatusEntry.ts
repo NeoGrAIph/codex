@@ -14,6 +14,10 @@ thread_id: ThreadId,
  */
 agent_nickname?: string | null, 
 /**
+ * Optional selected persona assigned to an AgentControl-spawned sub-agent.
+ */
+agent_persona?: string | null, 
+/**
  * Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
  */
 agent_role?: string | null, 

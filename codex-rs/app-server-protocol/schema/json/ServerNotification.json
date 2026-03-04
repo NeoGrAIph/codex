@@ -1497,6 +1497,13 @@
                     "null"
                   ]
                 },
+                "agent_persona": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "agent_role": {
                   "default": null,
                   "type": [

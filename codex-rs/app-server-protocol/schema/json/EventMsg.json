@@ -305,6 +305,13 @@
             "null"
           ]
         },
+        "agent_persona": {
+          "description": "Optional selected persona assigned to an AgentControl-spawned sub-agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "agent_role": {
           "description": "Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.",
           "type": [
@@ -337,6 +344,13 @@
       "properties": {
         "agent_nickname": {
           "description": "Optional nickname assigned to an AgentControl-spawned sub-agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent_persona": {
+          "description": "Optional selected persona assigned to an AgentControl-spawned sub-agent.",
           "type": [
             "string",
             "null"
@@ -2878,6 +2892,13 @@
                 "null"
               ]
             },
+            "new_agent_persona": {
+              "description": "Optional selected persona assigned to the new agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "new_agent_role": {
               "description": "Optional role assigned to the new agent.",
               "type": [
@@ -2999,6 +3020,13 @@
             },
             "receiver_agent_nickname": {
               "description": "Optional nickname assigned to the receiver agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "receiver_agent_persona": {
+              "description": "Optional selected persona assigned to the receiver agent.",
               "type": [
                 "string",
                 "null"
@@ -3200,6 +3228,13 @@
                 "null"
               ]
             },
+            "receiver_agent_persona": {
+              "description": "Optional selected persona assigned to the receiver agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "receiver_agent_role": {
               "description": "Optional role assigned to the receiver agent.",
               "type": [
@@ -3263,6 +3298,13 @@
                 "null"
               ]
             },
+            "receiver_agent_persona": {
+              "description": "Optional selected persona assigned to the receiver agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "receiver_agent_role": {
               "description": "Optional role assigned to the receiver agent.",
               "type": [
@@ -3312,6 +3354,13 @@
             },
             "receiver_agent_nickname": {
               "description": "Optional nickname assigned to the receiver agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "receiver_agent_persona": {
+              "description": "Optional selected persona assigned to the receiver agent.",
               "type": [
                 "string",
                 "null"
@@ -8475,6 +8524,13 @@
             "null"
           ]
         },
+        "new_agent_persona": {
+          "description": "Optional selected persona assigned to the new agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "new_agent_role": {
           "description": "Optional role assigned to the new agent.",
           "type": [
@@ -8596,6 +8652,13 @@
         },
         "receiver_agent_nickname": {
           "description": "Optional nickname assigned to the receiver agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "receiver_agent_persona": {
+          "description": "Optional selected persona assigned to the receiver agent.",
           "type": [
             "string",
             "null"
@@ -8797,6 +8860,13 @@
             "null"
           ]
         },
+        "receiver_agent_persona": {
+          "description": "Optional selected persona assigned to the receiver agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "receiver_agent_role": {
           "description": "Optional role assigned to the receiver agent.",
           "type": [
@@ -8860,6 +8930,13 @@
             "null"
           ]
         },
+        "receiver_agent_persona": {
+          "description": "Optional selected persona assigned to the receiver agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "receiver_agent_role": {
           "description": "Optional role assigned to the receiver agent.",
           "type": [
@@ -8909,6 +8986,13 @@
         },
         "receiver_agent_nickname": {
           "description": "Optional nickname assigned to the receiver agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "receiver_agent_persona": {
+          "description": "Optional selected persona assigned to the receiver agent.",
           "type": [
             "string",
             "null"

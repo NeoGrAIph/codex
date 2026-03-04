@@ -22,6 +22,10 @@ new_thread_id: ThreadId | null,
  */
 new_agent_nickname?: string | null, 
 /**
+ * Optional selected persona assigned to the new agent.
+ */
+new_agent_persona?: string | null, 
+/**
  * Optional role assigned to the new agent.
  */
 new_agent_role?: string | null, 

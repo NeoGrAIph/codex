@@ -21,6 +21,10 @@ receiver_thread_id: ThreadId,
  */
 receiver_agent_nickname?: string | null, 
 /**
+ * Optional selected persona assigned to the receiver agent.
+ */
+receiver_agent_persona?: string | null, 
+/**
  * Optional role assigned to the receiver agent.
  */
 receiver_agent_role?: string | null, };
