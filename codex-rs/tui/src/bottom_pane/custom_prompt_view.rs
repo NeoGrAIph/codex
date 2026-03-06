@@ -30,6 +30,7 @@ pub(crate) struct CustomPromptView {
     placeholder: String,
     context_label: Option<String>,
     on_submit: PromptSubmitted,
+    submit_on_empty: bool,
 
     // UI state
     textarea: TextArea,
@@ -44,11 +45,31 @@ impl CustomPromptView {
         context_label: Option<String>,
         on_submit: PromptSubmitted,
     ) -> Self {
+        Self::new_with_submit_mode(title, placeholder, context_label, on_submit, false)
+    }
+
+    pub(crate) fn new_allow_empty_submit(
+        title: String,
+        placeholder: String,
+        context_label: Option<String>,
+        on_submit: PromptSubmitted,
+    ) -> Self {
+        Self::new_with_submit_mode(title, placeholder, context_label, on_submit, true)
+    }
+
+    fn new_with_submit_mode(
+        title: String,
+        placeholder: String,
+        context_label: Option<String>,
+        on_submit: PromptSubmitted,
+        submit_on_empty: bool,
+    ) -> Self {
         Self {
             title,
             placeholder,
             context_label,
             on_submit,
+            submit_on_empty,
             textarea: TextArea::new(),
             textarea_state: RefCell::new(TextAreaState::default()),
             complete: false,
@@ -70,7 +91,7 @@ impl BottomPaneView for CustomPromptView {
                 ..
             } => {
                 let text = self.textarea.text().trim().to_string();
-                if !text.is_empty() {
+                if !text.is_empty() || self.submit_on_empty {
                     (self.on_submit)(text);
                     self.complete = true;
                 }

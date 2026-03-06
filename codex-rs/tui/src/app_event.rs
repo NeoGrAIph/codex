@@ -72,6 +72,12 @@ pub(crate) enum AppEvent {
     OpenAgentPicker,
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
+    /// Open manual target prompt for SAW Connect action.
+    OpenAgentsOverlayConnectManualPrompt,
+    /// Connect SAW to a concrete thread id.
+    ConnectAgentsOverlayThread(ThreadId),
+    /// Connect SAW using a manual target (`thread_id` or thread name).
+    ConnectAgentsOverlayManualTarget(String),
 
     /// Recompute the list of inactive threads that still need approval.
     RefreshPendingThreadApprovals,

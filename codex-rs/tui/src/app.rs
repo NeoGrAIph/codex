@@ -58,6 +58,7 @@ use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::config::types::ModelAvailabilityNuxConfig;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::features::Feature;
+use codex_core::find_thread_path_by_name_str;
 use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_core::models_manager::manager::RefreshStrategy;
 use codex_core::models_manager::model_presets::HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG;
@@ -277,6 +278,7 @@ enum CtrlTOverlayAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentsOverlayAction {
     Inspect,
+    Connect,
     Close,
 }
 
@@ -284,7 +286,8 @@ impl AgentsOverlayAction {
     fn from_index(index: usize) -> Option<Self> {
         match index {
             0 => Some(Self::Inspect),
-            1 => Some(Self::Close),
+            1 => Some(Self::Connect),
+            2 => Some(Self::Close),
             _ => None,
         }
     }
@@ -2019,10 +2022,22 @@ impl App {
                     kind: KeyEventKind::Press,
                     ..
                 } => {
+                    let mut opened_connect_popup = false;
                     if let Some(action) = self.agents_overlay_ui.selected_action() {
                         match action {
                             AgentsOverlayAction::Inspect => {
                                 self.agents_overlay_ui.toggle_inspect_for_selected();
+                            }
+                            AgentsOverlayAction::Connect => {
+                                if let Some(selected_thread_id) =
+                                    self.agents_overlay_ui.selected_thread_id()
+                                {
+                                    self.open_agents_overlay_connect_mode_popup(
+                                        tui,
+                                        selected_thread_id,
+                                    );
+                                    opened_connect_popup = true;
+                                }
                             }
                             AgentsOverlayAction::Close => {
                                 if let Some(selected_thread_id) =
@@ -2032,6 +2047,9 @@ impl App {
                                 }
                             }
                         }
+                    }
+                    if opened_connect_popup {
+                        return Ok(true);
                     }
                     if !self.agents_overlay_ui.confirm_open {
                         self.agents_overlay_ui.close_actions_menu();
@@ -2178,6 +2196,100 @@ impl App {
             initial_selected_idx,
             ..Default::default()
         });
+    }
+
+    fn open_agents_overlay_connect_mode_popup(
+        &mut self,
+        tui: &mut tui::Tui,
+        selected_thread_id: ThreadId,
+    ) {
+        self.agents_overlay_ui.close_actions_menu();
+        self.close_transcript_overlay(tui);
+        self.chat_widget
+            .open_agents_overlay_connect_popup(selected_thread_id);
+        tui.frame_requester().schedule_frame();
+    }
+
+    async fn connect_agents_overlay_thread(
+        &mut self,
+        tui: &mut tui::Tui,
+        thread_id: ThreadId,
+    ) -> Result<()> {
+        let Some(sender_thread_id) = self.active_thread_id.or(self.chat_widget.thread_id()) else {
+            self.chat_widget
+                .add_error_message("Failed to connect agent: no active sender thread.".to_string());
+            self.open_agents_overlay(tui).await;
+            return Ok(());
+        };
+
+        match self
+            .server
+            .connect_agent_thread(self.config.clone(), sender_thread_id, thread_id)
+            .await
+        {
+            Ok(_) => {
+                if let Err(err) = self.handle_thread_created(thread_id).await {
+                    self.chat_widget.add_error_message(format!(
+                        "Connected to agent {thread_id}, but failed to attach listener: {err}"
+                    ));
+                } else if let Err(err) = self.select_agent_thread(tui, thread_id).await {
+                    self.chat_widget.add_error_message(format!(
+                        "Connected to agent {thread_id}, but failed to switch focus: {err}"
+                    ));
+                }
+            }
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to connect agent {thread_id}: {err}"));
+            }
+        }
+
+        self.open_agents_overlay(tui).await;
+        Ok(())
+    }
+
+    async fn connect_agents_overlay_manual_target(
+        &mut self,
+        tui: &mut tui::Tui,
+        target: String,
+    ) -> Result<()> {
+        let target = target.trim().to_string();
+        if target.is_empty() {
+            self.chat_widget
+                .add_error_message("Connect target cannot be empty.".to_string());
+            self.open_agents_overlay(tui).await;
+            return Ok(());
+        }
+
+        let thread_id = match self.resolve_agents_overlay_connect_target(&target).await {
+            Ok(thread_id) => thread_id,
+            Err(message) => {
+                self.chat_widget.add_error_message(message);
+                self.open_agents_overlay(tui).await;
+                return Ok(());
+            }
+        };
+        self.connect_agents_overlay_thread(tui, thread_id).await
+    }
+
+    async fn resolve_agents_overlay_connect_target(
+        &self,
+        target: &str,
+    ) -> std::result::Result<ThreadId, String> {
+        if let Ok(thread_id) = ThreadId::from_string(target) {
+            return Ok(thread_id);
+        }
+
+        let path = find_thread_path_by_name_str(&self.config.codex_home, target)
+            .await
+            .map_err(|err| format!("Failed to resolve thread name `{target}`: {err}"))?;
+        let Some(path) = path else {
+            return Err(format!("No saved session found with name `{target}`."));
+        };
+
+        crate::resolve_session_thread_id(path.as_path(), None)
+            .await
+            .ok_or_else(|| format!("Failed to read session metadata for thread name `{target}`."))
     }
 
     fn upsert_agent_picker_thread(
@@ -3964,6 +4076,16 @@ impl App {
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread(tui, thread_id).await?;
             }
+            AppEvent::OpenAgentsOverlayConnectManualPrompt => {
+                self.chat_widget.show_agents_overlay_connect_manual_prompt();
+            }
+            AppEvent::ConnectAgentsOverlayThread(thread_id) => {
+                self.connect_agents_overlay_thread(tui, thread_id).await?;
+            }
+            AppEvent::ConnectAgentsOverlayManualTarget(target) => {
+                self.connect_agents_overlay_manual_target(tui, target)
+                    .await?;
+            }
             AppEvent::OpenSkillsList => {
                 self.chat_widget.open_skills_list();
             }
@@ -4281,7 +4403,11 @@ impl App {
     }
 
     async fn handle_thread_created(&mut self, thread_id: ThreadId) -> Result<()> {
-        if self.thread_event_channels.contains_key(&thread_id) {
+        let should_reattach_closed_channel = self
+            .agent_picker_threads
+            .get(&thread_id)
+            .is_some_and(|entry| entry.is_closed);
+        if self.thread_event_channels.contains_key(&thread_id) && !should_reattach_closed_channel {
             return Ok(());
         }
         let thread = match self.server.get_thread(thread_id).await {
@@ -4299,32 +4425,39 @@ impl App {
             config_snapshot.session_source.get_agent_role(),
             false,
         );
-        let event = Event {
-            id: String::new(),
-            msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
-                session_id: thread_id,
-                forked_from_id: None,
-                thread_name: None,
-                thread_note: config_snapshot.thread_note.clone(),
-                model: config_snapshot.model,
-                model_provider_id: config_snapshot.model_provider_id,
-                approval_policy: config_snapshot.approval_policy,
-                sandbox_policy: config_snapshot.sandbox_policy,
-                cwd: config_snapshot.cwd,
-                reasoning_effort: config_snapshot.reasoning_effort,
-                history_log_id: 0,
-                history_entry_count: 0,
-                initial_messages: None,
-                network_proxy: None,
-                rollout_path: thread.rollout_path(),
-            }),
+        let (sender, store) = if let Some(channel) = self.thread_event_channels.get(&thread_id) {
+            (channel.sender.clone(), Arc::clone(&channel.store))
+        } else {
+            let event = Event {
+                id: String::new(),
+                msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
+                    session_id: thread_id,
+                    forked_from_id: None,
+                    thread_name: None,
+                    thread_note: config_snapshot.thread_note.clone(),
+                    model: config_snapshot.model,
+                    model_provider_id: config_snapshot.model_provider_id,
+                    approval_policy: config_snapshot.approval_policy,
+                    sandbox_policy: config_snapshot.sandbox_policy,
+                    cwd: config_snapshot.cwd,
+                    reasoning_effort: config_snapshot.reasoning_effort,
+                    history_log_id: 0,
+                    history_entry_count: 0,
+                    initial_messages: None,
+                    network_proxy: None,
+                    rollout_path: thread.rollout_path(),
+                }),
+            };
+            let channel = ThreadEventChannel::new_with_session_configured(
+                THREAD_EVENT_CHANNEL_CAPACITY,
+                event,
+            );
+            let sender = channel.sender.clone();
+            let store = Arc::clone(&channel.store);
+            self.thread_event_channels.insert(thread_id, channel);
+            (sender, store)
         };
-        let channel =
-            ThreadEventChannel::new_with_session_configured(THREAD_EVENT_CHANNEL_CAPACITY, event);
-        let sender = channel.sender.clone();
-        let store = Arc::clone(&channel.store);
         let app_event_tx = self.app_event_tx.clone();
-        self.thread_event_channels.insert(thread_id, channel);
         tokio::spawn(async move {
             loop {
                 let event = match thread.next_event().await {
@@ -4872,6 +5005,54 @@ mod tests {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
                 is_closed: true,
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn agents_overlay_action_from_index_maps_connect() {
+        assert_eq!(
+            AgentsOverlayAction::from_index(0),
+            Some(AgentsOverlayAction::Inspect)
+        );
+        assert_eq!(
+            AgentsOverlayAction::from_index(1),
+            Some(AgentsOverlayAction::Connect)
+        );
+        assert_eq!(
+            AgentsOverlayAction::from_index(2),
+            Some(AgentsOverlayAction::Close)
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_thread_created_reattaches_closed_channel() -> Result<()> {
+        let mut app = make_test_app().await;
+        let new_thread = app.server.start_thread(app.config.clone()).await?;
+        let thread_id = new_thread.thread_id;
+
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(1));
+        app.agent_picker_threads.insert(
+            thread_id,
+            AgentPickerThreadEntry {
+                agent_persona: None,
+                agent_nickname: None,
+                agent_role: None,
+                is_closed: true,
+            },
+        );
+
+        app.handle_thread_created(thread_id).await?;
+
+        assert_eq!(
+            app.agent_picker_threads.get(&thread_id),
+            Some(&AgentPickerThreadEntry {
+                agent_persona: None,
+                agent_nickname: None,
+                agent_role: None,
+                is_closed: false,
             })
         );
         Ok(())

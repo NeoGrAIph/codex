@@ -79,6 +79,10 @@ Keymap в `Actions`:
 - `↑/k` и `↓/j`: выбор пункта меню;
 - `Enter`:
   - `Inspect` / `Disable Inspect` — включить/выключить inspect-блок для выбранного агента;
+  - `Connect` — закрыть SAW и открыть popup выбора target mode:
+    - `Selected thread` — подключиться к выбранному thread id;
+    - `Manual target` — ввести `thread_id` или thread name вручную;
+  - после успешного connect (и после ошибки валидации/резолва/резюма) SAW открывается снова;
   - `Close` — открыть inline confirm `Yes/No` для закрытия выбранного агента;
 - `Esc`: закрыть меню.
 
@@ -92,7 +96,8 @@ Keymap в `Confirm`:
 
 Ограничения v2:
 
-- SAW предоставляет одно mutating-действие: `Close` (каскадный shutdown subtree);
+- SAW предоставляет mutating-действие `Close` (каскадный shutdown subtree) и action `Connect`
+  для фокуса/резюма агент-треда;
 - отдельный single-thread close без cascade не поддерживается.
 
 ## Data aggregation rules

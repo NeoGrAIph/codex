@@ -35,7 +35,7 @@ pub(crate) struct AgentSummaryEntry {
     pub(crate) request_text: Option<String>,
 }
 
-pub(crate) const AGENTS_OVERLAY_ACTION_LABELS: [&str; 2] = ["Inspect", "Close"];
+pub(crate) const AGENTS_OVERLAY_ACTION_LABELS: [&str; 3] = ["Inspect", "Connect", "Close"];
 pub(crate) const AGENTS_OVERLAY_CONFIRM_LABELS: [&str; 2] = ["No", "Yes"];
 
 #[derive(Debug, Default, Clone)]

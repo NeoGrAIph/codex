@@ -2,6 +2,8 @@ use crate::AuthManager;
 use crate::CodexAuth;
 use crate::ModelProviderInfo;
 use crate::agent::AgentControl;
+use crate::agent::exceeds_thread_spawn_depth_limit;
+use crate::agent::next_thread_spawn_depth;
 use crate::codex::Codex;
 use crate::codex::CodexSpawnOk;
 use crate::codex::INITIAL_SUBMIT_ID;
@@ -23,11 +25,13 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::McpServerRefreshConfig;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -377,6 +381,69 @@ impl ThreadManager {
     /// descendant discovery and leaf-first cascade shutdown.
     pub async fn shutdown_agent_subtree(&self, thread_id: ThreadId) -> CodexResult<String> {
         self.agent_control().shutdown_agent(thread_id).await
+    }
+
+    /// Connect to an agent thread from another thread.
+    ///
+    /// Mirrors `resume_agent` behavior:
+    /// - active target thread: no-op, return current status;
+    /// - closed target thread: resume from rollout with `sender_thread_id` as parent.
+    pub async fn connect_agent_thread(
+        &self,
+        mut config: Config,
+        sender_thread_id: ThreadId,
+        receiver_thread_id: ThreadId,
+    ) -> CodexResult<AgentStatus> {
+        let agent_control = self.agent_control();
+        let status = agent_control.get_status(receiver_thread_id).await;
+        if !matches!(status, AgentStatus::NotFound) {
+            return Ok(status);
+        }
+
+        let sender_thread = self.get_thread(sender_thread_id).await?;
+        let sender_snapshot = sender_thread.config_snapshot().await;
+        let child_depth = next_thread_spawn_depth(&sender_snapshot.session_source);
+        if exceeds_thread_spawn_depth_limit(child_depth, config.agent_max_depth) {
+            return Err(CodexErr::UnsupportedOperation(
+                "Agent depth limit reached. Solve the task yourself.".to_string(),
+            ));
+        }
+
+        config.model = Some(sender_snapshot.model);
+        config.model_provider_id = sender_snapshot.model_provider_id;
+        config
+            .permissions
+            .approval_policy
+            .set(sender_snapshot.approval_policy)
+            .map_err(|err| {
+                CodexErr::UnsupportedOperation(format!("approval_policy is invalid: {err}"))
+            })?;
+        config
+            .permissions
+            .sandbox_policy
+            .set(sender_snapshot.sandbox_policy)
+            .map_err(|err| {
+                CodexErr::UnsupportedOperation(format!("sandbox_policy is invalid: {err}"))
+            })?;
+        config.cwd = sender_snapshot.cwd;
+        config.model_reasoning_effort = sender_snapshot.reasoning_effort;
+        config.personality = sender_snapshot.personality;
+
+        let session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: sender_thread_id,
+            depth: child_depth,
+            agent_nickname: None,
+            agent_persona: None,
+            agent_role: None,
+            thread_note: None,
+            allow_list: None,
+            deny_list: None,
+        });
+        let resumed_thread_id = agent_control
+            .resume_agent_from_rollout(config, receiver_thread_id, session_source)
+            .await?;
+
+        Ok(agent_control.get_status(resumed_thread_id).await)
     }
 
     /// Fork an existing thread by taking messages up to the given position (not including

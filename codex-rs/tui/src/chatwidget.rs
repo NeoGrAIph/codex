@@ -7851,6 +7851,52 @@ impl ChatWidget {
         self.bottom_pane.show_view(Box::new(view));
     }
 
+    pub(crate) fn open_agents_overlay_connect_popup(&mut self, selected_thread_id: ThreadId) {
+        let selected_thread_label = selected_thread_id.to_string();
+        let items = vec![
+            SelectionItem {
+                name: "Selected thread".to_string(),
+                description: Some(selected_thread_label),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::ConnectAgentsOverlayThread(selected_thread_id));
+                })],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Manual target".to_string(),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::OpenAgentsOverlayConnectManualPrompt);
+                })],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+        ];
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            title: Some("Connect to agent".to_string()),
+            subtitle: Some("Choose target mode".to_string()),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            ..Default::default()
+        });
+        self.request_redraw();
+    }
+
+    pub(crate) fn show_agents_overlay_connect_manual_prompt(&mut self) {
+        let tx = self.app_event_tx.clone();
+        let view = CustomPromptView::new_allow_empty_submit(
+            "Connect target".to_string(),
+            "Thread id or thread name".to_string(),
+            None,
+            Box::new(move |target: String| {
+                tx.send(AppEvent::ConnectAgentsOverlayManualTarget(target));
+            }),
+        );
+        self.bottom_pane.show_view(Box::new(view));
+        self.request_redraw();
+    }
+
     pub(crate) fn token_usage(&self) -> TokenUsage {
         self.token_info
             .as_ref()
