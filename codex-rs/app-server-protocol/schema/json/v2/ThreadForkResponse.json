@@ -798,10 +798,37 @@
                     "null"
                   ]
                 },
+                "agent_persona": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "agent_role": {
                   "default": null,
                   "type": [
                     "string",
+                    "null"
+                  ]
+                },
+                "allow_list": {
+                  "default": null,
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "deny_list": {
+                  "default": null,
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": [
+                    "array",
                     "null"
                   ]
                 },
@@ -868,6 +895,13 @@
       "properties": {
         "agentNickname": {
           "description": "Optional random unique nickname assigned to an AgentControl-spawned sub-agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agentPersona": {
+          "description": "Optional persona assigned to an AgentControl-spawned thread-spawn sub-agent.",
           "type": [
             "string",
             "null"

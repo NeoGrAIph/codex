@@ -166,6 +166,7 @@ SELECT
     source,
     agent_nickname,
     agent_role,
+    agent_persona,
     model_provider,
     cwd,
     cli_version,

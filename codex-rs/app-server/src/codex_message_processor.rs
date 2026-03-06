@@ -88,6 +88,7 @@ use codex_app_server_protocol::ReviewTarget as ApiReviewTarget;
 use codex_app_server_protocol::SandboxMode;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequestResolvedNotification;
+use codex_app_server_protocol::SessionSource as ApiSessionSource;
 use codex_app_server_protocol::SkillsConfigWriteParams;
 use codex_app_server_protocol::SkillsConfigWriteResponse;
 use codex_app_server_protocol::SkillsListParams;
@@ -3522,8 +3523,11 @@ impl CodexMessageProcessor {
             }
         };
 
-        let SessionConfiguredEvent { rollout_path, .. } = session_configured;
-        let Some(rollout_path) = rollout_path else {
+        let SessionConfiguredEvent {
+            rollout_path: forked_rollout_path,
+            ..
+        } = session_configured;
+        let Some(forked_rollout_path) = forked_rollout_path else {
             self.send_internal_error(
                 request_id,
                 format!("rollout path missing for thread {thread_id}"),
@@ -3546,7 +3550,7 @@ impl CodexMessageProcessor {
         );
 
         let mut thread = match read_summary_from_rollout(
-            rollout_path.as_path(),
+            forked_rollout_path.as_path(),
             fallback_model_provider.as_str(),
         )
         .await
@@ -3557,15 +3561,24 @@ impl CodexMessageProcessor {
                     request_id,
                     format!(
                         "failed to load rollout `{}` for thread {thread_id}: {err}",
-                        rollout_path.display()
+                        forked_rollout_path.display()
                     ),
                 )
                 .await;
                 return;
             }
         };
+        if let Some(source_thread_id) = source_thread_id
+            && (thread.agent_nickname.is_none()
+                || thread.agent_role.is_none()
+                || thread.agent_persona.is_none())
+            && let Some(summary) =
+                read_summary_from_state_db_by_thread_id(&self.config, source_thread_id).await
+        {
+            merge_mutable_thread_metadata(&mut thread, summary_to_thread(summary));
+        }
         // forked thread names do not inherit the source thread name
-        match read_rollout_items_from_rollout(rollout_path.as_path()).await {
+        match read_rollout_items_from_rollout(forked_rollout_path.as_path()).await {
             Ok(items) => {
                 thread.turns = build_turns_from_rollout_items(&items);
             }
@@ -3574,7 +3587,7 @@ impl CodexMessageProcessor {
                     request_id,
                     format!(
                         "failed to load rollout `{}` for thread {thread_id}: {err}",
-                        rollout_path.display()
+                        forked_rollout_path.display()
                     ),
                 )
                 .await;
@@ -6815,6 +6828,7 @@ async fn read_summary_from_state_db_context_by_thread_id(
         metadata.source,
         metadata.agent_nickname,
         metadata.agent_role,
+        metadata.agent_persona,
         metadata.git_sha,
         metadata.git_branch,
         metadata.git_origin_url,
@@ -6840,6 +6854,7 @@ async fn summary_from_thread_list_item(
                 .unwrap_or(codex_protocol::protocol::SessionSource::Unknown),
             it.agent_nickname.clone(),
             it.agent_role.clone(),
+            it.agent_persona.clone(),
         );
         return Some(ConversationSummary {
             conversation_id: thread_id,
@@ -6897,6 +6912,7 @@ fn summary_from_state_db_metadata(
     source: String,
     agent_nickname: Option<String>,
     agent_role: Option<String>,
+    agent_persona: Option<String>,
     git_sha: Option<String>,
     git_branch: Option<String>,
     git_origin_url: Option<String>,
@@ -6905,7 +6921,8 @@ fn summary_from_state_db_metadata(
     let source = serde_json::from_str(&source)
         .or_else(|_| serde_json::from_value(serde_json::Value::String(source.clone())))
         .unwrap_or(codex_protocol::protocol::SessionSource::Unknown);
-    let source = with_thread_spawn_agent_metadata(source, agent_nickname, agent_role);
+    let source =
+        with_thread_spawn_agent_metadata(source, agent_nickname, agent_role, agent_persona);
     let git_info = if git_sha.is_none() && git_branch.is_none() && git_origin_url.is_none() {
         None
     } else {
@@ -6958,6 +6975,7 @@ pub(crate) async fn read_summary_from_rollout(
         session_meta.source.clone(),
         session_meta.agent_nickname.clone(),
         session_meta.agent_role.clone(),
+        session_meta.agent_persona.clone(),
     );
 
     let created_at = if session_meta.timestamp.is_empty() {
@@ -7094,6 +7112,14 @@ async fn load_thread_summary_for_rollout(
 
 fn merge_mutable_thread_metadata(thread: &mut Thread, persisted_thread: Thread) {
     thread.git_info = persisted_thread.git_info;
+    sync_thread_spawn_metadata(
+        thread,
+        ThreadSpawnMetadata {
+            agent_nickname: persisted_thread.agent_nickname,
+            agent_role: persisted_thread.agent_role,
+            agent_persona: persisted_thread.agent_persona,
+        },
+    );
 }
 
 fn preview_from_rollout_items(items: &[RolloutItem]) -> String {
@@ -7117,8 +7143,9 @@ fn with_thread_spawn_agent_metadata(
     source: codex_protocol::protocol::SessionSource,
     agent_nickname: Option<String>,
     agent_role: Option<String>,
+    agent_persona: Option<String>,
 ) -> codex_protocol::protocol::SessionSource {
-    if agent_nickname.is_none() && agent_role.is_none() {
+    if agent_nickname.is_none() && agent_role.is_none() && agent_persona.is_none() {
         return source;
     }
 
@@ -7129,6 +7156,9 @@ fn with_thread_spawn_agent_metadata(
                 depth,
                 agent_nickname: existing_agent_nickname,
                 agent_role: existing_agent_role,
+                agent_persona: existing_agent_persona,
+                allow_list,
+                deny_list,
             },
         ) => codex_protocol::protocol::SessionSource::SubAgent(
             codex_protocol::protocol::SubAgentSource::ThreadSpawn {
@@ -7136,10 +7166,63 @@ fn with_thread_spawn_agent_metadata(
                 depth,
                 agent_nickname: agent_nickname.or(existing_agent_nickname),
                 agent_role: agent_role.or(existing_agent_role),
+                agent_persona: agent_persona.or(existing_agent_persona),
+                allow_list,
+                deny_list,
             },
         ),
         _ => source,
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ThreadSpawnMetadata {
+    agent_nickname: Option<String>,
+    agent_role: Option<String>,
+    agent_persona: Option<String>,
+}
+
+fn build_api_thread_source(
+    source: codex_protocol::protocol::SessionSource,
+    metadata: &ThreadSpawnMetadata,
+) -> ApiSessionSource {
+    ApiSessionSource::from(source).with_thread_spawn_metadata(
+        metadata.agent_nickname.clone(),
+        metadata.agent_role.clone(),
+        metadata.agent_persona.clone(),
+    )
+}
+
+fn sync_thread_spawn_metadata(thread: &mut Thread, metadata: ThreadSpawnMetadata) {
+    let agent_nickname_mirror = metadata.agent_nickname;
+    let agent_role_mirror = metadata.agent_role;
+    let agent_persona_mirror = metadata.agent_persona;
+    let source = thread.source.clone().with_thread_spawn_metadata(
+        agent_nickname_mirror
+            .clone()
+            .or(thread.agent_nickname.clone()),
+        agent_role_mirror.clone().or(thread.agent_role.clone()),
+        agent_persona_mirror
+            .clone()
+            .or(thread.agent_persona.clone()),
+    );
+    let agent_nickname = source
+        .get_nickname()
+        .or(agent_nickname_mirror)
+        .or(thread.agent_nickname.clone());
+    let agent_role = source
+        .get_agent_role()
+        .or(agent_role_mirror)
+        .or(thread.agent_role.clone());
+    let agent_persona = source
+        .get_agent_persona()
+        .or(agent_persona_mirror)
+        .or(thread.agent_persona.clone());
+
+    thread.source = source;
+    thread.agent_nickname = agent_nickname;
+    thread.agent_role = agent_role;
+    thread.agent_persona = agent_persona;
 }
 
 fn parse_datetime(timestamp: Option<&str>) -> Option<DateTime<Utc>> {
@@ -7168,6 +7251,14 @@ fn build_thread_from_snapshot(
     path: Option<PathBuf>,
 ) -> Thread {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let source = build_api_thread_source(
+        config_snapshot.session_source.clone(),
+        &ThreadSpawnMetadata {
+            agent_nickname: config_snapshot.session_source.get_nickname(),
+            agent_role: config_snapshot.session_source.get_agent_role(),
+            agent_persona: None,
+        },
+    );
     Thread {
         id: thread_id.to_string(),
         preview: String::new(),
@@ -7179,9 +7270,10 @@ fn build_thread_from_snapshot(
         path,
         cwd: config_snapshot.cwd.clone(),
         cli_version: env!("CARGO_PKG_VERSION").to_string(),
-        agent_nickname: config_snapshot.session_source.get_nickname(),
-        agent_role: config_snapshot.session_source.get_agent_role(),
-        source: config_snapshot.session_source.clone().into(),
+        agent_nickname: source.get_nickname(),
+        agent_role: source.get_agent_role(),
+        agent_persona: source.get_agent_persona(),
+        source,
         git_info: None,
         name: None,
         turns: Vec::new(),
@@ -7209,6 +7301,14 @@ pub(crate) fn summary_to_thread(summary: ConversationSummary) -> Thread {
         branch: info.branch,
         origin_url: info.origin_url,
     });
+    let source = build_api_thread_source(
+        source.clone(),
+        &ThreadSpawnMetadata {
+            agent_nickname: source.get_nickname(),
+            agent_role: source.get_agent_role(),
+            agent_persona: None,
+        },
+    );
 
     Thread {
         id: conversation_id.to_string(),
@@ -7223,7 +7323,8 @@ pub(crate) fn summary_to_thread(summary: ConversationSummary) -> Thread {
         cli_version,
         agent_nickname: source.get_nickname(),
         agent_role: source.get_agent_role(),
-        source: source.into(),
+        agent_persona: source.get_agent_persona(),
+        source,
         git_info,
         name: None,
         turns: Vec::new(),
@@ -7237,6 +7338,7 @@ mod tests {
     use crate::outgoing_message::OutgoingMessage;
     use anyhow::Result;
     use codex_app_server_protocol::ServerRequestPayload;
+    use codex_app_server_protocol::SessionSource as ApiSessionSource;
     use codex_app_server_protocol::ToolRequestUserInputParams;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SubAgentSource;
@@ -7423,7 +7525,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_summary_from_rollout_preserves_agent_nickname() -> Result<()> {
+    async fn read_summary_from_rollout_preserves_agent_metadata() -> Result<()> {
         use codex_protocol::protocol::RolloutItem;
         use codex_protocol::protocol::RolloutLine;
         use codex_protocol::protocol::SessionMetaLine;
@@ -7444,9 +7546,13 @@ mod tests {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
+                allow_list: None,
+                deny_list: None,
             }),
             agent_nickname: Some("atlas".to_string()),
             agent_role: Some("explorer".to_string()),
+            agent_persona: Some("reviewer".to_string()),
             model_provider: Some("test-provider".to_string()),
             ..SessionMeta::default()
         };
@@ -7465,6 +7571,7 @@ mod tests {
 
         assert_eq!(thread.agent_nickname, Some("atlas".to_string()));
         assert_eq!(thread.agent_role, Some("explorer".to_string()));
+        assert_eq!(thread.agent_persona, Some("reviewer".to_string()));
         Ok(())
     }
 
@@ -7528,7 +7635,7 @@ mod tests {
     }
 
     #[test]
-    fn summary_from_state_db_metadata_preserves_agent_nickname() -> Result<()> {
+    fn summary_from_state_db_metadata_preserves_agent_metadata() -> Result<()> {
         let conversation_id = ThreadId::from_string("bfd12a78-5900-467b-9bc5-d3d35df08191")?;
         let source =
             serde_json::to_string(&SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -7536,6 +7643,9 @@ mod tests {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
+                allow_list: None,
+                deny_list: None,
             }))?;
 
         let summary = summary_from_state_db_metadata(
@@ -7550,6 +7660,7 @@ mod tests {
             source,
             Some("atlas".to_string()),
             Some("explorer".to_string()),
+            Some("reviewer".to_string()),
             None,
             None,
             None,
@@ -7559,6 +7670,56 @@ mod tests {
 
         assert_eq!(thread.agent_nickname, Some("atlas".to_string()));
         assert_eq!(thread.agent_role, Some("explorer".to_string()));
+        assert_eq!(thread.agent_persona, Some("reviewer".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn sync_thread_spawn_metadata_prefers_nested_agent_persona_over_top_level_mirror() -> Result<()>
+    {
+        let parent_thread_id = ThreadId::from_string("ad7f0408-99b8-4f6e-a46f-bd0eec433370")?;
+        let mut thread = Thread {
+            id: "thread-1".to_string(),
+            preview: String::new(),
+            ephemeral: false,
+            model_provider: "test-provider".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            status: ThreadStatus::NotLoaded,
+            path: Some(PathBuf::from("/tmp/rollout.jsonl")),
+            cwd: PathBuf::from("/"),
+            cli_version: "0.0.0".to_string(),
+            agent_nickname: Some("atlas".to_string()),
+            agent_role: Some("explorer".to_string()),
+            agent_persona: Some("mirror".to_string()),
+            source: ApiSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_nickname: Some("atlas".to_string()),
+                agent_role: Some("explorer".to_string()),
+                agent_persona: Some("canonical".to_string()),
+                allow_list: None,
+                deny_list: None,
+            }),
+            git_info: None,
+            name: None,
+            turns: Vec::new(),
+        };
+
+        sync_thread_spawn_metadata(
+            &mut thread,
+            ThreadSpawnMetadata {
+                agent_nickname: None,
+                agent_role: None,
+                agent_persona: Some("fallback".to_string()),
+            },
+        );
+
+        assert_eq!(thread.agent_persona, Some("canonical".to_string()));
+        assert_eq!(
+            thread.source.get_agent_persona(),
+            Some("canonical".to_string())
+        );
         Ok(())
     }
 

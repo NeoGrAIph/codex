@@ -1190,6 +1190,69 @@ impl From<SessionSource> for CoreSessionSource {
     }
 }
 
+impl SessionSource {
+    pub fn get_nickname(&self) -> Option<String> {
+        match self {
+            SessionSource::SubAgent(CoreSubAgentSource::ThreadSpawn { agent_nickname, .. }) => {
+                agent_nickname.clone()
+            }
+            SessionSource::SubAgent(CoreSubAgentSource::MemoryConsolidation) => {
+                Some("Morpheus".to_string())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn get_agent_role(&self) -> Option<String> {
+        match self {
+            SessionSource::SubAgent(CoreSubAgentSource::ThreadSpawn { agent_role, .. }) => {
+                agent_role.clone()
+            }
+            SessionSource::SubAgent(CoreSubAgentSource::MemoryConsolidation) => {
+                Some("memory builder".to_string())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn get_agent_persona(&self) -> Option<String> {
+        match self {
+            SessionSource::SubAgent(CoreSubAgentSource::ThreadSpawn { agent_persona, .. }) => {
+                agent_persona.clone()
+            }
+            _ => None,
+        }
+    }
+
+    pub fn with_thread_spawn_metadata(
+        self,
+        agent_nickname: Option<String>,
+        agent_role: Option<String>,
+        agent_persona: Option<String>,
+    ) -> Self {
+        match self {
+            SessionSource::SubAgent(CoreSubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth,
+                agent_nickname: existing_agent_nickname,
+                agent_role: existing_agent_role,
+                agent_persona: existing_agent_persona,
+                allow_list,
+                deny_list,
+            }) => SessionSource::SubAgent(CoreSubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth,
+                agent_nickname: agent_nickname.or(existing_agent_nickname),
+                agent_role: agent_role.or(existing_agent_role),
+                agent_persona: existing_agent_persona.or(agent_persona),
+                allow_list,
+                deny_list,
+            }),
+            _ => self,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -2666,6 +2729,8 @@ pub struct Thread {
     pub agent_nickname: Option<String>,
     /// Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
     pub agent_role: Option<String>,
+    /// Optional persona assigned to an AgentControl-spawned thread-spawn sub-agent.
+    pub agent_persona: Option<String>,
     /// Optional Git metadata captured when the thread was created.
     pub git_info: Option<GitInfo>,
     /// Optional user-facing thread title.
@@ -4919,6 +4984,67 @@ mod tests {
                 "success": true,
             })
         );
+    }
+
+    #[test]
+    fn session_source_serializes_thread_spawn_agent_persona_on_v2_surface() {
+        let parent_thread_id =
+            codex_protocol::ThreadId::from_string("ad7f0408-99b8-4f6e-a46f-bd0eec433370")
+                .expect("thread id");
+        let source = SessionSource::SubAgent(CoreSubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_nickname: Some("atlas".to_string()),
+            agent_role: Some("explorer".to_string()),
+            agent_persona: Some("researcher".to_string()),
+            allow_list: None,
+            deny_list: None,
+        });
+
+        assert_eq!(
+            serde_json::to_value(source).expect("source should serialize"),
+            json!({
+                "subAgent": {
+                    "thread_spawn": {
+                        "parent_thread_id": "ad7f0408-99b8-4f6e-a46f-bd0eec433370",
+                        "depth": 1,
+                        "agent_nickname": "atlas",
+                        "agent_role": "explorer",
+                        "agent_persona": "researcher",
+                        "allow_list": null,
+                        "deny_list": null,
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn session_source_prefers_nested_thread_spawn_agent_persona_over_mirror() {
+        let parent_thread_id =
+            codex_protocol::ThreadId::from_string("ad7f0408-99b8-4f6e-a46f-bd0eec433370")
+                .expect("thread id");
+        let source = SessionSource::from(CoreSessionSource::SubAgent(
+            CoreSubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_nickname: None,
+                agent_role: None,
+                agent_persona: None,
+                allow_list: None,
+                deny_list: None,
+            },
+        ))
+        .with_thread_spawn_metadata(
+            Some("atlas".to_string()),
+            Some("explorer".to_string()),
+            Some("fallback".to_string()),
+        )
+        .with_thread_spawn_metadata(None, None, Some("ignored".to_string()));
+
+        assert_eq!(source.get_nickname().as_deref(), Some("atlas"));
+        assert_eq!(source.get_agent_role().as_deref(), Some("explorer"));
+        assert_eq!(source.get_agent_persona().as_deref(), Some("fallback"));
     }
 
     #[test]

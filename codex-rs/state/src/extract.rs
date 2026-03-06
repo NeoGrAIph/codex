@@ -39,6 +39,7 @@ fn apply_session_meta_from_item(metadata: &mut ThreadMetadata, meta_line: &Sessi
     metadata.source = enum_to_string(&meta_line.meta.source);
     metadata.agent_nickname = meta_line.meta.agent_nickname.clone();
     metadata.agent_role = meta_line.meta.agent_role.clone();
+    metadata.agent_persona = meta_line.meta.agent_persona.clone();
     if let Some(provider) = meta_line.meta.model_provider.as_deref() {
         metadata.model_provider = provider.to_string();
     }
@@ -239,6 +240,7 @@ mod tests {
                     source: SessionSource::Cli,
                     agent_nickname: None,
                     agent_role: None,
+                    agent_persona: Some("friendly".to_string()),
                     model_provider: Some("openai".to_string()),
                     base_instructions: None,
                     dynamic_tools: None,
@@ -278,6 +280,7 @@ mod tests {
             super::enum_to_string(&SandboxPolicy::DangerFullAccess)
         );
         assert_eq!(metadata.approval_mode, "never");
+        assert_eq!(metadata.agent_persona.as_deref(), Some("friendly"));
     }
 
     #[test]
@@ -296,7 +299,7 @@ mod tests {
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 network: None,
                 model: "gpt-5".to_string(),
-                personality: None,
+                personality: Some(codex_protocol::config_types::Personality::Pragmatic),
                 collaboration_mode: None,
                 realtime_active: None,
                 effort: None,
@@ -310,6 +313,38 @@ mod tests {
         );
 
         assert_eq!(metadata.cwd, PathBuf::from("/fallback/workspace"));
+        assert_eq!(metadata.agent_persona, None);
+    }
+
+    #[test]
+    fn turn_context_personality_does_not_materialize_agent_persona() {
+        let mut metadata = metadata_for_test();
+
+        apply_rollout_item(
+            &mut metadata,
+            &RolloutItem::TurnContext(TurnContextItem {
+                turn_id: Some("turn-1".to_string()),
+                cwd: PathBuf::from("/workspace"),
+                current_date: None,
+                timezone: None,
+                approval_policy: AskForApproval::OnRequest,
+                sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                network: None,
+                model: "gpt-5".to_string(),
+                personality: Some(codex_protocol::config_types::Personality::Pragmatic),
+                collaboration_mode: None,
+                realtime_active: None,
+                effort: None,
+                summary: ReasoningSummary::Auto,
+                user_instructions: None,
+                developer_instructions: None,
+                final_output_json_schema: None,
+                truncation_policy: None,
+            }),
+            "test-provider",
+        );
+
+        assert_eq!(metadata.agent_persona, None);
     }
 
     fn metadata_for_test() -> ThreadMetadata {
@@ -323,6 +358,7 @@ mod tests {
             source: "cli".to_string(),
             agent_nickname: None,
             agent_role: None,
+            agent_persona: None,
             model_provider: "openai".to_string(),
             cwd: PathBuf::from("/tmp"),
             cli_version: "0.0.0".to_string(),

@@ -1,7 +1,10 @@
 use anyhow::Result;
 use app_test_support::McpProcess;
 use app_test_support::create_fake_rollout;
+use app_test_support::create_fake_rollout_with_source;
 use app_test_support::create_mock_responses_server_repeating_assistant;
+use app_test_support::rollout_path;
+use app_test_support::set_rollout_thread_spawn_agent_persona;
 use app_test_support::to_response;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCMessage;
@@ -18,11 +21,15 @@ use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadStatusChangedNotification;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
+use codex_protocol::ThreadId;
+use codex_protocol::protocol::SessionSource as CoreSessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::path::Path;
 use tempfile::TempDir;
 use tokio::time::timeout;
+use uuid::Uuid;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -159,6 +166,68 @@ async fn thread_fork_creates_new_thread_and_emits_started() -> Result<()> {
     let started: ThreadStartedNotification =
         serde_json::from_value(notif.params.expect("params must be present"))?;
     assert_eq!(started.thread, thread);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_fork_preserves_agent_persona_on_top_level_thread_field() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let preview = "Saved user message";
+    let parent_thread_id = ThreadId::from_string(&Uuid::new_v4().to_string())?;
+    let conversation_id = create_fake_rollout_with_source(
+        codex_home.path(),
+        "2025-01-05T13-00-00",
+        "2025-01-05T13:00:00Z",
+        preview,
+        Some("mock_provider"),
+        None,
+        CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_nickname: None,
+            agent_role: None,
+            agent_persona: None,
+            allow_list: None,
+            deny_list: None,
+        }),
+    )?;
+    let original_path = rollout_path(
+        codex_home.path(),
+        "2025-01-05T13-00-00",
+        conversation_id.as_str(),
+    );
+    set_rollout_thread_spawn_agent_persona(original_path.as_path(), Some("researcher"))?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let fork_id = mcp
+        .send_thread_fork_request(ThreadForkParams {
+            thread_id: conversation_id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let fork_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(fork_id)),
+    )
+    .await??;
+    let fork_result = fork_resp.result.clone();
+    let ThreadForkResponse { thread, .. } = to_response::<ThreadForkResponse>(fork_resp)?;
+
+    assert_eq!(thread.agent_persona.as_deref(), Some("researcher"));
+    let thread_json = fork_result
+        .get("thread")
+        .and_then(Value::as_object)
+        .expect("thread/fork result.thread must be an object");
+    assert_eq!(
+        thread_json.get("agentPersona").and_then(Value::as_str),
+        Some("researcher")
+    );
 
     Ok(())
 }

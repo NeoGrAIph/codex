@@ -667,6 +667,15 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
             },
         ),
         (
+            "agent_persona".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional persona name for the new agent. Personas are loaded from role templates in `.codex/.agents/*.md` and affect child-specific instructions plus optional model/reasoning defaults. If omitted, template-backed roles use `default`."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
             "fork_context".to_string(),
             JsonSchema::Boolean {
                 description: Some(

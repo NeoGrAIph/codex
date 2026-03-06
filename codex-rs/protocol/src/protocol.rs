@@ -2052,6 +2052,12 @@ pub enum SubAgentSource {
         agent_nickname: Option<String>,
         #[serde(default, alias = "agent_type")]
         agent_role: Option<String>,
+        #[serde(default)]
+        agent_persona: Option<String>,
+        #[serde(default)]
+        allow_list: Option<Vec<String>>,
+        #[serde(default)]
+        deny_list: Option<Vec<String>>,
     },
     MemoryConsolidation,
     Other(String),
@@ -2090,6 +2096,15 @@ impl SessionSource {
             }
             SessionSource::SubAgent(SubAgentSource::MemoryConsolidation) => {
                 Some("memory builder".to_string())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn get_agent_persona(&self) -> Option<String> {
+        match self {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_persona, .. }) => {
+                agent_persona.clone()
             }
             _ => None,
         }
@@ -2136,6 +2151,9 @@ pub struct SessionMeta {
     /// Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
     #[serde(default, alias = "agent_type", skip_serializing_if = "Option::is_none")]
     pub agent_role: Option<String>,
+    /// Optional persona assigned to an AgentControl-spawned sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_persona: Option<String>,
     pub model_provider: Option<String>,
     /// base_instructions for the session. This *should* always be present when creating a new session,
     /// but may be missing for older sessions. If not present, fall back to rendering the base_instructions
@@ -2159,6 +2177,7 @@ impl Default for SessionMeta {
             source: SessionSource::default(),
             agent_nickname: None,
             agent_role: None,
+            agent_persona: None,
             model_provider: None,
             base_instructions: None,
             dynamic_tools: None,
@@ -2975,6 +2994,9 @@ pub struct CollabAgentRef {
     /// Optional nickname assigned to an AgentControl-spawned sub-agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_nickname: Option<String>,
+    /// Optional selected persona assigned to an AgentControl-spawned sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_persona: Option<String>,
     /// Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
     #[serde(default, alias = "agent_type", skip_serializing_if = "Option::is_none")]
     pub agent_role: Option<String>,
@@ -2987,6 +3009,9 @@ pub struct CollabAgentStatusEntry {
     /// Optional nickname assigned to an AgentControl-spawned sub-agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_nickname: Option<String>,
+    /// Optional selected persona assigned to an AgentControl-spawned sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_persona: Option<String>,
     /// Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
     #[serde(default, alias = "agent_type", skip_serializing_if = "Option::is_none")]
     pub agent_role: Option<String>,
@@ -3005,6 +3030,9 @@ pub struct CollabAgentSpawnEndEvent {
     /// Optional nickname assigned to the new agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_agent_nickname: Option<String>,
+    /// Optional selected persona assigned to the new agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_agent_persona: Option<String>,
     /// Optional role assigned to the new agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_agent_role: Option<String>,
@@ -3039,6 +3067,9 @@ pub struct CollabAgentInteractionEndEvent {
     /// Optional nickname assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_nickname: Option<String>,
+    /// Optional selected persona assigned to the receiver agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_agent_persona: Option<String>,
     /// Optional role assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_role: Option<String>,
@@ -3096,6 +3127,9 @@ pub struct CollabCloseEndEvent {
     /// Optional nickname assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_nickname: Option<String>,
+    /// Optional selected persona assigned to the receiver agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_agent_persona: Option<String>,
     /// Optional role assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_role: Option<String>,
@@ -3115,6 +3149,9 @@ pub struct CollabResumeBeginEvent {
     /// Optional nickname assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_nickname: Option<String>,
+    /// Optional selected persona assigned to the receiver agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_agent_persona: Option<String>,
     /// Optional role assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_role: Option<String>,
@@ -3131,6 +3168,9 @@ pub struct CollabResumeEndEvent {
     /// Optional nickname assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_nickname: Option<String>,
+    /// Optional selected persona assigned to the receiver agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_agent_persona: Option<String>,
     /// Optional role assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_role: Option<String>,
@@ -3699,5 +3739,105 @@ mod tests {
             .expect("new_or_append should return info");
 
         assert_eq!(info.model_context_window, Some(258_400));
+    }
+
+    #[test]
+    fn collab_payloads_default_missing_agent_persona_fields() -> Result<()> {
+        let event: CollabWaitingEndEvent = serde_json::from_value(json!({
+            "sender_thread_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+            "call_id": "call-1",
+            "agent_statuses": [{
+                "thread_id": "67e55044-10b1-426f-9247-bb680e5fe0c9",
+                "agent_nickname": "Atlas",
+                "agent_type": "worker",
+                "status": "running"
+            }],
+            "statuses": {
+                "67e55044-10b1-426f-9247-bb680e5fe0c9": "running"
+            }
+        }))?;
+
+        assert_eq!(
+            event.agent_statuses,
+            vec![CollabAgentStatusEntry {
+                thread_id: ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c9")?,
+                agent_nickname: Some("Atlas".to_string()),
+                agent_persona: None,
+                agent_role: Some("worker".to_string()),
+                status: AgentStatus::Running,
+            }]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn collab_spawn_end_roundtrips_agent_persona() -> Result<()> {
+        let event = CollabAgentSpawnEndEvent {
+            call_id: "call-1".to_string(),
+            sender_thread_id: ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")?,
+            new_thread_id: Some(ThreadId::from_string(
+                "67e55044-10b1-426f-9247-bb680e5fe0c9",
+            )?),
+            new_agent_nickname: Some("Atlas".to_string()),
+            new_agent_persona: Some("reviewer".to_string()),
+            new_agent_role: Some("worker".to_string()),
+            prompt: "inspect this change".to_string(),
+            status: AgentStatus::Running,
+        };
+
+        let value = serde_json::to_value(&event)?;
+        assert_eq!(value["new_agent_persona"], "reviewer");
+        let roundtrip: CollabAgentSpawnEndEvent = serde_json::from_value(value)?;
+        assert_eq!(roundtrip, event);
+        Ok(())
+    }
+
+    #[test]
+    fn thread_spawn_deserializes_legacy_agent_type_alias_and_defaults_new_fields() -> Result<()> {
+        let source: SessionSource = serde_json::from_value(json!({
+            "subagent": {
+                "thread_spawn": {
+                    "parent_thread_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                    "depth": 1,
+                    "agent_type": "explorer"
+                }
+            }
+        }))?;
+
+        assert_eq!(source.get_agent_role(), Some("explorer".to_string()));
+        assert_eq!(source.get_agent_persona(), None);
+
+        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            allow_list,
+            deny_list,
+            ..
+        }) = source
+        else {
+            panic!("expected thread spawn source");
+        };
+
+        assert_eq!(allow_list, None);
+        assert_eq!(deny_list, None);
+        Ok(())
+    }
+
+    #[test]
+    fn thread_spawn_roundtrips_persona_and_policy_metadata() -> Result<()> {
+        let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")?,
+            depth: 2,
+            agent_nickname: Some("Atlas".to_string()),
+            agent_role: Some("worker".to_string()),
+            agent_persona: Some("runner".to_string()),
+            allow_list: Some(vec!["shell".to_string(), "web.search".to_string()]),
+            deny_list: Some(vec!["exec_command".to_string()]),
+        });
+
+        let value = serde_json::to_value(&source)?;
+        let roundtrip: SessionSource = serde_json::from_value(value)?;
+
+        assert_eq!(roundtrip, source);
+        assert_eq!(roundtrip.get_agent_persona(), Some("runner".to_string()));
+        Ok(())
     }
 }

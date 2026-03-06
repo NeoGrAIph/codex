@@ -135,6 +135,9 @@ mod tests {
             depth: 1,
             agent_nickname: None,
             agent_role: None,
+            agent_persona: None,
+            allow_list: None,
+            deny_list: None,
         });
 
         assert!(source_kind_matches(

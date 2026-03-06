@@ -80,6 +80,7 @@ pub(crate) fn spawn_end(ev: CollabAgentSpawnEndEvent) -> PlainHistoryCell {
         sender_thread_id: _,
         new_thread_id,
         new_agent_nickname,
+        new_agent_persona: _,
         new_agent_role,
         prompt,
         status: _,
@@ -110,6 +111,7 @@ pub(crate) fn interaction_end(ev: CollabAgentInteractionEndEvent) -> PlainHistor
         sender_thread_id: _,
         receiver_thread_id,
         receiver_agent_nickname,
+        receiver_agent_persona: _,
         receiver_agent_role,
         prompt,
         status: _,
@@ -175,6 +177,7 @@ pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
         sender_thread_id: _,
         receiver_thread_id,
         receiver_agent_nickname,
+        receiver_agent_persona: _,
         receiver_agent_role,
         status: _,
     } = ev;
@@ -198,6 +201,7 @@ pub(crate) fn resume_begin(ev: CollabResumeBeginEvent) -> PlainHistoryCell {
         sender_thread_id: _,
         receiver_thread_id,
         receiver_agent_nickname,
+        receiver_agent_persona: _,
         receiver_agent_role,
     } = ev;
 
@@ -220,6 +224,7 @@ pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
         sender_thread_id: _,
         receiver_thread_id,
         receiver_agent_nickname,
+        receiver_agent_persona: _,
         receiver_agent_role,
         status,
     } = ev;
@@ -320,6 +325,7 @@ fn merge_wait_receivers(
             .map(|thread_id| CollabAgentRef {
                 thread_id: *thread_id,
                 agent_nickname: None,
+                agent_persona: None,
                 agent_role: None,
             })
             .collect();
@@ -334,6 +340,7 @@ fn merge_wait_receivers(
             receiver_agents.push(CollabAgentRef {
                 thread_id: *thread_id,
                 agent_nickname: None,
+                agent_persona: None,
                 agent_role: None,
             });
         }
@@ -355,6 +362,7 @@ fn wait_complete_lines(
             .map(|(thread_id, status)| CollabAgentStatusEntry {
                 thread_id: *thread_id,
                 agent_nickname: None,
+                agent_persona: None,
                 agent_role: None,
                 status: status.clone(),
             })
@@ -373,6 +381,7 @@ fn wait_complete_lines(
             .map(|(thread_id, status)| CollabAgentStatusEntry {
                 thread_id: *thread_id,
                 agent_nickname: None,
+                agent_persona: None,
                 agent_role: None,
                 status: status.clone(),
             })
@@ -388,6 +397,7 @@ fn wait_complete_lines(
             let CollabAgentStatusEntry {
                 thread_id,
                 agent_nickname,
+                agent_persona: _,
                 agent_role,
                 status,
             } = entry;
@@ -465,6 +475,7 @@ mod tests {
             sender_thread_id,
             new_thread_id: Some(robie_id),
             new_agent_nickname: Some("Robie".to_string()),
+            new_agent_persona: None,
             new_agent_role: Some("explorer".to_string()),
             prompt: "Compute 11! and reply with just the integer result.".to_string(),
             status: AgentStatus::PendingInit,
@@ -475,6 +486,7 @@ mod tests {
             sender_thread_id,
             receiver_thread_id: robie_id,
             receiver_agent_nickname: Some("Robie".to_string()),
+            receiver_agent_persona: None,
             receiver_agent_role: Some("explorer".to_string()),
             prompt: "Please continue and return the answer only.".to_string(),
             status: AgentStatus::Running,
@@ -486,6 +498,7 @@ mod tests {
             receiver_agents: vec![CollabAgentRef {
                 thread_id: robie_id,
                 agent_nickname: Some("Robie".to_string()),
+                agent_persona: None,
                 agent_role: Some("explorer".to_string()),
             }],
             call_id: "call-wait".to_string(),
@@ -504,12 +517,14 @@ mod tests {
                 CollabAgentStatusEntry {
                     thread_id: robie_id,
                     agent_nickname: Some("Robie".to_string()),
+                    agent_persona: None,
                     agent_role: Some("explorer".to_string()),
                     status: AgentStatus::Completed(Some("39916800".to_string())),
                 },
                 CollabAgentStatusEntry {
                     thread_id: bob_id,
                     agent_nickname: Some("Bob".to_string()),
+                    agent_persona: None,
                     agent_role: Some("worker".to_string()),
                     status: AgentStatus::Errored("tool timeout".to_string()),
                 },
@@ -522,6 +537,7 @@ mod tests {
             sender_thread_id,
             receiver_thread_id: robie_id,
             receiver_agent_nickname: Some("Robie".to_string()),
+            receiver_agent_persona: None,
             receiver_agent_role: Some("explorer".to_string()),
             status: AgentStatus::Completed(Some("39916800".to_string())),
         });
@@ -545,6 +561,7 @@ mod tests {
             sender_thread_id,
             new_thread_id: Some(robie_id),
             new_agent_nickname: Some("Robie".to_string()),
+            new_agent_persona: None,
             new_agent_role: Some("explorer".to_string()),
             prompt: String::new(),
             status: AgentStatus::PendingInit,

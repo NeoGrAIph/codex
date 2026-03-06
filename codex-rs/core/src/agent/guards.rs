@@ -248,6 +248,9 @@ mod tests {
             depth: 1,
             agent_nickname: None,
             agent_role: None,
+            agent_persona: None,
+            allow_list: None,
+            deny_list: None,
         });
         let child_depth = next_thread_spawn_depth(&session_source);
         assert_eq!(child_depth, 2);

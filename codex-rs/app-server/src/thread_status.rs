@@ -795,6 +795,7 @@ mod tests {
             cli_version: "test".to_string(),
             agent_nickname: None,
             agent_role: None,
+            agent_persona: None,
             source,
             git_info: None,
             name: None,

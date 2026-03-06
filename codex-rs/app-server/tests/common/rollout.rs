@@ -4,6 +4,7 @@ use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
+use serde_json::Value;
 use serde_json::json;
 use std::fs;
 use std::fs::FileTimes;
@@ -81,6 +82,7 @@ pub fn create_fake_rollout_with_source(
         source,
         agent_nickname: None,
         agent_role: None,
+        agent_persona: None,
         model_provider: model_provider.map(str::to_string),
         base_instructions: None,
         dynamic_tools: None,
@@ -163,6 +165,7 @@ pub fn create_fake_rollout_with_text_elements(
         source: SessionSource::Cli,
         agent_nickname: None,
         agent_role: None,
+        agent_persona: None,
         model_provider: model_provider.map(str::to_string),
         base_instructions: None,
         dynamic_tools: None,
@@ -205,4 +208,63 @@ pub fn create_fake_rollout_with_text_elements(
 
     fs::write(file_path, lines.join("\n") + "\n")?;
     Ok(uuid_str)
+}
+
+pub fn set_rollout_thread_spawn_agent_persona(
+    path: &Path,
+    agent_persona: Option<&str>,
+) -> Result<()> {
+    let content = fs::read_to_string(path)?;
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let first_line = lines
+        .first_mut()
+        .ok_or_else(|| anyhow::anyhow!("rollout at {} is empty", path.display()))?;
+    let mut rollout_line: Value = serde_json::from_str(first_line)?;
+    let session_meta = rollout_line
+        .get_mut("payload")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| anyhow::anyhow!("rollout at {} is missing payload", path.display()))?;
+    let session_meta = if session_meta.contains_key("meta") {
+        session_meta
+            .get_mut("meta")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| anyhow::anyhow!("rollout at {} has non-object meta", path.display()))?
+    } else {
+        session_meta
+    };
+    let source = session_meta
+        .get_mut("source")
+        .and_then(Value::as_object_mut)
+        .and_then(|source| {
+            if source.contains_key("subagent") {
+                source.get_mut("subagent")
+            } else {
+                source.get_mut("sub_agent")
+            }
+        })
+        .and_then(Value::as_object_mut)
+        .and_then(|source| source.get_mut("thread_spawn"))
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "rollout at {} does not use sub_agent.thread_spawn",
+                path.display()
+            )
+        })?;
+
+    match agent_persona {
+        Some(agent_persona) => {
+            source.insert(
+                "agent_persona".to_string(),
+                Value::String(agent_persona.to_string()),
+            );
+        }
+        None => {
+            source.remove("agent_persona");
+        }
+    }
+
+    *first_line = serde_json::to_string(&rollout_line)?;
+    fs::write(path, lines.join("\n") + "\n")?;
+    Ok(())
 }

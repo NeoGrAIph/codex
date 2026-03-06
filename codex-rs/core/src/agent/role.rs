@@ -6,6 +6,8 @@
 //! explicitly takes ownership of model selection. It does not decide when to spawn a sub-agent or
 //! which role to use; the multi-agent tool handler owns that orchestration.
 
+use crate::agent::role_templates::LoadedRoleTemplates;
+use crate::agent::role_templates::RoleDiscoveryMetadata;
 use crate::config::AgentRoleConfig;
 use crate::config::Config;
 use crate::config::ConfigOverrides;
@@ -149,41 +151,88 @@ pub(crate) mod spawn_tool_spec {
     /// Builds the spawn-agent tool description text from built-in and configured roles.
     pub(crate) fn build(user_defined_agent_roles: &BTreeMap<String, AgentRoleConfig>) -> String {
         let built_in_roles = built_in::configs();
-        build_from_configs(built_in_roles, user_defined_agent_roles)
+        match LoadedRoleTemplates::load_for_context(None, None) {
+            Ok(templates) => build_from_configs(
+                built_in_roles,
+                user_defined_agent_roles,
+                |role_name| templates.role_metadata(role_name).ok().flatten(),
+                None,
+            ),
+            Err(err) => build_from_configs(
+                built_in_roles,
+                user_defined_agent_roles,
+                |_| None,
+                Some(err),
+            ),
+        }
     }
 
     // This function is not inlined for testing purpose.
-    fn build_from_configs(
+    pub(crate) fn build_from_configs(
         built_in_roles: &BTreeMap<String, AgentRoleConfig>,
         user_defined_roles: &BTreeMap<String, AgentRoleConfig>,
+        mut role_metadata_lookup: impl FnMut(&str) -> Option<RoleDiscoveryMetadata>,
+        _templates_load_error: Option<String>,
     ) -> String {
         let mut seen = BTreeSet::new();
         let mut formatted_roles = Vec::new();
         for (name, declaration) in user_defined_roles {
             if seen.insert(name.as_str()) {
-                formatted_roles.push(format_role(name, declaration));
+                let metadata = role_metadata_lookup(name);
+                formatted_roles.push(format_role(name, declaration, metadata.as_ref()));
             }
         }
         for (name, declaration) in built_in_roles {
             if seen.insert(name.as_str()) {
-                formatted_roles.push(format_role(name, declaration));
+                let metadata = role_metadata_lookup(name);
+                formatted_roles.push(format_role(name, declaration, metadata.as_ref()));
             }
         }
 
-        format!(
+        let mut description = format!(
             r#"Optional type name for the new agent. If omitted, `{DEFAULT_ROLE_NAME}` is used.
 Available roles:
 {}
             "#,
             formatted_roles.join("\n"),
-        )
+        );
+        description.truncate(description.trim_end().len());
+        description
     }
 
-    fn format_role(name: &str, declaration: &AgentRoleConfig) -> String {
-        if let Some(description) = &declaration.description {
-            format!("{name}: {{\n{description}\n}}")
+    fn format_role(
+        name: &str,
+        declaration: &AgentRoleConfig,
+        metadata: Option<&RoleDiscoveryMetadata>,
+    ) -> String {
+        let description = metadata
+            .map(|metadata| metadata.description.as_str())
+            .unwrap_or_else(|| {
+                declaration
+                    .description
+                    .as_deref()
+                    .unwrap_or("no description")
+            });
+        let mut suffixes = Vec::new();
+        if let Some(metadata) = metadata {
+            if !metadata.agent_personas.is_empty() {
+                let personas = metadata
+                    .agent_personas
+                    .iter()
+                    .map(|persona| persona.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                suffixes.push(format!("personas: {personas}"));
+            }
+            if metadata.read_only {
+                suffixes.push("read_only".to_string());
+            }
+        }
+
+        if suffixes.is_empty() {
+            format!("{name}: {description}")
         } else {
-            format!("{name}: no description")
+            format!("{name}: {description} | {}", suffixes.join(" | "))
         }
     }
 }
@@ -270,6 +319,7 @@ Rules:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::role_templates::RolePersonaDiscovery;
     use crate::config::CONFIG_TOML_FILE;
     use crate::config::ConfigBuilder;
     use crate::config_loader::ConfigLayerStackOrdering;
@@ -813,11 +863,16 @@ enabled = false
             ("researcher".to_string(), AgentRoleConfig::default()),
         ]);
 
-        let spec = spawn_tool_spec::build(&user_defined_roles);
+        let spec = spawn_tool_spec::build_from_configs(
+            built_in::configs(),
+            &user_defined_roles,
+            |_| None,
+            None,
+        );
 
         assert!(spec.contains("researcher: no description"));
-        assert!(spec.contains("explorer: {\nuser override\n}"));
-        assert!(spec.contains("default: {\nDefault agent.\n}"));
+        assert!(spec.contains("explorer: user override"));
+        assert!(spec.contains("default: Default agent."));
         assert!(!spec.contains("Explorers are fast and authoritative."));
     }
 
@@ -832,13 +887,59 @@ enabled = false
             },
         )]);
 
-        let spec = spawn_tool_spec::build(&user_defined_roles);
-        let user_index = spec.find("aaa: {\nfirst\n}").expect("find user role");
+        let spec = spawn_tool_spec::build_from_configs(
+            built_in::configs(),
+            &user_defined_roles,
+            |_| None,
+            None,
+        );
+        let user_index = spec.find("aaa: first").expect("find user role");
         let built_in_index = spec
-            .find("default: {\nDefault agent.\n}")
+            .find("default: Default agent.")
             .expect("find built-in role");
 
         assert!(user_index < built_in_index);
+    }
+
+    #[test]
+    fn spawn_tool_spec_includes_template_persona_metadata_when_available() {
+        let spec = spawn_tool_spec::build_from_configs(
+            built_in::configs(),
+            &BTreeMap::new(),
+            |role_name| {
+                (role_name == "worker").then(|| RoleDiscoveryMetadata {
+                    description: "Worker template".to_string(),
+                    read_only: true,
+                    agent_personas: vec![
+                        RolePersonaDiscovery {
+                            name: "default".to_string(),
+                            description: "default persona".to_string(),
+                        },
+                        RolePersonaDiscovery {
+                            name: "reviewer".to_string(),
+                            description: "reviewer persona".to_string(),
+                        },
+                    ],
+                })
+            },
+            None,
+        );
+
+        assert!(spec.contains("worker: Worker template"));
+        assert!(spec.contains("personas: default, reviewer"));
+        assert!(spec.contains("read_only"));
+    }
+
+    #[test]
+    fn spawn_tool_spec_ignores_template_load_warning_in_description() {
+        let spec = spawn_tool_spec::build_from_configs(
+            built_in::configs(),
+            &BTreeMap::new(),
+            |_| None,
+            Some("failed to read templates".to_string()),
+        );
+
+        assert!(!spec.contains("Template metadata warning"));
     }
 
     #[test]

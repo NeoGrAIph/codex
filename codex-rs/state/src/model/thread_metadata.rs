@@ -68,6 +68,8 @@ pub struct ThreadMetadata {
     pub agent_nickname: Option<String>,
     /// Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
     pub agent_role: Option<String>,
+    /// Optional session personality mirrored from durable rollout metadata.
+    pub agent_persona: Option<String>,
     /// The model provider identifier.
     pub model_provider: String,
     /// The working directory for the thread.
@@ -111,6 +113,8 @@ pub struct ThreadMetadataBuilder {
     pub agent_nickname: Option<String>,
     /// Optional role (agent_role) assigned to the session.
     pub agent_role: Option<String>,
+    /// Optional personality assigned to the session.
+    pub agent_persona: Option<String>,
     /// The model provider identifier, if known.
     pub model_provider: Option<String>,
     /// The working directory for the thread.
@@ -147,6 +151,7 @@ impl ThreadMetadataBuilder {
             source,
             agent_nickname: None,
             agent_role: None,
+            agent_persona: None,
             model_provider: None,
             cwd: PathBuf::new(),
             cli_version: None,
@@ -177,6 +182,7 @@ impl ThreadMetadataBuilder {
             source,
             agent_nickname: self.agent_nickname.clone(),
             agent_role: self.agent_role.clone(),
+            agent_persona: self.agent_persona.clone(),
             model_provider: self
                 .model_provider
                 .clone()
@@ -234,6 +240,9 @@ impl ThreadMetadata {
         if self.agent_role != other.agent_role {
             diffs.push("agent_role");
         }
+        if self.agent_persona != other.agent_persona {
+            diffs.push("agent_persona");
+        }
         if self.model_provider != other.model_provider {
             diffs.push("model_provider");
         }
@@ -287,6 +296,7 @@ pub(crate) struct ThreadRow {
     source: String,
     agent_nickname: Option<String>,
     agent_role: Option<String>,
+    agent_persona: Option<String>,
     model_provider: String,
     cwd: String,
     cli_version: String,
@@ -311,6 +321,7 @@ impl ThreadRow {
             source: row.try_get("source")?,
             agent_nickname: row.try_get("agent_nickname")?,
             agent_role: row.try_get("agent_role")?,
+            agent_persona: row.try_get("agent_persona")?,
             model_provider: row.try_get("model_provider")?,
             cwd: row.try_get("cwd")?,
             cli_version: row.try_get("cli_version")?,
@@ -339,6 +350,7 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             source,
             agent_nickname,
             agent_role,
+            agent_persona,
             model_provider,
             cwd,
             cli_version,
@@ -360,6 +372,7 @@ impl TryFrom<ThreadRow> for ThreadMetadata {
             source,
             agent_nickname,
             agent_role,
+            agent_persona,
             model_provider,
             cwd: PathBuf::from(cwd),
             cli_version,

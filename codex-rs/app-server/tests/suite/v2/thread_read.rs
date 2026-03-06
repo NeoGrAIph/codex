@@ -1,7 +1,10 @@
 use anyhow::Result;
 use app_test_support::McpProcess;
+use app_test_support::create_fake_rollout_with_source;
 use app_test_support::create_fake_rollout_with_text_elements;
 use app_test_support::create_mock_responses_server_repeating_assistant;
+use app_test_support::rollout_path;
+use app_test_support::set_rollout_thread_spawn_agent_persona;
 use app_test_support::to_response;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
@@ -17,6 +20,7 @@ use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadSetNameParams;
 use codex_app_server_protocol::ThreadSetNameResponse;
+use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStatus;
@@ -24,6 +28,8 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
+use codex_protocol::protocol::SessionSource as CoreSessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::TextElement;
 use core_test_support::responses;
@@ -32,7 +38,9 @@ use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
 use tempfile::TempDir;
+use tokio::time::sleep;
 use tokio::time::timeout;
+use uuid::Uuid;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -282,7 +290,7 @@ async fn thread_name_set_is_reflected_in_read_list_and_resume() -> Result<()> {
             cursor: None,
             limit: Some(50),
             sort_key: None,
-            model_providers: Some(vec!["mock_provider".to_string()]),
+            model_providers: None,
             source_kinds: None,
             archived: None,
             cwd: None,
@@ -351,6 +359,174 @@ async fn thread_name_set_is_reflected_in_read_list_and_resume() -> Result<()> {
         resumed_json.get("ephemeral").and_then(Value::as_bool),
         Some(false),
         "thread/resume must serialize `thread.ephemeral` on the wire"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_read_list_and_resume_preserve_agent_persona() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let parent_thread_id = codex_protocol::ThreadId::from_string(&Uuid::new_v4().to_string())?;
+    let conversation_id = create_fake_rollout_with_source(
+        codex_home.path(),
+        "2025-01-06T12-00-00",
+        "2025-01-06T12:00:00Z",
+        "Saved user message",
+        Some("mock_provider"),
+        None,
+        CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_nickname: None,
+            agent_role: None,
+            agent_persona: None,
+            allow_list: None,
+            deny_list: None,
+        }),
+    )?;
+    let rollout_path = rollout_path(
+        codex_home.path(),
+        "2025-01-06T12-00-00",
+        conversation_id.as_str(),
+    );
+    set_rollout_thread_spawn_agent_persona(rollout_path.as_path(), Some("researcher"))?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: conversation_id.clone(),
+            include_turns: false,
+        })
+        .await?;
+    let read_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
+    )
+    .await??;
+    let read_result = read_resp.result.clone();
+    let ThreadReadResponse { thread } = to_response::<ThreadReadResponse>(read_resp)?;
+    assert_eq!(thread.agent_persona.as_deref(), Some("researcher"));
+    let read_thread_json = read_result
+        .get("thread")
+        .and_then(Value::as_object)
+        .expect("thread/read result.thread must be an object");
+    assert_eq!(
+        read_thread_json.get("agentPersona").and_then(Value::as_str),
+        Some("researcher")
+    );
+    assert_eq!(
+        read_thread_json
+            .get("source")
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("subAgent"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_spawn"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("agent_persona"))
+            .and_then(Value::as_str),
+        Some("researcher")
+    );
+
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: conversation_id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(resume_id)),
+    )
+    .await??;
+    let resume_result = resume_resp.result.clone();
+    let ThreadResumeResponse {
+        thread: resumed, ..
+    } = to_response::<ThreadResumeResponse>(resume_resp)?;
+    assert_eq!(resumed.agent_persona.as_deref(), Some("researcher"));
+    let resumed_json = resume_result
+        .get("thread")
+        .and_then(Value::as_object)
+        .expect("thread/resume result.thread must be an object");
+    assert_eq!(
+        resumed_json.get("agentPersona").and_then(Value::as_str),
+        Some("researcher")
+    );
+    assert_eq!(
+        resumed_json
+            .get("source")
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("subAgent"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_spawn"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("agent_persona"))
+            .and_then(Value::as_str),
+        Some("researcher")
+    );
+
+    let list_deadline = tokio::time::Instant::now() + DEFAULT_READ_TIMEOUT;
+    let (list_result, data) = loop {
+        let list_id = mcp
+            .send_thread_list_request(ThreadListParams {
+                cursor: None,
+                limit: Some(50),
+                sort_key: None,
+                model_providers: None,
+                source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+                archived: None,
+                cwd: None,
+                search_term: None,
+            })
+            .await?;
+        let list_resp: JSONRPCResponse = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_response_message(RequestId::Integer(list_id)),
+        )
+        .await??;
+        let list_result = list_resp.result.clone();
+        let ThreadListResponse { data, .. } = to_response::<ThreadListResponse>(list_resp)?;
+        if data.iter().any(|thread| thread.id == conversation_id) {
+            break (list_result, data);
+        }
+        if tokio::time::Instant::now() >= list_deadline {
+            anyhow::bail!("thread/list did not include {conversation_id} before timeout");
+        }
+        sleep(std::time::Duration::from_millis(50)).await;
+    };
+    let listed = data
+        .iter()
+        .find(|thread| thread.id == conversation_id)
+        .expect("thread/list should include the thread");
+    assert_eq!(listed.agent_persona.as_deref(), Some("researcher"));
+    let listed_json = list_result
+        .get("data")
+        .and_then(Value::as_array)
+        .expect("thread/list result.data must be an array")
+        .iter()
+        .find(|thread| thread.get("id").and_then(Value::as_str) == Some(&conversation_id))
+        .and_then(Value::as_object)
+        .expect("thread/list should include the thread as an object");
+    assert_eq!(
+        listed_json.get("agentPersona").and_then(Value::as_str),
+        Some("researcher")
+    );
+    assert_eq!(
+        listed_json
+            .get("source")
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("subAgent"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_spawn"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("agent_persona"))
+            .and_then(Value::as_str),
+        Some("researcher")
     );
 
     Ok(())

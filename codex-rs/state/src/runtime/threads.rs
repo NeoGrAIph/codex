@@ -12,6 +12,7 @@ SELECT
     source,
     agent_nickname,
     agent_role,
+    agent_persona,
     model_provider,
     cwd,
     cli_version,
@@ -123,6 +124,7 @@ SELECT
     source,
     agent_nickname,
     agent_role,
+    agent_persona,
     model_provider,
     cwd,
     cli_version,
@@ -221,6 +223,7 @@ INSERT INTO threads (
     source,
     agent_nickname,
     agent_role,
+    agent_persona,
     model_provider,
     cwd,
     cli_version,
@@ -235,7 +238,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -246,6 +249,7 @@ ON CONFLICT(id) DO NOTHING
         .bind(metadata.source.as_str())
         .bind(metadata.agent_nickname.as_deref())
         .bind(metadata.agent_role.as_deref())
+        .bind(metadata.agent_persona.as_deref())
         .bind(metadata.model_provider.as_str())
         .bind(metadata.cwd.display().to_string())
         .bind(metadata.cli_version.as_str())
@@ -322,6 +326,7 @@ INSERT INTO threads (
     source,
     agent_nickname,
     agent_role,
+    agent_persona,
     model_provider,
     cwd,
     cli_version,
@@ -336,7 +341,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
@@ -344,6 +349,7 @@ ON CONFLICT(id) DO UPDATE SET
     source = excluded.source,
     agent_nickname = excluded.agent_nickname,
     agent_role = excluded.agent_role,
+    agent_persona = excluded.agent_persona,
     model_provider = excluded.model_provider,
     cwd = excluded.cwd,
     cli_version = excluded.cli_version,
@@ -366,6 +372,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(metadata.source.as_str())
         .bind(metadata.agent_nickname.as_deref())
         .bind(metadata.agent_role.as_deref())
+        .bind(metadata.agent_persona.as_deref())
         .bind(metadata.model_provider.as_str())
         .bind(metadata.cwd.display().to_string())
         .bind(metadata.cli_version.as_str())
@@ -649,10 +656,15 @@ mod tests {
     use super::*;
     use crate::runtime::test_support::test_thread_metadata;
     use crate::runtime::test_support::unique_temp_dir;
+    use codex_protocol::config_types::Personality;
+    use codex_protocol::config_types::ReasoningSummary;
+    use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::GitInfo;
+    use codex_protocol::protocol::SandboxPolicy;
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::TurnContextItem;
     use pretty_assertions::assert_eq;
     use std::path::PathBuf;
 
@@ -695,6 +707,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upsert_thread_round_trips_agent_persona() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("state db should initialize");
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000124").expect("valid thread id");
+        let mut metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
+        metadata.agent_persona = Some("friendly".to_string());
+
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("upsert should succeed");
+
+        let persisted = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("thread should load")
+            .expect("thread should exist");
+        assert_eq!(persisted.agent_persona.as_deref(), Some("friendly"));
+    }
+
+    #[tokio::test]
     async fn apply_rollout_items_restores_memory_mode_from_session_meta() {
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
@@ -726,6 +762,7 @@ mod tests {
                 source: SessionSource::Cli,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: Some("friendly".to_string()),
                 model_provider: None,
                 base_instructions: None,
                 dynamic_tools: None,
@@ -744,6 +781,130 @@ mod tests {
             .await
             .expect("memory mode should load");
         assert_eq!(memory_mode.as_deref(), Some("polluted"));
+        let persisted = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("thread should load")
+            .expect("thread should exist");
+        assert_eq!(persisted.agent_persona.as_deref(), Some("friendly"));
+    }
+
+    #[tokio::test]
+    async fn apply_rollout_items_does_not_persist_agent_persona_from_turn_context() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("state db should initialize");
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000458").expect("valid thread id");
+        let metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
+
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("initial upsert should succeed");
+
+        let builder = ThreadMetadataBuilder::new(
+            thread_id,
+            metadata.rollout_path.clone(),
+            metadata.created_at,
+            SessionSource::Cli,
+        );
+        let items = vec![RolloutItem::TurnContext(TurnContextItem {
+            turn_id: Some("turn-1".to_string()),
+            cwd: metadata.cwd.clone(),
+            current_date: None,
+            timezone: None,
+            approval_policy: AskForApproval::OnRequest,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            network: None,
+            model: "gpt-5".to_string(),
+            personality: Some(Personality::Pragmatic),
+            collaboration_mode: None,
+            realtime_active: None,
+            effort: None,
+            summary: ReasoningSummary::Auto,
+            user_instructions: None,
+            developer_instructions: None,
+            final_output_json_schema: None,
+            truncation_policy: None,
+        })];
+
+        runtime
+            .apply_rollout_items(&builder, &items, None, None)
+            .await
+            .expect("apply_rollout_items should succeed");
+
+        let persisted = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("thread should load")
+            .expect("thread should exist");
+        assert_eq!(persisted.agent_persona, None);
+    }
+
+    #[tokio::test]
+    async fn get_thread_treats_missing_agent_persona_as_none_for_legacy_rows() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("state db should initialize");
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000125").expect("valid thread id");
+        let metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
+
+        sqlx::query(
+            r#"
+INSERT INTO threads (
+    id,
+    rollout_path,
+    created_at,
+    updated_at,
+    source,
+    model_provider,
+    cwd,
+    cli_version,
+    title,
+    sandbox_policy,
+    approval_mode,
+    tokens_used,
+    first_user_message,
+    archived,
+    archived_at,
+    git_sha,
+    git_branch,
+    git_origin_url
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .bind(metadata.rollout_path.display().to_string())
+        .bind(datetime_to_epoch_seconds(metadata.created_at))
+        .bind(datetime_to_epoch_seconds(metadata.updated_at))
+        .bind(metadata.source.as_str())
+        .bind(metadata.model_provider.as_str())
+        .bind(metadata.cwd.display().to_string())
+        .bind(metadata.cli_version.as_str())
+        .bind(metadata.title.as_str())
+        .bind(metadata.sandbox_policy.as_str())
+        .bind(metadata.approval_mode.as_str())
+        .bind(metadata.tokens_used)
+        .bind(metadata.first_user_message.as_deref().unwrap_or_default())
+        .bind(false)
+        .bind(Option::<i64>::None)
+        .bind(metadata.git_sha.as_deref())
+        .bind(metadata.git_branch.as_deref())
+        .bind(metadata.git_origin_url.as_deref())
+        .execute(runtime.pool.as_ref())
+        .await
+        .expect("legacy insert should succeed");
+
+        let persisted = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("thread should load")
+            .expect("thread should exist");
+        assert_eq!(persisted.agent_persona, None);
     }
 
     #[tokio::test]
@@ -780,6 +941,7 @@ mod tests {
                 source: SessionSource::Cli,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
                 model_provider: None,
                 base_instructions: None,
                 dynamic_tools: None,

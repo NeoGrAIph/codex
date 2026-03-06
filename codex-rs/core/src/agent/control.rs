@@ -5,6 +5,7 @@ use crate::agent::role::resolve_role_config;
 use crate::agent::status::is_final;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
+use crate::features::Feature;
 use crate::find_thread_path_by_id_str;
 use crate::rollout::RolloutRecorder;
 use crate::session_prefix::format_subagent_context_line;
@@ -111,6 +112,9 @@ impl AgentControl {
                 parent_thread_id,
                 depth,
                 agent_role,
+                agent_persona,
+                allow_list,
+                deny_list,
                 ..
             })) => {
                 let candidate_names = agent_nickname_candidates(&config, agent_role.as_deref());
@@ -122,6 +126,9 @@ impl AgentControl {
                     depth,
                     agent_nickname: Some(agent_nickname),
                     agent_role,
+                    agent_persona,
+                    allow_list,
+                    deny_list,
                 }))
             }
             other => other,
@@ -231,18 +238,44 @@ impl AgentControl {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,
+                agent_persona,
+                allow_list,
+                deny_list,
                 ..
             }) => {
                 // Collab resume callers rebuild a placeholder ThreadSpawn source. Rehydrate the
-                // stored nickname/role from sqlite when available; otherwise leave both unset.
-                let (resumed_agent_nickname, resumed_agent_role) =
+                // stored nickname/role/persona from sqlite when available. `get_state_db()`
+                // intentionally waits for backfill completion, but resume only needs the already
+                // persisted row for this thread, so allow a direct runtime init fallback.
+                let db_path = codex_state::state_db_path(config.sqlite_home.as_path());
+                let state_db_ctx =
                     if let Some(state_db_ctx) = state_db::get_state_db(&config, None).await {
+                        Some(state_db_ctx)
+                    } else if config.features.enabled(Feature::Sqlite)
+                        && tokio::fs::try_exists(&db_path).await.unwrap_or(false)
+                    {
+                        codex_state::StateRuntime::init(
+                            config.sqlite_home.clone(),
+                            config.model_provider_id.clone(),
+                            None,
+                        )
+                        .await
+                        .ok()
+                    } else {
+                        None
+                    };
+                let (resumed_agent_nickname, resumed_agent_role, resumed_agent_persona) =
+                    if let Some(state_db_ctx) = state_db_ctx {
                         match state_db_ctx.get_thread(thread_id).await {
-                            Ok(Some(metadata)) => (metadata.agent_nickname, metadata.agent_role),
-                            Ok(None) | Err(_) => (None, None),
+                            Ok(Some(metadata)) => (
+                                metadata.agent_nickname,
+                                metadata.agent_role,
+                                metadata.agent_persona,
+                            ),
+                            Ok(None) | Err(_) => (None, None, None),
                         }
                     } else {
-                        (None, None)
+                        (None, None, None)
                     };
                 let reserved_agent_nickname = resumed_agent_nickname
                     .as_deref()
@@ -262,6 +295,9 @@ impl AgentControl {
                     depth,
                     agent_nickname: reserved_agent_nickname,
                     agent_role: resumed_agent_role,
+                    agent_persona: resumed_agent_persona.or(agent_persona),
+                    allow_list,
+                    deny_list,
                 })
             }
             other => other,
@@ -343,10 +379,10 @@ impl AgentControl {
         thread.agent_status().await
     }
 
-    pub(crate) async fn get_agent_nickname_and_role(
+    pub(crate) async fn get_agent_identity(
         &self,
         agent_id: ThreadId,
-    ) -> Option<(Option<String>, Option<String>)> {
+    ) -> Option<(Option<String>, Option<String>, Option<String>)> {
         let Ok(state) = self.upgrade() else {
             return None;
         };
@@ -356,6 +392,7 @@ impl AgentControl {
         let session_source = thread.config_snapshot().await.session_source;
         Some((
             session_source.get_nickname(),
+            session_source.get_agent_persona(),
             session_source.get_agent_role(),
         ))
     }
@@ -903,6 +940,9 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: None,
+                    agent_persona: None,
+                    allow_list: None,
+                    deny_list: None,
                 })),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: Some(parent_spawn_call_id),
@@ -985,6 +1025,9 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: None,
+                    agent_persona: None,
+                    allow_list: None,
+                    deny_list: None,
                 })),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -1054,6 +1097,9 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: None,
+                    agent_persona: None,
+                    allow_list: None,
+                    deny_list: None,
                 })),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -1307,6 +1353,9 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
+                    agent_persona: None,
+                    allow_list: None,
+                    deny_list: None,
                 })),
             )
             .await
@@ -1338,6 +1387,9 @@ mod tests {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
+                allow_list: None,
+                deny_list: None,
             })),
         );
 
@@ -1378,6 +1430,9 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
+                    agent_persona: None,
+                    allow_list: None,
+                    deny_list: None,
                 })),
             )
             .await
@@ -1395,6 +1450,7 @@ mod tests {
             depth,
             agent_nickname,
             agent_role,
+            ..
         }) = snapshot.session_source
         else {
             panic!("expected thread-spawn sub-agent source");
@@ -1428,6 +1484,9 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("researcher".to_string()),
+                    agent_persona: None,
+                    allow_list: None,
+                    deny_list: None,
                 })),
             )
             .await
@@ -1449,7 +1508,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_thread_subagent_restores_stored_nickname_and_role() {
+    async fn resume_thread_subagent_restores_stored_identity() {
         let (home, mut config) = test_config().await;
         config
             .features
@@ -1479,6 +1538,9 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
+                    agent_persona: Some("reviewer".to_string()),
+                    allow_list: None,
+                    deny_list: None,
                 })),
             )
             .await
@@ -1514,14 +1576,38 @@ mod tests {
             .session_source
             .get_nickname()
             .expect("spawned sub-agent should have a nickname");
+        assert_eq!(
+            original_snapshot.session_source.get_agent_role().as_deref(),
+            Some("explorer")
+        );
+        assert_eq!(
+            original_snapshot
+                .session_source
+                .get_agent_persona()
+                .as_deref(),
+            Some("reviewer")
+        );
+        child_thread
+            .codex
+            .session
+            .ensure_rollout_materialized()
+            .await;
+        child_thread.codex.session.flush_rollout().await;
         let state_db = child_thread
             .state_db()
             .expect("sqlite state db should be available for nickname resume test");
+
+        let _ = harness
+            .control
+            .shutdown_agent(child_thread_id)
+            .await
+            .expect("child shutdown should submit");
         timeout(Duration::from_secs(5), async {
             loop {
                 if let Ok(Some(metadata)) = state_db.get_thread(child_thread_id).await
                     && metadata.agent_nickname.is_some()
                     && metadata.agent_role.as_deref() == Some("explorer")
+                    && metadata.agent_persona.as_deref() == Some("reviewer")
                 {
                     break;
                 }
@@ -1529,13 +1615,7 @@ mod tests {
             }
         })
         .await
-        .expect("child thread metadata should be persisted to sqlite before shutdown");
-
-        let _ = harness
-            .control
-            .shutdown_agent(child_thread_id)
-            .await
-            .expect("child shutdown should submit");
+        .expect("child thread metadata should be persisted to sqlite after shutdown");
 
         let resumed_thread_id = harness
             .control
@@ -1547,6 +1627,9 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: None,
+                    agent_persona: None,
+                    allow_list: None,
+                    deny_list: None,
                 }),
             )
             .await
@@ -1565,6 +1648,8 @@ mod tests {
             depth: resumed_depth,
             agent_nickname: resumed_nickname,
             agent_role: resumed_role,
+            agent_persona: resumed_persona,
+            ..
         }) = resumed_snapshot.session_source
         else {
             panic!("expected thread-spawn sub-agent source");
@@ -1573,6 +1658,7 @@ mod tests {
         assert_eq!(resumed_depth, 1);
         assert_eq!(resumed_nickname, Some(original_nickname));
         assert_eq!(resumed_role, Some("explorer".to_string()));
+        assert_eq!(resumed_persona, Some("reviewer".to_string()));
 
         let _ = harness
             .control
