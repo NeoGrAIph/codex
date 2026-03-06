@@ -21,6 +21,34 @@ In the codex-rs folder where the rust code lives:
   locally before CI.
 - Do not create small helper methods that are referenced only once.
 
+## Fork Feature Documentation Workflow
+
+- Treat `docs/features/<code-name>.md` as the source of truth for each fork feature. Keep feature intent, behavior, and rollout notes there.
+- Store research and release-alignment artifacts under `docs/research/<release>/` so implementation context is traceable per release.
+- When API contracts or wire behavior change, update user/developer-facing docs in the same change set (at minimum `app-server/README.md` when app-server API is affected).
+- Keep documentation centralized and consistent: update the relevant feature and API docs instead of scattering duplicate notes across unrelated files.
+
+## Agent Role Templates (`.agents/*.md`)
+
+- Role templates are loaded from `./.codex/.agents/*.md` (nearest directory first), then `~/.codex/.agents/*.md`, then embedded fallback templates.
+- Every role template must include YAML frontmatter and `agent_names`.
+- `agent_names` must include `name: default` with a non-empty `description`.
+- Each `agent_nickname` entry in YAML must have an individual non-empty `description`.
+- Prompt blocks must be declared with `<!-- agent_nickname: <name> -->`; each YAML nickname must have a matching prompt block.
+- Discovery text in `spawn_agent` schema should expose metadata only (`description`, `read_only`, `agent_nickname` list with per-nickname descriptions) and must not expose prompt text.
+
+## Upstream Porting Conflict Policy (Required)
+
+- When porting fork commits onto a newer upstream release, resolve conflicts in source-of-truth files first (`src/protocol/*.rs`, runtime handlers, exhaustive `match` arms, and imports).
+- Never resolve generated schema/type files by choosing `ours` or `theirs` wholesale.
+- Preserve both feature sets during conflict resolution:
+  - fork-introduced behavior,
+  - upstream behavior already present in the target release.
+- After resolving source-of-truth conflicts, regenerate generated artifacts using project commands (for app-server protocol: `just write-app-server-schema`).
+- Before finishing, verify there are no conflict markers and no wire-contract regressions (methods/events/notifications dropped unintentionally).
+- Run minimal validation for the touched scope (formatting, target build, and relevant crate tests).
+- If there is a tradeoff between "minimal diff" and preserving upstream behavior, preserving behavior is mandatory.
+
 Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, run the tests:
 
 1. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `cargo test -p codex-tui`.
