@@ -39,15 +39,14 @@ In the codex-rs folder where the rust code lives:
 
 ## Upstream Porting Conflict Policy (Required)
 
+- Port fork changes with an `Upstream-first` approach: prefer the target release's architecture, control flow, and source-of-truth patterns as the baseline for the final implementation.
 - When porting fork commits onto a newer upstream release, resolve conflicts in source-of-truth files first (`src/protocol/*.rs`, runtime handlers, exhaustive `match` arms, and imports).
 - Never resolve generated schema/type files by choosing `ours` or `theirs` wholesale.
-- Preserve both feature sets during conflict resolution:
-  - fork-introduced behavior,
-  - upstream behavior already present in the target release.
+- Preserve documented fork-introduced behavior where required, but express it through the target release's upstream structure and behavior whenever possible.
 - After resolving source-of-truth conflicts, regenerate generated artifacts using project commands (for app-server protocol: `just write-app-server-schema`).
 - Before finishing, verify there are no conflict markers and no wire-contract regressions (methods/events/notifications dropped unintentionally).
 - Run minimal validation for the touched scope (formatting, target build, and relevant crate tests).
-- If there is a tradeoff between "minimal diff" and preserving upstream behavior, preserving behavior is mandatory.
+- If there is a tradeoff between a literal backport and an upstream-shaped implementation, prefer the upstream-shaped implementation unless it would break a documented fork contract.
 
 Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, run the tests:
 
