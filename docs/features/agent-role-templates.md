@@ -148,6 +148,7 @@ Persona prompt добавляется как финальный child-specific l
 - парсятся;
 - нормализуются (`trim`, drop empty, sort, dedupe);
 - прикрепляются к `ThreadSpawn`.
+- применяются к spawned-agent tool surface через central router policy layer.
 
 Синтаксис фиксируется уже сейчас:
 
@@ -156,7 +157,15 @@ Persona prompt добавляется как финальный child-specific l
 - `?` — один символ;
 - строка без wildcard — exact name.
 
-Enforcement policy intentionally не входит в эту feature и документируется отдельным follow-up commit.
+Policy применяется ко всему tool surface spawned agent'а:
+
+- function tools;
+- custom/freeform tools;
+- local shell tools;
+- dynamic tools;
+- MCP tools.
+
+`deny_list` имеет приоритет над `allow_list`. Если `allow_list` отсутствует, разрешены все инструменты, кроме попавших под `deny_list`.
 
 ## Discovery metadata
 
@@ -182,4 +191,5 @@ Prompt text не включается в schema/discovery output и разреш
 - runtime tests, что template augmentation не переписывает runtime-owned overrides;
 - runtime tests, что `read_only` применяется после runtime overrides и только ужесточает sandbox;
 - spawn-time validation tests для template `model` / `reasoning_effort`;
-- protocol/state/app-server tests, что `allow_list` / `deny_list` остаются metadata-only на этой стадии.
+- protocol/state/app-server tests для canonical nested metadata;
+- core/router tests для enforcement по всему tool surface.

@@ -34,6 +34,7 @@ pub struct ToolCall {
 pub struct ToolRouter {
     registry: ToolRegistry,
     specs: Vec<ConfiguredToolSpec>,
+    policy: Option<crate::tools::policy::ToolAccessPolicy>,
 }
 
 impl ToolRouter {
@@ -45,8 +46,20 @@ impl ToolRouter {
     ) -> Self {
         let builder = build_specs(config, mcp_tools, app_tools, dynamic_tools);
         let (specs, registry) = builder.build();
+        let policy = config.tool_access_policy.clone();
+        let specs = match &policy {
+            Some(policy) => specs
+                .into_iter()
+                .filter(|configured| policy.allows_spec(&configured.spec))
+                .collect(),
+            None => specs,
+        };
 
-        Self { registry, specs }
+        Self {
+            registry,
+            specs,
+            policy,
+        }
     }
 
     pub fn specs(&self) -> Vec<ToolSpec> {
@@ -168,6 +181,21 @@ impl ToolRouter {
             ));
         }
 
+        if self
+            .policy
+            .as_ref()
+            .is_some_and(|policy| !policy.allows_tool_name(tool_name.as_str()))
+        {
+            let err = FunctionCallError::RespondToModel(format!(
+                "tool {tool_name} is not permitted for this spawned agent"
+            ));
+            return Ok(Self::failure_response(
+                failure_call_id,
+                payload_outputs_custom,
+                err,
+            ));
+        }
+
         let invocation = ToolInvocation {
             session,
             turn,
@@ -215,16 +243,70 @@ impl ToolRouter {
 }
 #[cfg(test)]
 mod tests {
+    use crate::client_common::tools::ToolSpec;
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use crate::codex::make_session_and_context;
     use crate::tools::context::ToolPayload;
+    use crate::tools::spec::ToolsConfig;
+    use crate::tools::spec::ToolsConfigParams;
     use crate::turn_diff_tracker::TurnDiffTracker;
+    use codex_protocol::ThreadId;
     use codex_protocol::models::ResponseInputItem;
+    use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentSource;
+    use pretty_assertions::assert_eq;
 
     use super::ToolCall;
     use super::ToolCallSource;
     use super::ToolRouter;
+
+    fn thread_spawn_source(
+        allow_list: Option<&[&str]>,
+        deny_list: Option<&[&str]>,
+    ) -> SessionSource {
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::new(),
+            depth: 1,
+            agent_nickname: Some("Euler".to_string()),
+            agent_role: Some("worker".to_string()),
+            agent_persona: None,
+            allow_list: allow_list
+                .map(|items| items.iter().map(std::string::ToString::to_string).collect()),
+            deny_list: deny_list
+                .map(|items| items.iter().map(std::string::ToString::to_string).collect()),
+        })
+    }
+
+    fn rebuild_tools_config(turn: &mut crate::codex::TurnContext) {
+        turn.tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &turn.model_info,
+            features: &turn.features,
+            web_search_mode: turn.tools_config.web_search_mode,
+            session_source: turn.session_source.clone(),
+        })
+        .with_allow_login_shell(turn.tools_config.allow_login_shell)
+        .with_agent_roles(turn.config.agent_roles.clone());
+    }
+
+    fn mcp_tool(
+        name: &str,
+        description: &str,
+        input_schema: serde_json::Value,
+    ) -> rmcp::model::Tool {
+        rmcp::model::Tool {
+            name: name.to_string().into(),
+            title: None,
+            description: Some(description.to_string().into()),
+            input_schema: std::sync::Arc::new(rmcp::model::object(input_schema)),
+            output_schema: None,
+            annotations: None,
+            execution: None,
+            icons: None,
+            meta: None,
+        }
+    }
 
     #[tokio::test]
     async fn js_repl_tools_only_blocks_direct_tool_calls() -> anyhow::Result<()> {
@@ -324,6 +406,216 @@ mod tests {
                 assert!(
                     !content.contains("direct tool calls are disabled"),
                     "js_repl source should bypass direct-call policy gate"
+                );
+            }
+            other => panic!("expected function call output, got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn thread_spawn_policy_hides_denied_tools_from_specs() -> anyhow::Result<()> {
+        let (session, mut turn) = make_session_and_context().await;
+        turn.session_source = thread_spawn_source(Some(&["view_image"]), None);
+        rebuild_tools_config(&mut turn);
+
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let mcp_tools = session
+            .services
+            .mcp_connection_manager
+            .read()
+            .await
+            .list_all_tools()
+            .await;
+        let app_tools = Some(mcp_tools.clone());
+        let router = ToolRouter::from_config(
+            &turn.tools_config,
+            Some(
+                mcp_tools
+                    .into_iter()
+                    .map(|(name, tool)| (name, tool.tool))
+                    .collect(),
+            ),
+            app_tools,
+            turn.dynamic_tools.as_slice(),
+        );
+
+        let tool_names = router
+            .specs()
+            .into_iter()
+            .map(|tool| match tool {
+                ToolSpec::Function(spec) => spec.name,
+                ToolSpec::LocalShell {} => "local_shell".to_string(),
+                ToolSpec::ImageGeneration {} => "image_generation".to_string(),
+                ToolSpec::WebSearch { .. } => "web_search".to_string(),
+                ToolSpec::Freeform(spec) => spec.name,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(tool_names, vec!["view_image".to_string()]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn thread_spawn_policy_blocks_direct_tool_calls() -> anyhow::Result<()> {
+        let (session, mut turn) = make_session_and_context().await;
+        turn.session_source = thread_spawn_source(None, Some(&["shell"]));
+        rebuild_tools_config(&mut turn);
+
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let mcp_tools = session
+            .services
+            .mcp_connection_manager
+            .read()
+            .await
+            .list_all_tools()
+            .await;
+        let app_tools = Some(mcp_tools.clone());
+        let router = ToolRouter::from_config(
+            &turn.tools_config,
+            Some(
+                mcp_tools
+                    .into_iter()
+                    .map(|(name, tool)| (name, tool.tool))
+                    .collect(),
+            ),
+            app_tools,
+            turn.dynamic_tools.as_slice(),
+        );
+
+        let call = ToolCall {
+            tool_name: "shell".to_string(),
+            call_id: "call-policy-direct".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        };
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let response = router
+            .dispatch_tool_call(session, turn, tracker, call, ToolCallSource::Direct)
+            .await?;
+
+        match response {
+            ResponseInputItem::FunctionCallOutput { output, .. } => {
+                assert_eq!(
+                    output.text_content(),
+                    Some("tool shell is not permitted for this spawned agent")
+                );
+            }
+            other => panic!("expected function call output, got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn thread_spawn_policy_blocks_js_repl_tool_calls() -> anyhow::Result<()> {
+        let (session, mut turn) = make_session_and_context().await;
+        turn.session_source = thread_spawn_source(None, Some(&["shell"]));
+        rebuild_tools_config(&mut turn);
+
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let mcp_tools = session
+            .services
+            .mcp_connection_manager
+            .read()
+            .await
+            .list_all_tools()
+            .await;
+        let app_tools = Some(mcp_tools.clone());
+        let router = ToolRouter::from_config(
+            &turn.tools_config,
+            Some(
+                mcp_tools
+                    .into_iter()
+                    .map(|(name, tool)| (name, tool.tool))
+                    .collect(),
+            ),
+            app_tools,
+            turn.dynamic_tools.as_slice(),
+        );
+
+        let call = ToolCall {
+            tool_name: "shell".to_string(),
+            call_id: "call-policy-jsrepl".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        };
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let response = router
+            .dispatch_tool_call(session, turn, tracker, call, ToolCallSource::JsRepl)
+            .await?;
+
+        match response {
+            ResponseInputItem::FunctionCallOutput { output, .. } => {
+                assert_eq!(
+                    output.text_content(),
+                    Some("tool shell is not permitted for this spawned agent")
+                );
+            }
+            other => panic!("expected function call output, got {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn thread_spawn_policy_blocks_qualified_mcp_tool_calls() -> anyhow::Result<()> {
+        let (session, mut turn) = make_session_and_context().await;
+        turn.session_source = thread_spawn_source(None, Some(&["mcp__atlas__read_file"]));
+        rebuild_tools_config(&mut turn);
+
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let router = ToolRouter::from_config(
+            &turn.tools_config,
+            Some(HashMap::from([(
+                "mcp__atlas__read_file".to_string(),
+                mcp_tool(
+                    "read_file",
+                    "Read a file",
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {},
+                    }),
+                ),
+            )])),
+            None,
+            turn.dynamic_tools.as_slice(),
+        );
+
+        assert!(
+            !router
+                .specs()
+                .iter()
+                .any(|tool| tool.name() == "mcp__atlas__read_file")
+        );
+
+        let call = ToolCall {
+            tool_name: "mcp__atlas__read_file".to_string(),
+            call_id: "call-policy-mcp".to_string(),
+            payload: ToolPayload::Mcp {
+                server: "atlas".to_string(),
+                tool: "read_file".to_string(),
+                raw_arguments: "{}".to_string(),
+            },
+        };
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let response = router
+            .dispatch_tool_call(session, turn, tracker, call, ToolCallSource::Direct)
+            .await?;
+
+        match response {
+            ResponseInputItem::FunctionCallOutput { output, .. } => {
+                assert_eq!(
+                    output.text_content(),
+                    Some("tool mcp__atlas__read_file is not permitted for this spawned agent")
                 );
             }
             other => panic!("expected function call output, got {other:?}"),

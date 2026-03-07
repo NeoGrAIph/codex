@@ -102,7 +102,8 @@ Canonical source of truth:
 
 - входят в canonical `ThreadSpawn` wire format;
 - проходят через source merge и app-server conversion;
-- остаются nested metadata, а не top-level `Thread` fields.
+- остаются nested metadata, а не top-level `Thread` fields;
+- применяются как runtime policy для spawned-agent tool surface.
 
 ## API notes
 
@@ -113,6 +114,14 @@ Canonical source of truth:
 - nested source также несёт `allowList` и `denyList`.
 
 Collab-specific `threadHistory` items пока не получают отдельные top-level persona mirrors в v2 API. На этой стадии canonical persona metadata остаётся в raw protocol events и в canonical nested thread source.
+
+## Tool policy notes
+
+`allow_list` / `deny_list` применяются в `ToolRouter`:
+
+- скрывают запрещённые инструменты из prompt-visible `tools`;
+- повторно валидируются при `dispatch_tool_call`, чтобы policy нельзя было обойти через direct/js_repl wrapper paths;
+- интерпретируют MCP tools по qualified public name `mcp__<server>__<tool>`.
 
 ## Validation matrix
 

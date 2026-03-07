@@ -145,3 +145,110 @@ impl ToolCallRuntime {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ToolCallRuntime;
+    use crate::codex::make_session_and_context;
+    use crate::tools::context::ToolPayload;
+    use crate::tools::router::ToolCall;
+    use crate::tools::router::ToolRouter;
+    use crate::tools::spec::ToolsConfig;
+    use crate::tools::spec::ToolsConfigParams;
+    use crate::turn_diff_tracker::TurnDiffTracker;
+    use codex_protocol::ThreadId;
+    use codex_protocol::models::ResponseInputItem;
+    use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentSource;
+    use pretty_assertions::assert_eq;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    fn thread_spawn_source(
+        allow_list: Option<&[&str]>,
+        deny_list: Option<&[&str]>,
+    ) -> SessionSource {
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::new(),
+            depth: 1,
+            agent_nickname: Some("Euler".to_string()),
+            agent_role: Some("worker".to_string()),
+            agent_persona: None,
+            allow_list: allow_list
+                .map(|items| items.iter().map(std::string::ToString::to_string).collect()),
+            deny_list: deny_list
+                .map(|items| items.iter().map(std::string::ToString::to_string).collect()),
+        })
+    }
+
+    fn rebuild_tools_config(turn: &mut crate::codex::TurnContext) {
+        turn.tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &turn.model_info,
+            features: &turn.features,
+            web_search_mode: turn.tools_config.web_search_mode,
+            session_source: turn.session_source.clone(),
+        })
+        .with_allow_login_shell(turn.tools_config.allow_login_shell)
+        .with_agent_roles(turn.config.agent_roles.clone());
+    }
+
+    #[tokio::test]
+    async fn handle_tool_call_blocks_forbidden_tools() -> anyhow::Result<()> {
+        let (session, mut turn) = make_session_and_context().await;
+        turn.session_source = thread_spawn_source(None, Some(&["shell"]));
+        rebuild_tools_config(&mut turn);
+
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+        let mcp_tools = session
+            .services
+            .mcp_connection_manager
+            .read()
+            .await
+            .list_all_tools()
+            .await;
+        let app_tools = Some(mcp_tools.clone());
+        let router = Arc::new(ToolRouter::from_config(
+            &turn.tools_config,
+            Some(
+                mcp_tools
+                    .into_iter()
+                    .map(|(name, tool)| (name, tool.tool))
+                    .collect(),
+            ),
+            app_tools,
+            turn.dynamic_tools.as_slice(),
+        ));
+        let runtime = ToolCallRuntime::new(
+            router,
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
+        );
+
+        let response = runtime
+            .handle_tool_call(
+                ToolCall {
+                    tool_name: "shell".to_string(),
+                    call_id: "parallel-policy".to_string(),
+                    payload: ToolPayload::Function {
+                        arguments: "{}".to_string(),
+                    },
+                },
+                CancellationToken::new(),
+            )
+            .await?;
+
+        match response {
+            ResponseInputItem::FunctionCallOutput { output, .. } => {
+                assert_eq!(
+                    output.text_content(),
+                    Some("tool shell is not permitted for this spawned agent")
+                );
+            }
+            other => panic!("expected function call output, got {other:?}"),
+        }
+
+        Ok(())
+    }
+}

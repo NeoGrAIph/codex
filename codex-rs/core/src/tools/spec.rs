@@ -17,6 +17,7 @@ use crate::tools::handlers::multi_agents::DEFAULT_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents::MAX_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents::MIN_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::request_user_input_tool_description;
+use crate::tools::policy::ToolAccessPolicy;
 use crate::tools::registry::ToolRegistryBuilder;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -72,6 +73,7 @@ pub(crate) struct ToolsConfig {
     pub experimental_supported_tools: Vec<String>,
     pub agent_jobs_tools: bool,
     pub agent_jobs_worker_tools: bool,
+    pub(crate) tool_access_policy: Option<ToolAccessPolicy>,
 }
 
 pub(crate) struct ToolsConfigParams<'a> {
@@ -150,6 +152,18 @@ impl ToolsConfig {
                 SessionSource::SubAgent(SubAgentSource::Other(label))
                     if label.starts_with("agent_job:")
             );
+        let tool_access_policy = match session_source {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                allow_list,
+                deny_list,
+                ..
+            }) => ToolAccessPolicy::from_lists(
+                shell_type,
+                allow_list.as_deref(),
+                deny_list.as_deref(),
+            ),
+            _ => None,
+        };
 
         Self {
             shell_type,
@@ -172,6 +186,7 @@ impl ToolsConfig {
             experimental_supported_tools: model_info.experimental_supported_tools.clone(),
             agent_jobs_tools: include_agent_jobs,
             agent_jobs_worker_tools,
+            tool_access_policy,
         }
     }
 
