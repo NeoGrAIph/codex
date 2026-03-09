@@ -44,6 +44,7 @@ In the codex-rs folder where the rust code lives:
 - Never resolve generated schema/type files by choosing `ours` or `theirs` wholesale.
 - Preserve documented fork-introduced behavior where required, but express it through the target release's upstream structure and behavior whenever possible.
 - After resolving source-of-truth conflicts, regenerate generated artifacts using project commands (for app-server protocol: `just write-app-server-schema`).
+- Keep generated artifacts on a minimal diff: if a regenerated schema/type file differs only by formatting or trailing whitespace and has no wire-shape change, revert that file and keep only the generated files with real contract changes.
 - Before finishing, verify there are no conflict markers and no wire-contract regressions (methods/events/notifications dropped unintentionally).
 - Run minimal validation for the touched scope (formatting, target build, and relevant crate tests).
 - If there is a tradeoff between a literal backport and an upstream-shaped implementation, prefer the upstream-shaped implementation unless it would break a documented fork contract.
