@@ -119,8 +119,8 @@ pub use codex_git::GhostSnapshotConfig;
 /// files are *silently truncated* to this size so we do not take up too much of
 /// the context window.
 pub(crate) const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024; // 32 KiB
-pub(crate) const DEFAULT_AGENT_MAX_THREADS: Option<usize> = Some(6);
-pub(crate) const DEFAULT_AGENT_MAX_DEPTH: i32 = 1;
+pub(crate) const DEFAULT_AGENT_MAX_THREADS: Option<usize> = Some(15);
+pub(crate) const DEFAULT_AGENT_MAX_DEPTH: i32 = 2;
 pub(crate) const DEFAULT_AGENT_JOB_MAX_RUNTIME_SECONDS: Option<u64> = None;
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
@@ -5290,6 +5290,24 @@ model_verbosity = "high"
         )?;
 
         assert_eq!(config.otel.metrics_exporter, OtelExporterKind::Statsig);
+        Ok(())
+    }
+
+    #[test]
+    fn agent_management_defaults_match_backend_foundation_contract() -> std::io::Result<()> {
+        let fixture = create_test_fixture()?;
+
+        let config = Config::load_from_base_config_with_overrides(
+            fixture.cfg.clone(),
+            ConfigOverrides {
+                cwd: Some(fixture.cwd()),
+                ..Default::default()
+            },
+            fixture.codex_home(),
+        )?;
+
+        assert_eq!(config.agent_max_threads, Some(15));
+        assert_eq!(config.agent_max_depth, 2);
         Ok(())
     }
 

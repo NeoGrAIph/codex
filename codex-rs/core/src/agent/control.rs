@@ -8,6 +8,7 @@ use crate::error::Result as CodexResult;
 use crate::features::Feature;
 use crate::find_thread_path_by_id_str;
 use crate::rollout::RolloutRecorder;
+use crate::rollout::list::read_session_meta_line;
 use crate::session_prefix::format_subagent_context_line;
 use crate::session_prefix::format_subagent_notification_message;
 use crate::shell_snapshot::ShellSnapshot;
@@ -23,6 +24,9 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Weak;
 use tokio::sync::watch;
@@ -380,10 +384,129 @@ impl AgentControl {
     /// Submit a shutdown request to an existing agent thread.
     pub(crate) async fn shutdown_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
+        let descendants = self.list_thread_spawn_descendants(agent_id).await?;
+        let mut descendant_error = None;
+        for descendant_id in descendants.into_iter().rev() {
+            let result = state.send_op(descendant_id, Op::Shutdown {}).await;
+            match result {
+                Ok(_) | Err(CodexErr::ThreadNotFound(_)) | Err(CodexErr::InternalAgentDied) => {
+                    let _ = state.remove_thread(&descendant_id).await;
+                    self.state.release_spawned_thread(descendant_id);
+                }
+                Err(err) if descendant_error.is_none() => descendant_error = Some(err),
+                Err(_) => {}
+            }
+        }
+
         let result = state.send_op(agent_id, Op::Shutdown {}).await;
         let _ = state.remove_thread(&agent_id).await;
         self.state.release_spawned_thread(agent_id);
-        result
+        result?;
+
+        if let Some(err) = descendant_error {
+            return Err(err);
+        }
+
+        Ok("queued shutdown".to_string())
+    }
+
+    pub(crate) async fn list_thread_spawn_descendants(
+        &self,
+        parent_thread_id: ThreadId,
+    ) -> CodexResult<Vec<ThreadId>> {
+        let state = self.upgrade()?;
+        let threads = state.list_threads().await;
+        let mut children_by_parent: HashMap<ThreadId, Vec<ThreadId>> = HashMap::new();
+
+        for (thread_id, thread) in threads {
+            let snapshot = thread.config_snapshot().await;
+            if let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }) = snapshot.session_source
+            {
+                children_by_parent
+                    .entry(parent_thread_id)
+                    .or_default()
+                    .push(thread_id);
+            }
+        }
+
+        for children in children_by_parent.values_mut() {
+            children.sort_by_key(std::string::ToString::to_string);
+        }
+
+        let mut descendants = Vec::new();
+        let mut seen = HashSet::new();
+        collect_descendants(
+            parent_thread_id,
+            &children_by_parent,
+            &mut descendants,
+            &mut seen,
+        );
+
+        Ok(descendants)
+    }
+
+    pub(crate) async fn is_descendant_of(
+        &self,
+        codex_home: &Path,
+        ancestor: ThreadId,
+        candidate: ThreadId,
+    ) -> CodexResult<bool> {
+        let descendants = self.list_thread_spawn_descendants(ancestor).await?;
+        if descendants.contains(&candidate) {
+            return Ok(true);
+        }
+
+        let mut current = Some(candidate);
+        let mut seen = HashSet::new();
+        while let Some(thread_id) = current {
+            if !seen.insert(thread_id) {
+                break;
+            }
+            current = self
+                .thread_spawn_parent_thread_id(codex_home, thread_id)
+                .await?;
+            if current == Some(ancestor) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    async fn thread_spawn_parent_thread_id(
+        &self,
+        codex_home: &Path,
+        thread_id: ThreadId,
+    ) -> CodexResult<Option<ThreadId>> {
+        let state = self.upgrade()?;
+        if let Ok(thread) = state.get_thread(thread_id).await {
+            let snapshot = thread.config_snapshot().await;
+            return Ok(match snapshot.session_source {
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id, ..
+                }) => Some(parent_thread_id),
+                _ => None,
+            });
+        }
+
+        let Some(rollout_path) =
+            find_thread_path_by_id_str(codex_home, &thread_id.to_string()).await?
+        else {
+            return Ok(None);
+        };
+        let session_meta = read_session_meta_line(&rollout_path).await.map_err(|err| {
+            CodexErr::Fatal(format!(
+                "failed to read session metadata for {thread_id}: {err}"
+            ))
+        })?;
+        Ok(match session_meta.meta.source {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            }) => Some(parent_thread_id),
+            _ => None,
+        })
     }
 
     /// Fetch the last known status for `agent_id`, returning `NotFound` when unavailable.
@@ -556,6 +679,24 @@ impl AgentControl {
 
         let parent_thread = state.get_thread(*parent_thread_id).await.ok()?;
         parent_thread.codex.session.user_shell().shell_snapshot()
+    }
+}
+
+fn collect_descendants(
+    parent_thread_id: ThreadId,
+    children_by_parent: &HashMap<ThreadId, Vec<ThreadId>>,
+    descendants: &mut Vec<ThreadId>,
+    seen: &mut HashSet<ThreadId>,
+) {
+    let Some(children) = children_by_parent.get(&parent_thread_id) else {
+        return;
+    };
+    for child in children {
+        if !seen.insert(*child) {
+            continue;
+        }
+        descendants.push(*child);
+        collect_descendants(*child, children_by_parent, descendants, seen);
     }
 }
 #[cfg(test)]

@@ -48,7 +48,7 @@ pub struct MultiAgentHandler;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
-pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
+pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 600 * 1000;
 pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
 
 #[derive(Debug, Deserialize)]
@@ -796,6 +796,88 @@ pub mod close_agent {
                 .into(),
             )
             .await;
+        if matches!(
+            turn.session_source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        ) {
+            if agent_id == session.conversation_id {
+                let status =
+                    AgentStatus::Errored("not permitted to close the current agent".to_string());
+                session
+                    .send_event(
+                        &turn,
+                        CollabCloseEndEvent {
+                            call_id: call_id.clone(),
+                            sender_thread_id: session.conversation_id,
+                            receiver_thread_id: agent_id,
+                            receiver_agent_nickname: receiver_agent_nickname.clone(),
+                            receiver_agent_persona: receiver_agent_persona.clone(),
+                            receiver_agent_role: receiver_agent_role.clone(),
+                            status,
+                        }
+                        .into(),
+                    )
+                    .await;
+                return Err(FunctionCallError::RespondToModel(
+                    "Not permitted to close the current agent.".to_string(),
+                ));
+            }
+
+            match session
+                .services
+                .agent_control
+                .is_descendant_of(
+                    turn.config.codex_home.as_path(),
+                    session.conversation_id,
+                    agent_id,
+                )
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    let status = AgentStatus::Errored(
+                        "not permitted to close agents outside your subtree".to_string(),
+                    );
+                    session
+                        .send_event(
+                            &turn,
+                            CollabCloseEndEvent {
+                                call_id: call_id.clone(),
+                                sender_thread_id: session.conversation_id,
+                                receiver_thread_id: agent_id,
+                                receiver_agent_nickname: receiver_agent_nickname.clone(),
+                                receiver_agent_persona: receiver_agent_persona.clone(),
+                                receiver_agent_role: receiver_agent_role.clone(),
+                                status,
+                            }
+                            .into(),
+                        )
+                        .await;
+                    return Err(FunctionCallError::RespondToModel(
+                        "Not permitted to close agents outside your subtree.".to_string(),
+                    ));
+                }
+                Err(err) => {
+                    let status = AgentStatus::Errored(err.to_string());
+                    session
+                        .send_event(
+                            &turn,
+                            CollabCloseEndEvent {
+                                call_id: call_id.clone(),
+                                sender_thread_id: session.conversation_id,
+                                receiver_thread_id: agent_id,
+                                receiver_agent_nickname: receiver_agent_nickname.clone(),
+                                receiver_agent_persona: receiver_agent_persona.clone(),
+                                receiver_agent_role: receiver_agent_role.clone(),
+                                status,
+                            }
+                            .into(),
+                        )
+                        .await;
+                    return Err(FunctionCallError::Fatal(err.to_string()));
+                }
+            }
+        }
         let status = match session
             .services
             .agent_control
@@ -2619,6 +2701,46 @@ default worker prompt
     }
 
     #[tokio::test]
+    async fn wait_uses_long_default_timeout() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let config = turn.config.as_ref().clone();
+        let thread = manager.start_thread(config).await.expect("start thread");
+        let agent_id = thread.thread_id;
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "wait",
+            function_payload(json!({
+                "ids": [agent_id.to_string()]
+            })),
+        );
+
+        let early = timeout(
+            Duration::from_millis(50),
+            MultiAgentHandler.handle(invocation),
+        )
+        .await;
+        assert!(
+            early.is_err(),
+            "wait should not return before the longer default timeout"
+        );
+
+        let _ = thread
+            .thread
+            .submit(Op::Shutdown {})
+            .await
+            .expect("shutdown should submit");
+    }
+
+    #[test]
+    fn wait_timeout_defaults_match_agent_management_contract() {
+        assert_eq!(DEFAULT_WAIT_TIMEOUT_MS, 600 * 1000);
+        assert_eq!(MAX_WAIT_TIMEOUT_MS, 3600 * 1000);
+    }
+
+    #[tokio::test]
     async fn close_agent_submits_shutdown_and_returns_status() {
         let (mut session, turn) = make_session_and_context().await;
         let manager = thread_manager();
@@ -2659,6 +2781,383 @@ default worker prompt
 
         let status_after = manager.agent_control().get_status(agent_id).await;
         assert_eq!(status_after, AgentStatus::NotFound);
+    }
+
+    #[tokio::test]
+    async fn close_agent_allows_self_shutdown_outside_spawned_subagent_context() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let config = turn.config.as_ref().clone();
+        let thread = manager.start_thread(config).await.expect("start thread");
+        let agent_id = thread.thread_id;
+        session.conversation_id = agent_id;
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "close_agent",
+            function_payload(json!({"id": agent_id.to_string()})),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("top-level self close should still succeed");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(content),
+            success,
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        let result: close_agent::CloseAgentResult =
+            serde_json::from_str(&content).expect("close_agent result should be json");
+        assert_eq!(result.status, AgentStatus::PendingInit);
+        assert_eq!(success, Some(true));
+        assert_eq!(
+            manager.agent_control().get_status(agent_id).await,
+            AgentStatus::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn close_agent_cascades_to_descendants() {
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let config = turn.config.as_ref().clone();
+        let parent = manager
+            .start_thread(config.clone())
+            .await
+            .expect("start parent");
+        let parent_id = parent.thread_id;
+
+        let child_id = manager
+            .agent_control()
+            .spawn_agent(
+                config.clone(),
+                vec![UserInput::Text {
+                    text: "child".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(parent_id, 1, None, None, None)),
+            )
+            .await
+            .expect("spawn child");
+        let grandchild_id = manager
+            .agent_control()
+            .spawn_agent(
+                config,
+                vec![UserInput::Text {
+                    text: "grandchild".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(child_id, 2, None, None, None)),
+            )
+            .await
+            .expect("spawn grandchild");
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "close_agent",
+            function_payload(json!({"id": parent_id.to_string()})),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("close_agent should cascade");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(_),
+            success,
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        assert_eq!(success, Some(true));
+
+        let ops = manager.captured_ops();
+        let submitted_parent_shutdown = ops
+            .iter()
+            .any(|(id, op)| *id == parent_id && matches!(op, Op::Shutdown));
+        let submitted_child_shutdown = ops
+            .iter()
+            .any(|(id, op)| *id == child_id && matches!(op, Op::Shutdown));
+        let submitted_grandchild_shutdown = ops
+            .iter()
+            .any(|(id, op)| *id == grandchild_id && matches!(op, Op::Shutdown));
+        assert_eq!(submitted_parent_shutdown, true);
+        assert_eq!(submitted_child_shutdown, true);
+        assert_eq!(submitted_grandchild_shutdown, true);
+
+        assert_eq!(
+            manager.agent_control().get_status(parent_id).await,
+            AgentStatus::NotFound
+        );
+        assert_eq!(
+            manager.agent_control().get_status(child_id).await,
+            AgentStatus::NotFound
+        );
+        assert_eq!(
+            manager.agent_control().get_status(grandchild_id).await,
+            AgentStatus::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn close_agent_rejects_cross_subtree_shutdown_for_subagents() {
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let config = turn.config.as_ref().clone();
+        let parent = manager
+            .start_thread(config.clone())
+            .await
+            .expect("start parent");
+        let parent_id = parent.thread_id;
+
+        let caller_id = manager
+            .agent_control()
+            .spawn_agent(
+                config.clone(),
+                vec![UserInput::Text {
+                    text: "caller".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(parent_id, 1, None, None, None)),
+            )
+            .await
+            .expect("spawn caller");
+        let child_id = manager
+            .agent_control()
+            .spawn_agent(
+                config.clone(),
+                vec![UserInput::Text {
+                    text: "child".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(caller_id, 2, None, None, None)),
+            )
+            .await
+            .expect("spawn child");
+        let sibling_id = manager
+            .agent_control()
+            .spawn_agent(
+                config,
+                vec![UserInput::Text {
+                    text: "sibling".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(parent_id, 1, None, None, None)),
+            )
+            .await
+            .expect("spawn sibling");
+
+        session.conversation_id = caller_id;
+        turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: parent_id,
+            depth: 1,
+            agent_nickname: None,
+            agent_persona: None,
+            agent_role: None,
+            thread_note: None,
+            allow_list: None,
+            deny_list: None,
+        });
+
+        let session = Arc::new(session);
+        let turn = Arc::new(turn);
+
+        let sibling_invocation = invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "close_agent",
+            function_payload(json!({"id": sibling_id.to_string()})),
+        );
+        let Err(err) = MultiAgentHandler.handle(sibling_invocation).await else {
+            panic!("close_agent should reject sibling termination");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "Not permitted to close agents outside your subtree.".to_string()
+            )
+        );
+        assert_ne!(
+            manager.agent_control().get_status(sibling_id).await,
+            AgentStatus::NotFound
+        );
+
+        let child_invocation = invocation(
+            Arc::clone(&session),
+            Arc::clone(&turn),
+            "close_agent",
+            function_payload(json!({"id": child_id.to_string()})),
+        );
+        let output = MultiAgentHandler
+            .handle(child_invocation)
+            .await
+            .expect("close_agent should allow descendant termination");
+        let ToolOutput::Function {
+            body: FunctionCallOutputBody::Text(_),
+            success,
+            ..
+        } = output
+        else {
+            panic!("expected function output");
+        };
+        assert_eq!(success, Some(true));
+        assert_eq!(
+            manager.agent_control().get_status(child_id).await,
+            AgentStatus::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn close_agent_does_not_treat_closed_descendant_as_outside_subtree() {
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let config = turn.config.as_ref().clone();
+        let parent = manager
+            .start_thread(config.clone())
+            .await
+            .expect("start parent");
+        let parent_id = parent.thread_id;
+
+        let caller_id = manager
+            .agent_control()
+            .spawn_agent(
+                config.clone(),
+                vec![UserInput::Text {
+                    text: "caller".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(parent_id, 1, None, None, None)),
+            )
+            .await
+            .expect("spawn caller");
+        let child_id = manager
+            .agent_control()
+            .spawn_agent(
+                config,
+                vec![UserInput::Text {
+                    text: "child".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(caller_id, 2, None, None, None)),
+            )
+            .await
+            .expect("spawn child");
+        let child_thread = manager
+            .get_thread(child_id)
+            .await
+            .expect("child thread should exist");
+        child_thread
+            .codex
+            .session
+            .ensure_rollout_materialized()
+            .await;
+        child_thread.codex.session.flush_rollout().await;
+        let _ = manager
+            .agent_control()
+            .shutdown_agent(child_id)
+            .await
+            .expect("shutdown child");
+
+        session.conversation_id = caller_id;
+        turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: parent_id,
+            depth: 1,
+            agent_nickname: None,
+            agent_persona: None,
+            agent_role: None,
+            thread_note: None,
+            allow_list: None,
+            deny_list: None,
+        });
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "close_agent",
+            function_payload(json!({"id": child_id.to_string()})),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("closing an already closed descendant should error");
+        };
+        assert_ne!(
+            err,
+            FunctionCallError::RespondToModel(
+                "Not permitted to close agents outside your subtree.".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn close_agent_rejects_self_shutdown_for_subagents() {
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let config = turn.config.as_ref().clone();
+        let parent = manager
+            .start_thread(config.clone())
+            .await
+            .expect("start parent");
+        let parent_id = parent.thread_id;
+
+        let caller_id = manager
+            .agent_control()
+            .spawn_agent(
+                config,
+                vec![UserInput::Text {
+                    text: "caller".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(thread_spawn_source(parent_id, 1, None, None, None)),
+            )
+            .await
+            .expect("spawn caller");
+
+        session.conversation_id = caller_id;
+        turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: parent_id,
+            depth: 1,
+            agent_nickname: None,
+            agent_persona: None,
+            agent_role: None,
+            thread_note: None,
+            allow_list: None,
+            deny_list: None,
+        });
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "close_agent",
+            function_payload(json!({"id": caller_id.to_string()})),
+        );
+        let Err(err) = MultiAgentHandler.handle(invocation).await else {
+            panic!("close_agent should reject self termination");
+        };
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "Not permitted to close the current agent.".to_string()
+            )
+        );
+
+        let ops = manager.captured_ops();
+        let submitted_self_shutdown = ops
+            .iter()
+            .any(|(id, op)| *id == caller_id && matches!(op, Op::Shutdown));
+        assert_eq!(submitted_self_shutdown, false);
+        assert_ne!(
+            manager.agent_control().get_status(caller_id).await,
+            AgentStatus::NotFound
+        );
     }
 
     #[tokio::test]

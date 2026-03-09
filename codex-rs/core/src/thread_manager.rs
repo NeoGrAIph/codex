@@ -441,6 +441,15 @@ impl ThreadManagerState {
         self.threads.read().await.keys().copied().collect()
     }
 
+    pub(crate) async fn list_threads(&self) -> Vec<(ThreadId, Arc<CodexThread>)> {
+        self.threads
+            .read()
+            .await
+            .iter()
+            .map(|(thread_id, thread)| (*thread_id, Arc::clone(thread)))
+            .collect()
+    }
+
     /// Fetch a thread by ID or return ThreadNotFound.
     pub(crate) async fn get_thread(&self, thread_id: ThreadId) -> CodexResult<Arc<CodexThread>> {
         let threads = self.threads.read().await;
