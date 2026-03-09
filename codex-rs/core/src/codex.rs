@@ -451,6 +451,44 @@ impl Codex {
         } else {
             None
         };
+        let persisted_thread_note = if config.features.enabled(Feature::Sqlite) {
+            let thread_id = match &conversation_history {
+                InitialHistory::Resumed(resumed) => Some(resumed.conversation_id),
+                InitialHistory::Forked(_) => conversation_history.forked_from_id(),
+                InitialHistory::New => None,
+            };
+            match thread_id {
+                Some(thread_id) => {
+                    let db_path = codex_state::state_db_path(config.sqlite_home.as_path());
+                    let state_db_ctx =
+                        if let Some(state_db_ctx) = state_db::get_state_db(&config, None).await {
+                            Some(state_db_ctx)
+                        } else if tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
+                            codex_state::StateRuntime::init(
+                                config.sqlite_home.clone(),
+                                config.model_provider_id.clone(),
+                                None,
+                            )
+                            .await
+                            .ok()
+                        } else {
+                            None
+                        };
+                    match state_db_ctx {
+                        Some(state_db_ctx) => state_db_ctx
+                            .get_thread(thread_id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|metadata| metadata.thread_note),
+                        None => None,
+                    }
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
         let dynamic_tools = if dynamic_tools.is_empty() {
             persisted_tools
                 .or_else(|| conversation_history.get_dynamic_tools())
@@ -485,6 +523,7 @@ impl Codex {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: persisted_thread_note.or_else(|| session_source.get_thread_note()),
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name,
             app_server_client_name: None,
@@ -880,6 +919,8 @@ pub(crate) struct SessionConfiguration {
     codex_home: PathBuf,
     /// Optional user-facing name for the thread, updated during the session.
     thread_name: Option<String>,
+    /// Optional user-facing note for the thread, updated during the session.
+    thread_note: Option<String>,
 
     // TODO(pakrym): Remove config from here
     original_config_do_not_use: Arc<Config>,
@@ -909,6 +950,7 @@ impl SessionConfiguration {
             ephemeral: self.original_config_do_not_use.ephemeral,
             reasoning_effort: self.collaboration_mode.reasoning_effort(),
             personality: self.personality,
+            thread_note: self.thread_note.clone(),
             session_source: self.session_source.clone(),
         }
     }
@@ -1201,6 +1243,7 @@ impl Session {
                         conversation_id,
                         forked_from_id,
                         session_source,
+                        session_configuration.thread_note.clone(),
                         BaseInstructions {
                             text: session_configuration.base_instructions.clone(),
                         },
@@ -1443,6 +1486,9 @@ impl Session {
                 }
             };
         session_configuration.thread_name = thread_name.clone();
+        session_configuration.thread_note = initial_history
+            .get_thread_note()
+            .or(session_configuration.thread_note.clone());
         let state = SessionState::new(session_configuration.clone());
         let managed_network_requirements_enabled = config.managed_network_requirements_enabled();
         let network_approval = Arc::new(NetworkApprovalService::default());
@@ -1575,6 +1621,7 @@ impl Session {
                 session_id: conversation_id,
                 forked_from_id,
                 thread_name: session_configuration.thread_name.clone(),
+                thread_note: session_configuration.thread_note.clone(),
                 model: session_configuration.collaboration_mode.model().to_string(),
                 model_provider_id: config.model_provider_id.clone(),
                 service_tier: session_configuration.service_tier,
@@ -3861,6 +3908,10 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                     handlers::set_thread_name(&sess, sub.id.clone(), name).await;
                     false
                 }
+                Op::SetThreadNote { note } => {
+                    handlers::set_thread_note(&sess, sub.id.clone(), note).await;
+                    false
+                }
                 Op::RunUserShellCommand { command } => {
                     handlers::run_user_shell_command(&sess, sub.id.clone(), command).await;
                     false
@@ -3950,8 +4001,11 @@ mod handlers {
     use codex_protocol::protocol::RemoteSkillSummary;
     use codex_protocol::protocol::ReviewDecision;
     use codex_protocol::protocol::ReviewRequest;
+    use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SkillsListEntry;
+    use codex_protocol::protocol::SubAgentSource;
     use codex_protocol::protocol::ThreadNameUpdatedEvent;
+    use codex_protocol::protocol::ThreadNoteUpdatedEvent;
     use codex_protocol::protocol::ThreadRolledBackEvent;
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::WarningEvent;
@@ -4608,6 +4662,49 @@ mod handlers {
             msg: EventMsg::ThreadNameUpdated(ThreadNameUpdatedEvent {
                 thread_id: sess.conversation_id,
                 thread_name: Some(name),
+            }),
+        })
+        .await;
+    }
+
+    /// Updates the in-memory thread note and emits a `ThreadNoteUpdated` event on success.
+    ///
+    /// Returns an error event if session persistence is disabled.
+    pub async fn set_thread_note(sess: &Arc<Session>, sub_id: String, note: Option<String>) {
+        let note = crate::util::normalize_thread_note(note.as_deref());
+
+        let persistence_enabled = {
+            let rollout = sess.services.rollout.lock().await;
+            rollout.is_some()
+        };
+        if !persistence_enabled {
+            let event = Event {
+                id: sub_id,
+                msg: EventMsg::Error(ErrorEvent {
+                    message: "Session persistence is disabled; cannot update thread note."
+                        .to_string(),
+                    codex_error_info: Some(CodexErrorInfo::Other),
+                }),
+            };
+            sess.send_event_raw(event).await;
+            return;
+        }
+
+        {
+            let mut state = sess.state.lock().await;
+            state.session_configuration.thread_note = note.clone();
+            if let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { thread_note, .. }) =
+                &mut state.session_configuration.session_source
+            {
+                *thread_note = note.clone();
+            }
+        }
+
+        sess.send_event_raw(Event {
+            id: sub_id,
+            msg: EventMsg::ThreadNoteUpdated(ThreadNoteUpdatedEvent {
+                thread_id: sess.conversation_id,
+                thread_note: note,
             }),
         })
         .await;
@@ -5941,6 +6038,7 @@ fn realtime_text_for_event(msg: &EventMsg) -> Option<String> {
         | EventMsg::AgentReasoningSectionBreak(_)
         | EventMsg::SessionConfigured(_)
         | EventMsg::ThreadNameUpdated(_)
+        | EventMsg::ThreadNoteUpdated(_)
         | EventMsg::McpStartupUpdate(_)
         | EventMsg::McpStartupComplete(_)
         | EventMsg::McpToolCallBegin(_)
@@ -7831,6 +7929,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name: None,
             app_server_client_name: None,
@@ -7926,6 +8025,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name: None,
             app_server_client_name: None,
@@ -8252,6 +8352,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name: None,
             app_server_client_name: None,
@@ -8311,6 +8412,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name: None,
             app_server_client_name: None,
@@ -8403,6 +8505,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name: None,
             app_server_client_name: None,
@@ -8775,6 +8878,7 @@ mod tests {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name: None,
             app_server_client_name: None,
@@ -9325,6 +9429,7 @@ mod tests {
                 ThreadId::default(),
                 None,
                 SessionSource::Exec,
+                None,
                 BaseInstructions::default(),
                 Vec::new(),
                 EventPersistenceMode::Limited,
@@ -9422,6 +9527,7 @@ mod tests {
                 ThreadId::default(),
                 None,
                 SessionSource::Exec,
+                None,
                 BaseInstructions::default(),
                 Vec::new(),
                 EventPersistenceMode::Limited,

@@ -1224,11 +1224,21 @@ impl SessionSource {
         }
     }
 
+    pub fn get_thread_note(&self) -> Option<String> {
+        match self {
+            SessionSource::SubAgent(CoreSubAgentSource::ThreadSpawn { thread_note, .. }) => {
+                thread_note.clone()
+            }
+            _ => None,
+        }
+    }
+
     pub fn with_thread_spawn_metadata(
         self,
         agent_nickname: Option<String>,
         agent_role: Option<String>,
         agent_persona: Option<String>,
+        thread_note: Option<String>,
     ) -> Self {
         match self {
             SessionSource::SubAgent(CoreSubAgentSource::ThreadSpawn {
@@ -1237,6 +1247,7 @@ impl SessionSource {
                 agent_nickname: existing_agent_nickname,
                 agent_role: existing_agent_role,
                 agent_persona: existing_agent_persona,
+                thread_note: existing_thread_note,
                 allow_list,
                 deny_list,
             }) => SessionSource::SubAgent(CoreSubAgentSource::ThreadSpawn {
@@ -1244,7 +1255,8 @@ impl SessionSource {
                 depth,
                 agent_nickname: agent_nickname.or(existing_agent_nickname),
                 agent_role: agent_role.or(existing_agent_role),
-                agent_persona: existing_agent_persona.or(agent_persona),
+                agent_persona: agent_persona.or(existing_agent_persona),
+                thread_note: thread_note.or(existing_thread_note),
                 allow_list,
                 deny_list,
             }),
@@ -2147,6 +2159,15 @@ pub struct ThreadSetNameParams {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ThreadSetNoteParams {
+    pub thread_id: String,
+    #[ts(optional = nullable)]
+    pub note: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct ThreadUnarchiveParams {
     pub thread_id: String,
 }
@@ -2155,6 +2176,11 @@ pub struct ThreadUnarchiveParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadSetNameResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadSetNoteResponse {}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
@@ -2735,6 +2761,8 @@ pub struct Thread {
     pub git_info: Option<GitInfo>,
     /// Optional user-facing thread title.
     pub name: Option<String>,
+    /// Optional user-facing thread note.
+    pub thread_note: Option<String>,
     /// Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read`
     /// (when `includeTurns` is true) responses.
     /// For all other responses and notifications returning a Thread,
@@ -3772,6 +3800,14 @@ pub struct ThreadNameUpdatedNotification {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub thread_name: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadNoteUpdatedNotification {
+    pub thread_id: String,
+    pub thread_note: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -4997,6 +5033,7 @@ mod tests {
             agent_nickname: Some("atlas".to_string()),
             agent_role: Some("explorer".to_string()),
             agent_persona: Some("researcher".to_string()),
+            thread_note: Some("remember this".to_string()),
             allow_list: None,
             deny_list: None,
         });
@@ -5011,6 +5048,7 @@ mod tests {
                         "agent_nickname": "atlas",
                         "agent_role": "explorer",
                         "agent_persona": "researcher",
+                        "thread_note": "remember this",
                         "allow_list": null,
                         "deny_list": null,
                     }
@@ -5020,7 +5058,7 @@ mod tests {
     }
 
     #[test]
-    fn session_source_prefers_nested_thread_spawn_agent_persona_over_mirror() {
+    fn session_source_prefers_explicit_thread_spawn_metadata_over_existing_nested_values() {
         let parent_thread_id =
             codex_protocol::ThreadId::from_string("ad7f0408-99b8-4f6e-a46f-bd0eec433370")
                 .expect("thread id");
@@ -5030,7 +5068,8 @@ mod tests {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: None,
-                agent_persona: None,
+                agent_persona: Some("existing".to_string()),
+                thread_note: Some("stale note".to_string()),
                 allow_list: None,
                 deny_list: None,
             },
@@ -5039,12 +5078,13 @@ mod tests {
             Some("atlas".to_string()),
             Some("explorer".to_string()),
             Some("fallback".to_string()),
-        )
-        .with_thread_spawn_metadata(None, None, Some("ignored".to_string()));
+            Some("remember this".to_string()),
+        );
 
         assert_eq!(source.get_nickname().as_deref(), Some("atlas"));
         assert_eq!(source.get_agent_role().as_deref(), Some("explorer"));
         assert_eq!(source.get_agent_persona().as_deref(), Some("fallback"));
+        assert_eq!(source.get_thread_note().as_deref(), Some("remember this"));
     }
 
     #[test]

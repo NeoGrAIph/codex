@@ -138,6 +138,7 @@ mod tests {
             agent_persona: None,
             allow_list: None,
             deny_list: None,
+            thread_note: None,
         });
 
         assert!(source_kind_matches(

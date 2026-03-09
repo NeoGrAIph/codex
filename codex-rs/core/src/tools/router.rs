@@ -276,6 +276,7 @@ mod tests {
                 .map(|items| items.iter().map(std::string::ToString::to_string).collect()),
             deny_list: deny_list
                 .map(|items| items.iter().map(std::string::ToString::to_string).collect()),
+            thread_note: None,
         })
     }
 

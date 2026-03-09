@@ -167,6 +167,7 @@ SELECT
     agent_nickname,
     agent_role,
     agent_persona,
+    thread_note,
     model_provider,
     cwd,
     cli_version,

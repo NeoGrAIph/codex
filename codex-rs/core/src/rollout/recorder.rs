@@ -80,6 +80,7 @@ pub enum RolloutRecorderParams {
         conversation_id: ThreadId,
         forked_from_id: Option<ThreadId>,
         source: SessionSource,
+        thread_note: Option<String>,
         base_instructions: BaseInstructions,
         dynamic_tools: Vec<DynamicToolSpec>,
         event_persistence_mode: EventPersistenceMode,
@@ -109,6 +110,7 @@ impl RolloutRecorderParams {
         conversation_id: ThreadId,
         forked_from_id: Option<ThreadId>,
         source: SessionSource,
+        thread_note: Option<String>,
         base_instructions: BaseInstructions,
         dynamic_tools: Vec<DynamicToolSpec>,
         event_persistence_mode: EventPersistenceMode,
@@ -117,6 +119,7 @@ impl RolloutRecorderParams {
             conversation_id,
             forked_from_id,
             source,
+            thread_note,
             base_instructions,
             dynamic_tools,
             event_persistence_mode,
@@ -378,6 +381,7 @@ impl RolloutRecorder {
                     conversation_id,
                     forked_from_id,
                     source,
+                    thread_note,
                     base_instructions,
                     dynamic_tools,
                     event_persistence_mode,
@@ -405,6 +409,7 @@ impl RolloutRecorder {
                         agent_nickname: source.get_nickname(),
                         agent_role: source.get_agent_role(),
                         agent_persona: source.get_agent_persona(),
+                        thread_note: thread_note.or_else(|| source.get_thread_note()),
                         source,
                         model_provider: Some(config.model_provider_id.clone()),
                         base_instructions: Some(base_instructions),
@@ -1130,6 +1135,7 @@ mod tests {
                 thread_id,
                 None,
                 SessionSource::Exec,
+                None,
                 BaseInstructions::default(),
                 Vec::new(),
                 EventPersistenceMode::Limited,
@@ -1197,6 +1203,69 @@ mod tests {
         );
         let text_after_second_persist = std::fs::read_to_string(&rollout_path)?;
         assert_eq!(text_after_second_persist, text);
+
+        recorder.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recorder_persists_explicit_thread_note_for_non_thread_spawn_sources()
+    -> std::io::Result<()> {
+        let home = TempDir::new().expect("temp dir");
+        let config = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .build()
+            .await?;
+        let thread_id = ThreadId::new();
+        let recorder = RolloutRecorder::new(
+            &config,
+            RolloutRecorderParams::new(
+                thread_id,
+                None,
+                SessionSource::VSCode,
+                Some("remember the audit".to_string()),
+                BaseInstructions::default(),
+                Vec::new(),
+                EventPersistenceMode::Limited,
+            ),
+            None,
+            None,
+        )
+        .await?;
+
+        recorder
+            .record_items(&[RolloutItem::EventMsg(EventMsg::UserMessage(
+                UserMessageEvent {
+                    message: "materialize".to_string(),
+                    images: None,
+                    local_images: Vec::new(),
+                    text_elements: Vec::new(),
+                },
+            ))])
+            .await?;
+        recorder.persist().await?;
+        recorder.flush().await?;
+
+        let InitialHistory::Resumed(resumed) =
+            RolloutRecorder::get_rollout_history(recorder.rollout_path()).await?
+        else {
+            panic!("expected resumed rollout history");
+        };
+        assert_eq!(
+            InitialHistory::Resumed(resumed.clone()).get_thread_note(),
+            Some("remember the audit".to_string())
+        );
+        let Some(session_meta) = resumed.history.iter().find_map(|item| match item {
+            RolloutItem::SessionMeta(meta) => Some(meta.meta.clone()),
+            _ => None,
+        }) else {
+            panic!("expected session metadata");
+        };
+        assert_eq!(session_meta.source, SessionSource::VSCode);
+        assert_eq!(
+            session_meta.thread_note,
+            Some("remember the audit".to_string())
+        );
 
         recorder.shutdown().await?;
         Ok(())

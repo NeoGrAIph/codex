@@ -123,14 +123,15 @@ Example with notification opt-out:
 - `thread/start` — create a new thread; emits `thread/started` (including the current `thread.status`) and auto-subscribes you to turn/item events for that thread.
 - `thread/resume` — reopen an existing thread by id so subsequent `turn/start` calls append to it.
 - `thread/fork` — fork an existing thread into a new thread id by copying the stored history; emits `thread/started` (including the current `thread.status`) and auto-subscribes you to turn/item events for the new thread.
-- `thread/list` — page through stored rollouts; supports cursor-based pagination and optional `modelProviders`, `sourceKinds`, `archived`, `cwd`, and `searchTerm` filters. Each returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded. AgentControl-spawned thread-spawn sub-agents also surface `agentNickname`, `agentRole`, and `agentPersona` when available.
+- `thread/list` — page through stored rollouts; supports cursor-based pagination and optional `modelProviders`, `sourceKinds`, `archived`, `cwd`, and `searchTerm` filters. Each returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded. Threads also surface `threadNote` when available. AgentControl-spawned thread-spawn sub-agents also surface `agentNickname`, `agentRole`, and `agentPersona` when available.
 - `thread/loaded/list` — list the thread ids currently loaded in memory.
-- `thread/read` — read a stored thread by id without resuming it; optionally include turns via `includeTurns`. The returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded. AgentControl-spawned thread-spawn sub-agents also surface `agentNickname`, `agentRole`, and `agentPersona` when available.
+- `thread/read` — read a stored thread by id without resuming it; optionally include turns via `includeTurns`. The returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded. Threads also surface `threadNote` when available. AgentControl-spawned thread-spawn sub-agents also surface `agentNickname`, `agentRole`, and `agentPersona` when available.
 - `thread/metadata/update` — patch stored thread metadata in sqlite; currently supports updating persisted `gitInfo` fields and returns the refreshed `thread`.
 - `thread/status/changed` — notification emitted when a loaded thread’s status changes (`threadId` + new `status`).
 - `thread/archive` — move a thread’s rollout file into the archived directory; returns `{}` on success and emits `thread/archived`.
 - `thread/unsubscribe` — unsubscribe this connection from thread turn/item events. If this was the last subscriber, the server shuts down and unloads the thread, then emits `thread/closed`.
 - `thread/name/set` — set or update a thread’s user-facing name for either a loaded thread or a persisted rollout; returns `{}` on success. Thread names are not required to be unique; name lookups resolve to the most recently updated thread.
+- `thread/note/set` — set, update, or clear a thread note for either a loaded thread or a persisted rollout; returns `{}` on success and emits `thread/note/updated`.
 - `thread/unarchive` — move an archived rollout file back into the sessions directory; returns the restored `thread` on success and emits `thread/unarchived`.
 - `thread/compact/start` — trigger conversation history compaction for a thread; returns `{}` immediately while progress streams through standard turn/item notifications.
 - `thread/backgroundTerminals/clean` — terminate all running background terminals for a thread (experimental; requires `capabilities.experimentalApi`); returns `{}` when the cleanup request is accepted.
@@ -242,7 +243,7 @@ Experimental API: `thread/start`, `thread/resume`, and `thread/fork` accept `per
 - `archived` — when `true`, list archived threads only. When `false` or `null`, list non-archived threads (default).
 - `cwd` — restrict results to threads whose session cwd exactly matches this path.
 - `searchTerm` — restrict results to threads whose extracted title contains this substring (case-sensitive).
-- Responses include `agentNickname`, `agentRole`, and `agentPersona` for AgentControl-spawned thread-spawn sub-agents when available. The nested `thread.source.subAgent.thread_spawn` payload remains the canonical wire source for thread-spawn metadata, including `allowList` and `denyList`.
+- Responses include `threadNote` when available, plus `agentNickname`, `agentRole`, and `agentPersona` for AgentControl-spawned thread-spawn sub-agents. The nested `thread.source.subAgent.thread_spawn` payload remains the canonical wire source for thread-spawn metadata, including `allowList`, `denyList`, and the spawned thread's initial `threadNote`.
 
 Example:
 
@@ -311,7 +312,7 @@ If this was the last subscriber, the server unloads the thread and emits `thread
 
 ### Example: Read a thread
 
-Use `thread/read` to fetch a stored thread by id without resuming it. Pass `includeTurns` when you want the rollout history loaded into `thread.turns`. The returned thread includes `agentNickname`, `agentRole`, and `agentPersona` for AgentControl-spawned thread-spawn sub-agents when available. The canonical nested metadata remains `thread.source.subAgent.thread_spawn`.
+Use `thread/read` to fetch a stored thread by id without resuming it. Pass `includeTurns` when you want the rollout history loaded into `thread.turns`. The returned thread includes `threadNote` when available, plus `agentNickname`, `agentRole`, and `agentPersona` for AgentControl-spawned thread-spawn sub-agents. The canonical nested metadata remains `thread.source.subAgent.thread_spawn`.
 
 ```json
 { "method": "thread/read", "id": 22, "params": { "threadId": "thr_123" } }
@@ -353,6 +354,22 @@ Use `thread/metadata/update` to patch sqlite-backed metadata for a thread withou
         "gitInfo": null
     }
 } }
+```
+
+### Example: Set or clear a thread note
+
+Use `thread/note/set` to set, update, or clear a thread note for either a loaded thread or a persisted rollout. Successful updates return `{}` and emit `thread/note/updated`.
+
+```json
+{ "method": "thread/note/set", "id": 26, "params": { "threadId": "thr_123", "note": "Investigate flaky MCP auth" } }
+{ "id": 26, "result": {} }
+{ "method": "thread/note/updated", "params": { "threadId": "thr_123", "threadNote": "Investigate flaky MCP auth" } }
+```
+
+```json
+{ "method": "thread/note/set", "id": 27, "params": { "threadId": "thr_123", "note": null } }
+{ "id": 27, "result": {} }
+{ "method": "thread/note/updated", "params": { "threadId": "thr_123", "threadNote": null } }
 ```
 
 ### Example: Archive a thread
@@ -609,7 +626,7 @@ Notes:
 
 ## Events
 
-Event notifications are the server-initiated event stream for thread lifecycles, turn lifecycles, and the items within them. After you start or resume a thread, keep reading stdout for `thread/started`, `thread/archived`, `thread/unarchived`, `thread/closed`, `turn/*`, and `item/*` notifications.
+Event notifications are the server-initiated event stream for thread lifecycles, turn lifecycles, and the items within them. After you start or resume a thread, keep reading stdout for `thread/started`, `thread/archived`, `thread/unarchived`, `thread/note/updated`, `thread/closed`, `turn/*`, and `item/*` notifications.
 
 Thread realtime uses a separate thread-scoped notification surface. `thread/realtime/*` notifications are ephemeral transport events, not `ThreadItem`s, and are not returned by `thread/read`, `thread/resume`, or `thread/fork`.
 

@@ -68,6 +68,7 @@ use codex_app_server_protocol::SkillsChangedNotification;
 use codex_app_server_protocol::TerminalInteractionNotification;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadNameUpdatedNotification;
+use codex_app_server_protocol::ThreadNoteUpdatedNotification;
 use codex_app_server_protocol::ThreadRealtimeClosedNotification;
 use codex_app_server_protocol::ThreadRealtimeErrorNotification;
 use codex_app_server_protocol::ThreadRealtimeItemAddedNotification;
@@ -112,6 +113,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RealtimeEvent;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::ReviewOutputEvent;
+use codex_protocol::protocol::ThreadNoteUpdatedEvent;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TurnDiffEvent;
 use codex_protocol::request_user_input::RequestUserInputAnswer as CoreRequestUserInputAnswer;
@@ -1566,6 +1568,15 @@ pub(crate) async fn apply_bespoke_event_handling(
                     .await;
             }
         }
+        EventMsg::ThreadNoteUpdated(thread_note_event) => {
+            if let Some(notification) =
+                thread_note_updated_notification(api_version, thread_note_event)
+            {
+                outgoing
+                    .send_server_notification(ServerNotification::ThreadNoteUpdated(notification))
+                    .await;
+            }
+        }
         EventMsg::TurnDiff(turn_diff_event) => {
             handle_turn_diff(
                 conversation_id,
@@ -1612,6 +1623,19 @@ async fn handle_turn_diff(
         outgoing
             .send_server_notification(ServerNotification::TurnDiffUpdated(notification))
             .await;
+    }
+}
+
+fn thread_note_updated_notification(
+    api_version: ApiVersion,
+    event: ThreadNoteUpdatedEvent,
+) -> Option<ThreadNoteUpdatedNotification> {
+    match api_version {
+        ApiVersion::V1 => None,
+        ApiVersion::V2 => Some(ThreadNoteUpdatedNotification {
+            thread_id: event.thread_id.to_string(),
+            thread_note: event.thread_note,
+        }),
     }
 }
 
@@ -2442,6 +2466,7 @@ mod tests {
     use codex_protocol::protocol::McpInvocation;
     use codex_protocol::protocol::RateLimitSnapshot;
     use codex_protocol::protocol::RateLimitWindow;
+    use codex_protocol::protocol::ThreadNoteUpdatedEvent;
     use codex_protocol::protocol::TokenUsage;
     use codex_protocol::protocol::TokenUsageInfo;
     use pretty_assertions::assert_eq;
@@ -3209,5 +3234,37 @@ mod tests {
 
         assert!(rx.try_recv().is_err(), "no messages expected");
         Ok(())
+    }
+
+    #[test]
+    fn thread_note_updated_event_maps_to_v2_notification() {
+        let thread_id = ThreadId::new();
+        let event = ThreadNoteUpdatedEvent {
+            thread_id,
+            thread_note: Some("remember this".to_string()),
+        };
+
+        let notification = thread_note_updated_notification(ApiVersion::V2, event);
+
+        assert_eq!(
+            notification,
+            Some(ThreadNoteUpdatedNotification {
+                thread_id: thread_id.to_string(),
+                thread_note: Some("remember this".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn thread_note_updated_event_is_noop_for_v1() {
+        let notification = thread_note_updated_notification(
+            ApiVersion::V1,
+            ThreadNoteUpdatedEvent {
+                thread_id: ThreadId::new(),
+                thread_note: Some("remember this".to_string()),
+            },
+        );
+
+        assert_eq!(notification, None);
     }
 }

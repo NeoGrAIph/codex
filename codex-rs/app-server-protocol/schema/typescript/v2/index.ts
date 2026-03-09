@@ -190,6 +190,7 @@ export type { ThreadMetadataGitInfoUpdateParams } from "./ThreadMetadataGitInfoU
 export type { ThreadMetadataUpdateParams } from "./ThreadMetadataUpdateParams";
 export type { ThreadMetadataUpdateResponse } from "./ThreadMetadataUpdateResponse";
 export type { ThreadNameUpdatedNotification } from "./ThreadNameUpdatedNotification";
+export type { ThreadNoteUpdatedNotification } from "./ThreadNoteUpdatedNotification";
 export type { ThreadReadParams } from "./ThreadReadParams";
 export type { ThreadReadResponse } from "./ThreadReadResponse";
 export type { ThreadRealtimeAudioChunk } from "./ThreadRealtimeAudioChunk";
@@ -204,6 +205,8 @@ export type { ThreadRollbackParams } from "./ThreadRollbackParams";
 export type { ThreadRollbackResponse } from "./ThreadRollbackResponse";
 export type { ThreadSetNameParams } from "./ThreadSetNameParams";
 export type { ThreadSetNameResponse } from "./ThreadSetNameResponse";
+export type { ThreadSetNoteParams } from "./ThreadSetNoteParams";
+export type { ThreadSetNoteResponse } from "./ThreadSetNoteResponse";
 export type { ThreadSortKey } from "./ThreadSortKey";
 export type { ThreadSourceKind } from "./ThreadSourceKind";
 export type { ThreadStartParams } from "./ThreadStartParams";

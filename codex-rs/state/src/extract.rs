@@ -40,6 +40,7 @@ fn apply_session_meta_from_item(metadata: &mut ThreadMetadata, meta_line: &Sessi
     metadata.agent_nickname = meta_line.meta.agent_nickname.clone();
     metadata.agent_role = meta_line.meta.agent_role.clone();
     metadata.agent_persona = meta_line.meta.agent_persona.clone();
+    metadata.thread_note = meta_line.meta.thread_note.clone();
     if let Some(provider) = meta_line.meta.model_provider.as_deref() {
         metadata.model_provider = provider.to_string();
     }
@@ -81,6 +82,9 @@ fn apply_event_msg(metadata: &mut ThreadMetadata, event: &EventMsg) {
                     metadata.title = title.to_string();
                 }
             }
+        }
+        EventMsg::ThreadNoteUpdated(event) => {
+            metadata.thread_note = event.thread_note.clone();
         }
         _ => {}
     }
@@ -241,6 +245,7 @@ mod tests {
                     agent_nickname: None,
                     agent_role: None,
                     agent_persona: Some("friendly".to_string()),
+                    thread_note: None,
                     model_provider: Some("openai".to_string()),
                     base_instructions: None,
                     dynamic_tools: None,
@@ -359,6 +364,7 @@ mod tests {
             agent_nickname: None,
             agent_role: None,
             agent_persona: None,
+            thread_note: None,
             model_provider: "openai".to_string(),
             cwd: PathBuf::from("/tmp"),
             cli_version: "0.0.0".to_string(),

@@ -22,6 +22,10 @@ agent_persona?: string | null,
  */
 agent_role?: string | null,
 /**
+ * Optional user-facing note assigned to an AgentControl-spawned sub-agent.
+ */
+thread_note?: string | null,
+/**
  * Last known status of the agent.
  */
 status: AgentStatus, };

@@ -612,6 +612,7 @@ pub(crate) struct ChatWidget {
     suppress_queue_autosend: bool,
     thread_id: Option<ThreadId>,
     thread_name: Option<String>,
+    thread_note: Option<String>,
     forked_from: Option<ThreadId>,
     frame_requester: FrameRequester,
     // Whether to include the initial welcome banner on session configured
@@ -1182,6 +1183,7 @@ impl ChatWidget {
         self.session_network_proxy = event.network_proxy.clone();
         self.thread_id = Some(event.session_id);
         self.thread_name = event.thread_name.clone();
+        self.thread_note = event.thread_note.clone();
         self.forked_from = event.forked_from_id;
         self.current_rollout_path = event.rollout_path.clone();
         self.current_cwd = Some(event.cwd.clone());
@@ -1309,6 +1311,12 @@ impl ChatWidget {
         if self.thread_id == Some(event.thread_id) {
             self.thread_name = event.thread_name;
             self.request_redraw();
+        }
+    }
+
+    fn on_thread_note_updated(&mut self, event: codex_protocol::protocol::ThreadNoteUpdatedEvent) {
+        if self.thread_id == Some(event.thread_id) {
+            self.thread_note = event.thread_note;
         }
     }
 
@@ -3121,6 +3129,7 @@ impl ChatWidget {
             suppress_queue_autosend: false,
             thread_id: None,
             thread_name: None,
+            thread_note: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
             pending_steers: VecDeque::new(),
@@ -3303,6 +3312,7 @@ impl ChatWidget {
             suppress_queue_autosend: false,
             thread_id: None,
             thread_name: None,
+            thread_note: None,
             forked_from: None,
             saw_plan_update_this_turn: false,
             saw_plan_item_this_turn: false,
@@ -3477,6 +3487,7 @@ impl ChatWidget {
             suppress_queue_autosend: false,
             thread_id: None,
             thread_name: None,
+            thread_note: None,
             forked_from: None,
             queued_user_messages: VecDeque::new(),
             pending_steers: VecDeque::new(),
@@ -4612,7 +4623,9 @@ impl ChatWidget {
         for msg in events {
             if matches!(
                 msg,
-                EventMsg::SessionConfigured(_) | EventMsg::ThreadNameUpdated(_)
+                EventMsg::SessionConfigured(_)
+                    | EventMsg::ThreadNameUpdated(_)
+                    | EventMsg::ThreadNoteUpdated(_)
             ) {
                 continue;
             }
@@ -4667,6 +4680,7 @@ impl ChatWidget {
         match msg {
             EventMsg::SessionConfigured(e) => self.on_session_configured(e),
             EventMsg::ThreadNameUpdated(e) => self.on_thread_name_updated(e),
+            EventMsg::ThreadNoteUpdated(e) => self.on_thread_note_updated(e),
             EventMsg::AgentMessage(AgentMessageEvent { .. })
                 if matches!(replay_kind, Some(ReplayKind::ThreadSnapshot))
                     && !self.is_review_mode => {}

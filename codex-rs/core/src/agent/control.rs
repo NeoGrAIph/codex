@@ -113,6 +113,7 @@ impl AgentControl {
                 depth,
                 agent_role,
                 agent_persona,
+                thread_note,
                 allow_list,
                 deny_list,
                 ..
@@ -127,6 +128,7 @@ impl AgentControl {
                     agent_nickname: Some(agent_nickname),
                     agent_role,
                     agent_persona,
+                    thread_note,
                     allow_list,
                     deny_list,
                 }))
@@ -239,6 +241,7 @@ impl AgentControl {
                 parent_thread_id,
                 depth,
                 agent_persona,
+                thread_note,
                 allow_list,
                 deny_list,
                 ..
@@ -264,19 +267,24 @@ impl AgentControl {
                     } else {
                         None
                     };
-                let (resumed_agent_nickname, resumed_agent_role, resumed_agent_persona) =
-                    if let Some(state_db_ctx) = state_db_ctx {
-                        match state_db_ctx.get_thread(thread_id).await {
-                            Ok(Some(metadata)) => (
-                                metadata.agent_nickname,
-                                metadata.agent_role,
-                                metadata.agent_persona,
-                            ),
-                            Ok(None) | Err(_) => (None, None, None),
-                        }
-                    } else {
-                        (None, None, None)
-                    };
+                let (
+                    resumed_agent_nickname,
+                    resumed_agent_role,
+                    resumed_agent_persona,
+                    resumed_thread_note,
+                ) = if let Some(state_db_ctx) = state_db_ctx {
+                    match state_db_ctx.get_thread(thread_id).await {
+                        Ok(Some(metadata)) => (
+                            metadata.agent_nickname,
+                            metadata.agent_role,
+                            metadata.agent_persona,
+                            metadata.thread_note,
+                        ),
+                        Ok(None) | Err(_) => (None, None, None, None),
+                    }
+                } else {
+                    (None, None, None, None)
+                };
                 let reserved_agent_nickname = resumed_agent_nickname
                     .as_deref()
                     .map(|agent_nickname| {
@@ -296,6 +304,7 @@ impl AgentControl {
                     agent_nickname: reserved_agent_nickname,
                     agent_role: resumed_agent_role,
                     agent_persona: resumed_agent_persona.or(agent_persona),
+                    thread_note: resumed_thread_note.or(thread_note),
                     allow_list,
                     deny_list,
                 })
@@ -358,6 +367,16 @@ impl AgentControl {
         state.send_op(agent_id, Op::Interrupt).await
     }
 
+    /// Update a user-facing thread note for an existing agent thread.
+    pub(crate) async fn set_thread_note(
+        &self,
+        agent_id: ThreadId,
+        note: Option<String>,
+    ) -> CodexResult<String> {
+        let state = self.upgrade()?;
+        state.send_op(agent_id, Op::SetThreadNote { note }).await
+    }
+
     /// Submit a shutdown request to an existing agent thread.
     pub(crate) async fn shutdown_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
@@ -383,17 +402,33 @@ impl AgentControl {
         &self,
         agent_id: ThreadId,
     ) -> Option<(Option<String>, Option<String>, Option<String>)> {
+        self.get_agent_metadata(agent_id)
+            .await
+            .map(|(nickname, persona, role, _)| (nickname, persona, role))
+    }
+
+    pub(crate) async fn get_agent_metadata(
+        &self,
+        agent_id: ThreadId,
+    ) -> Option<(
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> {
         let Ok(state) = self.upgrade() else {
             return None;
         };
         let Ok(thread) = state.get_thread(agent_id).await else {
             return None;
         };
-        let session_source = thread.config_snapshot().await.session_source;
+        let snapshot = thread.config_snapshot().await;
+        let session_source = snapshot.session_source;
         Some((
             session_source.get_nickname(),
             session_source.get_agent_persona(),
             session_source.get_agent_role(),
+            snapshot.thread_note,
         ))
     }
 
@@ -943,6 +978,7 @@ mod tests {
                     agent_persona: None,
                     allow_list: None,
                     deny_list: None,
+                    thread_note: None,
                 })),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: Some(parent_spawn_call_id),
@@ -1028,6 +1064,7 @@ mod tests {
                     agent_persona: None,
                     allow_list: None,
                     deny_list: None,
+                    thread_note: None,
                 })),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -1100,6 +1137,7 @@ mod tests {
                     agent_persona: None,
                     allow_list: None,
                     deny_list: None,
+                    thread_note: None,
                 })),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -1356,6 +1394,7 @@ mod tests {
                     agent_persona: None,
                     allow_list: None,
                     deny_list: None,
+                    thread_note: None,
                 })),
             )
             .await
@@ -1390,6 +1429,7 @@ mod tests {
                 agent_persona: None,
                 allow_list: None,
                 deny_list: None,
+                thread_note: None,
             })),
         );
 
@@ -1433,6 +1473,7 @@ mod tests {
                     agent_persona: None,
                     allow_list: None,
                     deny_list: None,
+                    thread_note: None,
                 })),
             )
             .await
@@ -1487,6 +1528,7 @@ mod tests {
                     agent_persona: None,
                     allow_list: None,
                     deny_list: None,
+                    thread_note: None,
                 })),
             )
             .await
@@ -1541,6 +1583,7 @@ mod tests {
                     agent_persona: Some("reviewer".to_string()),
                     allow_list: None,
                     deny_list: None,
+                    thread_note: None,
                 })),
             )
             .await
@@ -1630,6 +1673,7 @@ mod tests {
                     agent_persona: None,
                     allow_list: None,
                     deny_list: None,
+                    thread_note: None,
                 }),
             )
             .await

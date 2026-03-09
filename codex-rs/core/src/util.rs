@@ -85,6 +85,18 @@ pub fn normalize_thread_name(name: &str) -> Option<String> {
     }
 }
 
+/// Trim a thread note and return `None` if it is empty after trimming.
+pub fn normalize_thread_note(note: Option<&str>) -> Option<String> {
+    note.and_then(|note| {
+        let trimmed = note.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
 pub fn resume_command(thread_name: Option<&str>, thread_id: Option<ThreadId>) -> Option<String> {
     let resume_target = thread_name
         .filter(|name| !name.is_empty())
@@ -143,6 +155,16 @@ mod tests {
         assert_eq!(
             normalize_thread_name("  my thread  "),
             Some("my thread".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_thread_note_trims_and_rejects_empty() {
+        assert_eq!(normalize_thread_note(None), None);
+        assert_eq!(normalize_thread_note(Some("   ")), None);
+        assert_eq!(
+            normalize_thread_note(Some("  keep this  ")),
+            Some("keep this".to_string())
         );
     }
 

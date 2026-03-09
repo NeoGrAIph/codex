@@ -251,6 +251,7 @@ mod tests {
             agent_persona: None,
             allow_list: None,
             deny_list: None,
+            thread_note: None,
         });
         let child_depth = next_thread_spawn_depth(&session_source);
         assert_eq!(child_depth, 2);

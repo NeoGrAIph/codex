@@ -545,6 +545,30 @@
             },
             "method": {
               "enum": [
+                "thread/note/set"
+              ],
+              "title": "Thread/note/setRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadSetNoteParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/note/setRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/metadata/update"
               ],
               "title": "Thread/metadata/updateRequestMethod",
@@ -1456,6 +1480,13 @@
             }
           ],
           "description": "Thread ID of the receiver/new agent."
+        },
+        "thread_note": {
+          "description": "Optional user-facing note assigned to an AgentControl-spawned sub-agent.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1501,6 +1532,13 @@
             }
           ],
           "description": "Thread ID of the receiver/new agent."
+        },
+        "thread_note": {
+          "description": "Optional user-facing note assigned to an AgentControl-spawned sub-agent.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2453,6 +2491,13 @@
                 "null"
               ]
             },
+            "thread_note": {
+              "description": "Optional user-facing thread note (may be unset).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "session_configured"
@@ -2500,6 +2545,33 @@
             "type"
           ],
           "title": "ThreadNameUpdatedEventMsg",
+          "type": "object"
+        },
+        {
+          "description": "Updated session metadata (e.g., thread note changes).",
+          "properties": {
+            "thread_id": {
+              "$ref": "#/definitions/v2/ThreadId"
+            },
+            "thread_note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "thread_note_updated"
+              ],
+              "title": "ThreadNoteUpdatedEventMsgType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "thread_id",
+            "type"
+          ],
+          "title": "ThreadNoteUpdatedEventMsg",
           "type": "object"
         },
         {
@@ -4213,6 +4285,13 @@
                 }
               ],
               "description": "Thread ID of the newly spawned agent, if it was created."
+            },
+            "new_thread_note": {
+              "description": "Optional note assigned to the new agent.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "prompt": {
               "description": "Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the beginning.",
@@ -6380,6 +6459,26 @@
             "params"
           ],
           "title": "Thread/name/updatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/note/updated"
+              ],
+              "title": "Thread/note/updatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadNoteUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/note/updatedNotification",
           "type": "object"
         },
         {
@@ -13019,6 +13118,13 @@
                   },
                   "parent_thread_id": {
                     "$ref": "#/definitions/v2/ThreadId"
+                  },
+                  "thread_note": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
@@ -13228,6 +13334,13 @@
               }
             ],
             "description": "Current runtime status for the thread."
+          },
+          "threadNote": {
+            "description": "Optional user-facing thread note.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "turns": {
             "description": "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
@@ -14268,6 +14381,25 @@
         "title": "ThreadNameUpdatedNotification",
         "type": "object"
       },
+      "ThreadNoteUpdatedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          },
+          "threadNote": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadNoteUpdatedNotification",
+        "type": "object"
+      },
       "ThreadReadParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -14633,6 +14765,30 @@
       "ThreadSetNameResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "ThreadSetNameResponse",
+        "type": "object"
+      },
+      "ThreadSetNoteParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadSetNoteParams",
+        "type": "object"
+      },
+      "ThreadSetNoteResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "ThreadSetNoteResponse",
         "type": "object"
       },
       "ThreadSortKey": {

@@ -2514,6 +2514,7 @@ mod tests {
             session_id: ThreadId::new(),
             forked_from_id: None,
             thread_name: None,
+            thread_note: None,
             model: model.to_string(),
             model_provider_id: "test-provider".to_string(),
             service_tier: None,

@@ -1551,6 +1551,13 @@
                 },
                 "parent_thread_id": {
                   "$ref": "#/definitions/ThreadId"
+                },
+                "thread_note": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -1758,6 +1765,13 @@
             }
           ],
           "description": "Current runtime status for the thread."
+        },
+        "threadNote": {
+          "description": "Optional user-facing thread note.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "turns": {
           "description": "Only populated on `thread/resume`, `thread/rollback`, `thread/fork`, and `thread/read` (when `includeTurns` is true) responses. For all other responses and notifications returning a Thread, the turns field will be an empty list.",
@@ -2395,6 +2409,23 @@
           "type": "string"
         },
         "threadName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadNoteUpdatedNotification": {
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "threadNote": {
           "type": [
             "string",
             "null"
@@ -3312,6 +3343,26 @@
         "params"
       ],
       "title": "Thread/name/updatedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "thread/note/updated"
+          ],
+          "title": "Thread/note/updatedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadNoteUpdatedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/note/updatedNotification",
       "type": "object"
     },
     {

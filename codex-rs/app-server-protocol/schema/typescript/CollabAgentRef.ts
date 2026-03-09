@@ -19,4 +19,8 @@ agent_persona?: string | null,
 /**
  * Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
  */
-agent_role?: string | null, };
+agent_role?: string | null,
+/**
+ * Optional user-facing note assigned to an AgentControl-spawned sub-agent.
+ */
+thread_note?: string | null, };

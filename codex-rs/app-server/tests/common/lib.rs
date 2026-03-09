@@ -36,6 +36,7 @@ pub use rollout::create_fake_rollout_with_source;
 pub use rollout::create_fake_rollout_with_text_elements;
 pub use rollout::rollout_path;
 pub use rollout::set_rollout_thread_spawn_agent_persona;
+pub use rollout::set_rollout_thread_spawn_thread_note;
 use serde::de::DeserializeOwned;
 
 pub fn to_response<T: DeserializeOwned>(response: JSONRPCResponse) -> anyhow::Result<T> {

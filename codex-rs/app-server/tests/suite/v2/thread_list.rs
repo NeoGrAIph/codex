@@ -5,6 +5,7 @@ use app_test_support::create_fake_rollout_with_source;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence;
 use app_test_support::rollout_path;
+use app_test_support::set_rollout_thread_spawn_thread_note;
 use app_test_support::to_response;
 use chrono::DateTime;
 use chrono::Utc;
@@ -669,6 +670,7 @@ async fn thread_list_filters_by_source_kind_subagent_thread_spawn() -> Result<()
             agent_persona: None,
             allow_list: None,
             deny_list: None,
+            thread_note: None,
         }),
     )?;
 
@@ -735,6 +737,7 @@ async fn thread_list_filters_by_subagent_variant() -> Result<()> {
             agent_persona: None,
             allow_list: None,
             deny_list: None,
+            thread_note: None,
         }),
     )?;
     let other_id = create_fake_rollout_with_source(
@@ -804,6 +807,64 @@ async fn thread_list_filters_by_subagent_variant() -> Result<()> {
     .await?;
     let other_ids: Vec<_> = other.data.iter().map(|thread| thread.id.as_str()).collect();
     assert_eq!(other_ids, vec![other_id.as_str()]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_list_preserves_thread_note_for_thread_spawn() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_minimal_config(codex_home.path())?;
+
+    let parent_thread_id = ThreadId::from_string(&Uuid::new_v4().to_string())?;
+    let spawn_id = create_fake_rollout_with_source(
+        codex_home.path(),
+        "2025-02-02T11-30-00",
+        "2025-02-02T11:30:00Z",
+        "Spawn with note",
+        Some("mock_provider"),
+        None,
+        CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_nickname: None,
+            agent_role: None,
+            agent_persona: None,
+            allow_list: None,
+            deny_list: None,
+            thread_note: None,
+        }),
+    )?;
+    let rollout = rollout_path(codex_home.path(), "2025-02-02T11-30-00", spawn_id.as_str());
+    set_rollout_thread_spawn_thread_note(
+        rollout.as_path(),
+        Some("remember the spawned thread context"),
+    )?;
+
+    let mut mcp = init_mcp(codex_home.path()).await?;
+
+    let ThreadListResponse { data, .. } = list_threads(
+        &mut mcp,
+        None,
+        Some(10),
+        Some(vec!["mock_provider".to_string()]),
+        Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+        None,
+    )
+    .await?;
+
+    let listed = data
+        .iter()
+        .find(|thread| thread.id == spawn_id)
+        .expect("spawned thread should be listed");
+    assert_eq!(
+        listed.thread_note.as_deref(),
+        Some("remember the spawned thread context")
+    );
+    assert_eq!(
+        listed.source.get_thread_note().as_deref(),
+        Some("remember the spawned thread context")
+    );
 
     Ok(())
 }

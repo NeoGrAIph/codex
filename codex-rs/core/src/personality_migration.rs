@@ -179,6 +179,7 @@ mod tests {
                 base_instructions: None,
                 dynamic_tools: None,
                 memory_mode: None,
+                thread_note: None,
             },
             git: None,
         };

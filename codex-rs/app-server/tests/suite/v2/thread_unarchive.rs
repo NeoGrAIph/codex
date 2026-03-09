@@ -4,6 +4,7 @@ use app_test_support::create_fake_rollout_with_source;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::rollout_path;
 use app_test_support::set_rollout_thread_spawn_agent_persona;
+use app_test_support::set_rollout_thread_spawn_thread_note;
 use app_test_support::to_response;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
@@ -196,6 +197,7 @@ async fn thread_unarchive_preserves_agent_persona() -> Result<()> {
             agent_persona: None,
             allow_list: None,
             deny_list: None,
+            thread_note: None,
         }),
     )?;
     let original_rollout_path = rollout_path(
@@ -259,6 +261,98 @@ async fn thread_unarchive_preserves_agent_persona() -> Result<()> {
             .and_then(|source| source.get("agent_persona"))
             .and_then(Value::as_str),
         Some("researcher")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_unarchive_preserves_thread_note() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let parent_thread_id = ThreadId::from_string(&Uuid::new_v4().to_string())?;
+    let conversation_id = create_fake_rollout_with_source(
+        codex_home.path(),
+        "2025-01-07T12-30-00",
+        "2025-01-07T12:30:00Z",
+        "Saved user message",
+        Some("mock_provider"),
+        None,
+        CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_nickname: None,
+            agent_role: None,
+            agent_persona: None,
+            allow_list: None,
+            deny_list: None,
+            thread_note: None,
+        }),
+    )?;
+    let original_rollout_path = rollout_path(
+        codex_home.path(),
+        "2025-01-07T12-30-00",
+        conversation_id.as_str(),
+    );
+    set_rollout_thread_spawn_thread_note(
+        original_rollout_path.as_path(),
+        Some("remember the rollout provenance"),
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let archive_id = mcp
+        .send_thread_archive_request(ThreadArchiveParams {
+            thread_id: conversation_id.clone(),
+        })
+        .await?;
+    let archive_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(archive_id)),
+    )
+    .await??;
+    let _: ThreadArchiveResponse = to_response::<ThreadArchiveResponse>(archive_resp)?;
+
+    let unarchive_id = mcp
+        .send_thread_unarchive_request(ThreadUnarchiveParams {
+            thread_id: conversation_id.clone(),
+        })
+        .await?;
+    let unarchive_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(unarchive_id)),
+    )
+    .await??;
+    let unarchive_result = unarchive_resp.result.clone();
+    let ThreadUnarchiveResponse { thread } =
+        to_response::<ThreadUnarchiveResponse>(unarchive_resp)?;
+
+    assert_eq!(
+        thread.thread_note.as_deref(),
+        Some("remember the rollout provenance")
+    );
+    let thread_json = unarchive_result
+        .get("thread")
+        .and_then(Value::as_object)
+        .expect("thread/unarchive result.thread must be an object");
+    assert_eq!(
+        thread_json.get("threadNote").and_then(Value::as_str),
+        Some("remember the rollout provenance")
+    );
+    assert_eq!(
+        thread_json
+            .get("source")
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("subAgent"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_spawn"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_note"))
+            .and_then(Value::as_str),
+        Some("remember the rollout provenance")
     );
 
     Ok(())

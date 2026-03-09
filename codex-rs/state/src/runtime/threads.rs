@@ -13,6 +13,7 @@ SELECT
     agent_nickname,
     agent_role,
     agent_persona,
+    thread_note,
     model_provider,
     cwd,
     cli_version,
@@ -125,6 +126,7 @@ SELECT
     agent_nickname,
     agent_role,
     agent_persona,
+    thread_note,
     model_provider,
     cwd,
     cli_version,
@@ -224,6 +226,7 @@ INSERT INTO threads (
     agent_nickname,
     agent_role,
     agent_persona,
+    thread_note,
     model_provider,
     cwd,
     cli_version,
@@ -238,7 +241,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO NOTHING
             "#,
         )
@@ -250,6 +253,7 @@ ON CONFLICT(id) DO NOTHING
         .bind(metadata.agent_nickname.as_deref())
         .bind(metadata.agent_role.as_deref())
         .bind(metadata.agent_persona.as_deref())
+        .bind(metadata.thread_note.as_deref())
         .bind(metadata.model_provider.as_str())
         .bind(metadata.cwd.display().to_string())
         .bind(metadata.cli_version.as_str())
@@ -276,6 +280,19 @@ ON CONFLICT(id) DO NOTHING
     ) -> anyhow::Result<bool> {
         let result = sqlx::query("UPDATE threads SET memory_mode = ? WHERE id = ?")
             .bind(memory_mode)
+            .bind(thread_id.to_string())
+            .execute(self.pool.as_ref())
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn update_thread_note(
+        &self,
+        thread_id: ThreadId,
+        thread_note: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query("UPDATE threads SET thread_note = ? WHERE id = ?")
+            .bind(thread_note)
             .bind(thread_id.to_string())
             .execute(self.pool.as_ref())
             .await?;
@@ -327,6 +344,7 @@ INSERT INTO threads (
     agent_nickname,
     agent_role,
     agent_persona,
+    thread_note,
     model_provider,
     cwd,
     cli_version,
@@ -341,7 +359,7 @@ INSERT INTO threads (
     git_branch,
     git_origin_url,
     memory_mode
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
     created_at = excluded.created_at,
@@ -350,6 +368,7 @@ ON CONFLICT(id) DO UPDATE SET
     agent_nickname = excluded.agent_nickname,
     agent_role = excluded.agent_role,
     agent_persona = excluded.agent_persona,
+    thread_note = excluded.thread_note,
     model_provider = excluded.model_provider,
     cwd = excluded.cwd,
     cli_version = excluded.cli_version,
@@ -373,6 +392,7 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(metadata.agent_nickname.as_deref())
         .bind(metadata.agent_role.as_deref())
         .bind(metadata.agent_persona.as_deref())
+        .bind(metadata.thread_note.as_deref())
         .bind(metadata.model_provider.as_str())
         .bind(metadata.cwd.display().to_string())
         .bind(metadata.cli_version.as_str())
@@ -731,6 +751,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upsert_thread_round_trips_thread_note() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("state db should initialize");
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000126").expect("valid thread id");
+        let mut metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
+        metadata.thread_note = Some("remember this".to_string());
+
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("upsert should succeed");
+
+        let persisted = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("thread should load")
+            .expect("thread should exist");
+        assert_eq!(persisted.thread_note.as_deref(), Some("remember this"));
+    }
+
+    #[tokio::test]
     async fn apply_rollout_items_restores_memory_mode_from_session_meta() {
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
@@ -763,6 +807,7 @@ mod tests {
                 agent_nickname: None,
                 agent_role: None,
                 agent_persona: Some("friendly".to_string()),
+                thread_note: Some("remember this".to_string()),
                 model_provider: None,
                 base_instructions: None,
                 dynamic_tools: None,
@@ -787,6 +832,7 @@ mod tests {
             .expect("thread should load")
             .expect("thread should exist");
         assert_eq!(persisted.agent_persona.as_deref(), Some("friendly"));
+        assert_eq!(persisted.thread_note.as_deref(), Some("remember this"));
     }
 
     #[tokio::test]
@@ -905,6 +951,7 @@ INSERT INTO threads (
             .expect("thread should load")
             .expect("thread should exist");
         assert_eq!(persisted.agent_persona, None);
+        assert_eq!(persisted.thread_note, None);
     }
 
     #[tokio::test]
@@ -942,6 +989,7 @@ INSERT INTO threads (
                 agent_nickname: None,
                 agent_role: None,
                 agent_persona: None,
+                thread_note: None,
                 model_provider: None,
                 base_instructions: None,
                 dynamic_tools: None,
@@ -970,6 +1018,48 @@ INSERT INTO threads (
             persisted.git_origin_url.as_deref(),
             Some("git@example.com:openai/codex.git")
         );
+    }
+
+    #[tokio::test]
+    async fn update_thread_note_round_trips_changes() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("state db should initialize");
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000790").expect("valid thread id");
+        let metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
+
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("initial upsert should succeed");
+
+        let updated = runtime
+            .update_thread_note(thread_id, Some("pinned context"))
+            .await
+            .expect("update_thread_note should succeed");
+        assert!(updated);
+
+        let persisted = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("thread should load")
+            .expect("thread should exist");
+        assert_eq!(persisted.thread_note.as_deref(), Some("pinned context"));
+
+        let updated = runtime
+            .update_thread_note(thread_id, None)
+            .await
+            .expect("clear thread note should succeed");
+        assert!(updated);
+
+        let persisted = runtime
+            .get_thread(thread_id)
+            .await
+            .expect("thread should load")
+            .expect("thread should exist");
+        assert_eq!(persisted.thread_note, None);
     }
 
     #[tokio::test]

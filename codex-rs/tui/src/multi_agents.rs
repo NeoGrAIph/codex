@@ -82,6 +82,7 @@ pub(crate) fn spawn_end(ev: CollabAgentSpawnEndEvent) -> PlainHistoryCell {
         new_agent_nickname,
         new_agent_persona: _,
         new_agent_role,
+        new_thread_note: _,
         prompt,
         status: _,
     } = ev;
@@ -327,6 +328,7 @@ fn merge_wait_receivers(
                 agent_nickname: None,
                 agent_persona: None,
                 agent_role: None,
+                thread_note: None,
             })
             .collect();
     }
@@ -342,6 +344,7 @@ fn merge_wait_receivers(
                 agent_nickname: None,
                 agent_persona: None,
                 agent_role: None,
+                thread_note: None,
             });
         }
     }
@@ -364,6 +367,7 @@ fn wait_complete_lines(
                 agent_nickname: None,
                 agent_persona: None,
                 agent_role: None,
+                thread_note: None,
                 status: status.clone(),
             })
             .collect::<Vec<_>>();
@@ -383,6 +387,7 @@ fn wait_complete_lines(
                 agent_nickname: None,
                 agent_persona: None,
                 agent_role: None,
+                thread_note: None,
                 status: status.clone(),
             })
             .collect::<Vec<_>>();
@@ -399,6 +404,7 @@ fn wait_complete_lines(
                 agent_nickname,
                 agent_persona: _,
                 agent_role,
+                thread_note: _,
                 status,
             } = entry;
             let mut spans = agent_label_spans(AgentLabel {
@@ -477,6 +483,7 @@ mod tests {
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_persona: None,
             new_agent_role: Some("explorer".to_string()),
+            new_thread_note: None,
             prompt: "Compute 11! and reply with just the integer result.".to_string(),
             status: AgentStatus::PendingInit,
         });
@@ -500,6 +507,7 @@ mod tests {
                 agent_nickname: Some("Robie".to_string()),
                 agent_persona: None,
                 agent_role: Some("explorer".to_string()),
+                thread_note: None,
             }],
             call_id: "call-wait".to_string(),
         });
@@ -519,6 +527,7 @@ mod tests {
                     agent_nickname: Some("Robie".to_string()),
                     agent_persona: None,
                     agent_role: Some("explorer".to_string()),
+                    thread_note: None,
                     status: AgentStatus::Completed(Some("39916800".to_string())),
                 },
                 CollabAgentStatusEntry {
@@ -526,6 +535,7 @@ mod tests {
                     agent_nickname: Some("Bob".to_string()),
                     agent_persona: None,
                     agent_role: Some("worker".to_string()),
+                    thread_note: None,
                     status: AgentStatus::Errored("tool timeout".to_string()),
                 },
             ],
@@ -563,6 +573,7 @@ mod tests {
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_persona: None,
             new_agent_role: Some("explorer".to_string()),
+            new_thread_note: None,
             prompt: String::new(),
             status: AgentStatus::PendingInit,
         });

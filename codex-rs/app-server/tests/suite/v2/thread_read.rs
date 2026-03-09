@@ -14,12 +14,15 @@ use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadNameUpdatedNotification;
+use codex_app_server_protocol::ThreadNoteUpdatedNotification;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadSetNameParams;
 use codex_app_server_protocol::ThreadSetNameResponse;
+use codex_app_server_protocol::ThreadSetNoteParams;
+use codex_app_server_protocol::ThreadSetNoteResponse;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -290,8 +293,8 @@ async fn thread_name_set_is_reflected_in_read_list_and_resume() -> Result<()> {
             cursor: None,
             limit: Some(50),
             sort_key: None,
-            model_providers: None,
-            source_kinds: None,
+            model_providers: Some(vec!["mock_provider".to_string()]),
+            source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
             archived: None,
             cwd: None,
             search_term: None,
@@ -365,6 +368,412 @@ async fn thread_name_set_is_reflected_in_read_list_and_resume() -> Result<()> {
 }
 
 #[tokio::test]
+async fn thread_note_set_is_reflected_in_read_list_and_resume() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let preview = "Saved user message";
+    let parent_thread_id = codex_protocol::ThreadId::from_string(&Uuid::new_v4().to_string())?;
+    let conversation_id = create_fake_rollout_with_source(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        preview,
+        Some("mock_provider"),
+        None,
+        CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_nickname: None,
+            agent_role: None,
+            agent_persona: None,
+            allow_list: None,
+            deny_list: None,
+            thread_note: None,
+        }),
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let new_note = "Keep the shell transcript concise";
+    let set_id = mcp
+        .send_thread_set_note_request(ThreadSetNoteParams {
+            thread_id: conversation_id.clone(),
+            note: Some(new_note.to_string()),
+        })
+        .await?;
+    let set_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(set_id)),
+    )
+    .await??;
+    let _: ThreadSetNoteResponse = to_response::<ThreadSetNoteResponse>(set_resp)?;
+    let notification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/note/updated"),
+    )
+    .await??;
+    let notification: ThreadNoteUpdatedNotification =
+        serde_json::from_value(notification.params.expect("thread/note/updated params"))?;
+    assert_eq!(notification.thread_id, conversation_id);
+    assert_eq!(notification.thread_note.as_deref(), Some(new_note));
+
+    let read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: conversation_id.clone(),
+            include_turns: false,
+        })
+        .await?;
+    let read_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
+    )
+    .await??;
+    let read_result = read_resp.result.clone();
+    let ThreadReadResponse { thread } = to_response::<ThreadReadResponse>(read_resp)?;
+    assert_eq!(thread.id, conversation_id);
+    assert_eq!(thread.thread_note.as_deref(), Some(new_note));
+    assert_eq!(thread.source.get_thread_note().as_deref(), Some(new_note));
+    let thread_json = read_result
+        .get("thread")
+        .and_then(Value::as_object)
+        .expect("thread/read result.thread must be an object");
+    assert_eq!(
+        thread_json.get("threadNote").and_then(Value::as_str),
+        Some(new_note),
+        "thread/read must serialize `thread.threadNote` on the wire"
+    );
+    assert_eq!(
+        thread_json
+            .get("source")
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("subAgent"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_spawn"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_note"))
+            .and_then(Value::as_str),
+        Some(new_note),
+        "thread/read must keep nested thread_spawn.thread_note in sync"
+    );
+
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: conversation_id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(resume_id)),
+    )
+    .await??;
+    let resume_result = resume_resp.result.clone();
+    let ThreadResumeResponse { thread, .. } = to_response::<ThreadResumeResponse>(resume_resp)?;
+    assert_eq!(thread.id, conversation_id);
+    assert_eq!(thread.thread_note.as_deref(), Some(new_note));
+    assert_eq!(thread.source.get_thread_note().as_deref(), Some(new_note));
+    let resumed_json = resume_result
+        .get("thread")
+        .and_then(Value::as_object)
+        .expect("thread/resume result.thread must be an object");
+    assert_eq!(
+        resumed_json
+            .get("source")
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("subAgent"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_spawn"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_note"))
+            .and_then(Value::as_str),
+        Some(new_note),
+        "thread/resume must keep nested thread_spawn.thread_note in sync"
+    );
+
+    let clear_id = mcp
+        .send_thread_set_note_request(ThreadSetNoteParams {
+            thread_id: conversation_id.clone(),
+            note: None,
+        })
+        .await?;
+    let clear_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(clear_id)),
+    )
+    .await??;
+    let _: ThreadSetNoteResponse = to_response::<ThreadSetNoteResponse>(clear_resp)?;
+    let clear_notification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/note/updated"),
+    )
+    .await??;
+    let clear_notification: ThreadNoteUpdatedNotification = serde_json::from_value(
+        clear_notification
+            .params
+            .expect("thread/note/updated params for clear"),
+    )?;
+    assert_eq!(clear_notification.thread_id, conversation_id);
+    assert_eq!(clear_notification.thread_note, None);
+
+    let cleared_read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: conversation_id.clone(),
+            include_turns: false,
+        })
+        .await?;
+    let cleared_read_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(cleared_read_id)),
+    )
+    .await??;
+    let cleared_read_result = cleared_read_resp.result.clone();
+    let ThreadReadResponse { thread } = to_response::<ThreadReadResponse>(cleared_read_resp)?;
+    assert_eq!(thread.thread_note, None);
+    assert_eq!(thread.source.get_thread_note(), None);
+    let cleared_thread_json = cleared_read_result
+        .get("thread")
+        .and_then(Value::as_object)
+        .expect("thread/read result.thread after clear must be an object");
+    assert_eq!(cleared_thread_json.get("threadNote"), Some(&Value::Null));
+    assert_eq!(
+        cleared_thread_json
+            .get("source")
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("subAgent"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_spawn"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_note")),
+        Some(&Value::Null),
+        "thread/read after clear must serialize nested thread_spawn.thread_note as null"
+    );
+
+    let cleared_list_id = mcp
+        .send_thread_list_request(ThreadListParams {
+            cursor: None,
+            limit: Some(10),
+            sort_key: None,
+            model_providers: Some(vec!["mock_provider".to_string()]),
+            source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+            archived: None,
+            cwd: None,
+            search_term: None,
+        })
+        .await?;
+    let cleared_list_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(cleared_list_id)),
+    )
+    .await??;
+    let cleared_list_result = cleared_list_resp.result.clone();
+    let ThreadListResponse { data, .. } = to_response::<ThreadListResponse>(cleared_list_resp)?;
+    let listed = data
+        .into_iter()
+        .find(|thread| thread.id == conversation_id)
+        .expect("thread/list should include the cleared thread");
+    assert_eq!(listed.thread_note, None);
+    assert_eq!(listed.source.get_thread_note(), None);
+    let listed_json = cleared_list_result
+        .get("data")
+        .and_then(Value::as_array)
+        .expect("thread/list result.data must be an array")
+        .iter()
+        .find(|thread| thread.get("id").and_then(Value::as_str) == Some(&conversation_id))
+        .and_then(Value::as_object)
+        .expect("thread/list should include the cleared thread as an object");
+    assert_eq!(listed_json.get("threadNote"), Some(&Value::Null));
+    assert_eq!(
+        listed_json
+            .get("source")
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("subAgent"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_spawn"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_note")),
+        Some(&Value::Null),
+        "thread/list after clear must serialize nested thread_spawn.thread_note as null"
+    );
+
+    let running_resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: conversation_id.clone(),
+            ..Default::default()
+        })
+        .await?;
+    let running_resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(running_resume_id)),
+    )
+    .await??;
+    let running_resume_result = running_resume_resp.result.clone();
+    let ThreadResumeResponse {
+        thread: running_resumed,
+        ..
+    } = to_response::<ThreadResumeResponse>(running_resume_resp)?;
+    assert_eq!(running_resumed.thread_note, None);
+    assert_eq!(running_resumed.source.get_thread_note(), None);
+    let running_resumed_json = running_resume_result
+        .get("thread")
+        .and_then(Value::as_object)
+        .expect("thread/resume result.thread after clear must be an object");
+    assert_eq!(running_resumed_json.get("threadNote"), Some(&Value::Null));
+    assert_eq!(
+        running_resumed_json
+            .get("source")
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("subAgent"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_spawn"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_note")),
+        Some(&Value::Null),
+        "thread/resume after clear must serialize nested thread_spawn.thread_note as null"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_note_clear_on_unloaded_thread_keeps_nested_source_in_sync() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let parent_thread_id = codex_protocol::ThreadId::from_string(&Uuid::new_v4().to_string())?;
+    let conversation_id = create_fake_rollout_with_source(
+        codex_home.path(),
+        "2025-01-06T12-00-00",
+        "2025-01-06T12:00:00Z",
+        "Saved user message",
+        Some("mock_provider"),
+        None,
+        CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_nickname: None,
+            agent_role: None,
+            agent_persona: None,
+            allow_list: None,
+            deny_list: None,
+            thread_note: None,
+        }),
+    )?;
+
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    for note in [Some("remember the audit"), None] {
+        let request_id = mcp
+            .send_thread_set_note_request(ThreadSetNoteParams {
+                thread_id: conversation_id.clone(),
+                note: note.map(str::to_string),
+            })
+            .await?;
+        let response: JSONRPCResponse = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+        )
+        .await??;
+        let _: ThreadSetNoteResponse = to_response::<ThreadSetNoteResponse>(response)?;
+        let notification = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_notification_message("thread/note/updated"),
+        )
+        .await??;
+        let notification: ThreadNoteUpdatedNotification =
+            serde_json::from_value(notification.params.expect("thread/note/updated params"))?;
+        assert_eq!(notification.thread_id, conversation_id);
+        assert_eq!(notification.thread_note.as_deref(), note);
+    }
+
+    let read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: conversation_id.clone(),
+            include_turns: false,
+        })
+        .await?;
+    let read_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
+    )
+    .await??;
+    let read_result = read_resp.result.clone();
+    let ThreadReadResponse { thread } = to_response::<ThreadReadResponse>(read_resp)?;
+    assert_eq!(thread.thread_note, None);
+    assert_eq!(thread.source.get_thread_note(), None);
+    let thread_json = read_result
+        .get("thread")
+        .and_then(Value::as_object)
+        .expect("thread/read result.thread after unloaded clear must be an object");
+    assert_eq!(thread_json.get("threadNote"), Some(&Value::Null));
+    assert_eq!(
+        thread_json
+            .get("source")
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("subAgent"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_spawn"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_note")),
+        Some(&Value::Null),
+        "thread/read after unloaded clear must serialize nested thread_spawn.thread_note as null"
+    );
+
+    let list_id = mcp
+        .send_thread_list_request(ThreadListParams {
+            cursor: None,
+            limit: Some(10),
+            sort_key: None,
+            model_providers: Some(vec!["mock_provider".to_string()]),
+            source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+            archived: None,
+            cwd: None,
+            search_term: None,
+        })
+        .await?;
+    let list_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_id)),
+    )
+    .await??;
+    let list_result = list_resp.result.clone();
+    let ThreadListResponse { data, .. } = to_response::<ThreadListResponse>(list_resp)?;
+    let listed = data
+        .into_iter()
+        .find(|thread| thread.id == conversation_id)
+        .expect("thread/list should include the unloaded thread");
+    assert_eq!(listed.thread_note, None);
+    assert_eq!(listed.source.get_thread_note(), None);
+    let listed_json = list_result
+        .get("data")
+        .and_then(Value::as_array)
+        .expect("thread/list result.data after unloaded clear must be an array")
+        .iter()
+        .find(|thread| thread.get("id").and_then(Value::as_str) == Some(&conversation_id))
+        .and_then(Value::as_object)
+        .expect("thread/list should include the unloaded thread as an object");
+    assert_eq!(listed_json.get("threadNote"), Some(&Value::Null));
+    assert_eq!(
+        listed_json
+            .get("source")
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("subAgent"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_spawn"))
+            .and_then(Value::as_object)
+            .and_then(|source| source.get("thread_note")),
+        Some(&Value::Null),
+        "thread/list after unloaded clear must serialize nested thread_spawn.thread_note as null"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_read_list_and_resume_preserve_agent_persona() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
@@ -386,6 +795,7 @@ async fn thread_read_list_and_resume_preserve_agent_persona() -> Result<()> {
             agent_persona: None,
             allow_list: None,
             deny_list: None,
+            thread_note: None,
         }),
     )?;
     let rollout_path = rollout_path(

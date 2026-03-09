@@ -420,6 +420,11 @@ pub enum Op {
     /// involve the model.
     SetThreadName { name: String },
 
+    /// Set a user-facing thread note in the persisted rollout metadata.
+    /// This is a local-only operation handled by codex-core; it does not
+    /// involve the model.
+    SetThreadNote { note: Option<String> },
+
     /// Request Codex to undo a turn (turn are stacked so it is the same effect as CMD + Z).
     Undo,
 
@@ -1074,6 +1079,9 @@ pub enum EventMsg {
 
     /// Updated session metadata (e.g., thread name changes).
     ThreadNameUpdated(ThreadNameUpdatedEvent),
+
+    /// Updated session metadata (e.g., thread note changes).
+    ThreadNoteUpdated(ThreadNoteUpdatedEvent),
 
     /// Incremental MCP startup progress updates.
     McpStartupUpdate(McpStartupUpdateEvent),
@@ -2016,6 +2024,31 @@ impl InitialHistory {
             }),
         }
     }
+
+    pub fn get_thread_note(&self) -> Option<String> {
+        let items = match self {
+            InitialHistory::New => return None,
+            InitialHistory::Resumed(resumed) => &resumed.history,
+            InitialHistory::Forked(items) => items,
+        };
+
+        let mut thread_note = items.iter().find_map(|item| match item {
+            RolloutItem::SessionMeta(meta_line) => meta_line
+                .meta
+                .thread_note
+                .clone()
+                .or_else(|| meta_line.meta.source.get_thread_note()),
+            _ => None,
+        });
+
+        for item in items {
+            if let RolloutItem::EventMsg(EventMsg::ThreadNoteUpdated(event)) = item {
+                thread_note = event.thread_note.clone();
+            }
+        }
+
+        thread_note
+    }
 }
 
 fn session_cwd_from_items(items: &[RolloutItem]) -> Option<PathBuf> {
@@ -2054,6 +2087,8 @@ pub enum SubAgentSource {
         agent_role: Option<String>,
         #[serde(default)]
         agent_persona: Option<String>,
+        #[serde(default)]
+        thread_note: Option<String>,
         #[serde(default)]
         allow_list: Option<Vec<String>>,
         #[serde(default)]
@@ -2109,6 +2144,15 @@ impl SessionSource {
             _ => None,
         }
     }
+
+    pub fn get_thread_note(&self) -> Option<String> {
+        match self {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { thread_note, .. }) => {
+                thread_note.clone()
+            }
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for SubAgentSource {
@@ -2154,6 +2198,9 @@ pub struct SessionMeta {
     /// Optional persona assigned to an AgentControl-spawned sub-agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_persona: Option<String>,
+    /// Optional user-facing thread note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_note: Option<String>,
     pub model_provider: Option<String>,
     /// base_instructions for the session. This *should* always be present when creating a new session,
     /// but may be missing for older sessions. If not present, fall back to rendering the base_instructions
@@ -2178,6 +2225,7 @@ impl Default for SessionMeta {
             agent_nickname: None,
             agent_role: None,
             agent_persona: None,
+            thread_note: None,
             model_provider: None,
             base_instructions: None,
             dynamic_tools: None,
@@ -2833,6 +2881,11 @@ pub struct SessionConfiguredEvent {
     #[ts(optional)]
     pub thread_name: Option<String>,
 
+    /// Optional user-facing thread note (may be unset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_note: Option<String>,
+
     /// Tell the client what model is being queried.
     pub model: String,
 
@@ -2876,12 +2929,20 @@ pub struct SessionConfiguredEvent {
     pub rollout_path: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 pub struct ThreadNameUpdatedEvent {
     pub thread_id: ThreadId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub thread_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct ThreadNoteUpdatedEvent {
+    pub thread_id: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_note: Option<String>,
 }
 
 /// User's decision in response to an ExecApprovalRequest.
@@ -3000,6 +3061,9 @@ pub struct CollabAgentRef {
     /// Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
     #[serde(default, alias = "agent_type", skip_serializing_if = "Option::is_none")]
     pub agent_role: Option<String>,
+    /// Optional user-facing note assigned to an AgentControl-spawned sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -3015,6 +3079,9 @@ pub struct CollabAgentStatusEntry {
     /// Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
     #[serde(default, alias = "agent_type", skip_serializing_if = "Option::is_none")]
     pub agent_role: Option<String>,
+    /// Optional user-facing note assigned to an AgentControl-spawned sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_note: Option<String>,
     /// Last known status of the agent.
     pub status: AgentStatus,
 }
@@ -3036,6 +3103,9 @@ pub struct CollabAgentSpawnEndEvent {
     /// Optional role assigned to the new agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_agent_role: Option<String>,
+    /// Optional note assigned to the new agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_thread_note: Option<String>,
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
@@ -3188,6 +3258,7 @@ mod tests {
     use anyhow::Result;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+    use std::path::PathBuf;
     use tempfile::NamedTempFile;
 
     #[test]
@@ -3601,6 +3672,7 @@ mod tests {
                 session_id: conversation_id,
                 forked_from_id: None,
                 thread_name: None,
+                thread_note: None,
                 model: "codex-mini-latest".to_string(),
                 model_provider_id: "openai".to_string(),
                 service_tier: None,
@@ -3764,6 +3836,7 @@ mod tests {
                 agent_nickname: Some("Atlas".to_string()),
                 agent_persona: None,
                 agent_role: Some("worker".to_string()),
+                thread_note: None,
                 status: AgentStatus::Running,
             }]
         );
@@ -3781,13 +3854,28 @@ mod tests {
             new_agent_nickname: Some("Atlas".to_string()),
             new_agent_persona: Some("reviewer".to_string()),
             new_agent_role: Some("worker".to_string()),
+            new_thread_note: Some("focus on edge cases".to_string()),
             prompt: "inspect this change".to_string(),
             status: AgentStatus::Running,
         };
 
         let value = serde_json::to_value(&event)?;
         assert_eq!(value["new_agent_persona"], "reviewer");
+        assert_eq!(value["new_thread_note"], "focus on edge cases");
         let roundtrip: CollabAgentSpawnEndEvent = serde_json::from_value(value)?;
+        assert_eq!(roundtrip, event);
+        Ok(())
+    }
+
+    #[test]
+    fn thread_note_updated_event_roundtrips() -> Result<()> {
+        let event = ThreadNoteUpdatedEvent {
+            thread_id: ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")?,
+            thread_note: Some("pin this context".to_string()),
+        };
+
+        let value = serde_json::to_value(&event)?;
+        let roundtrip: ThreadNoteUpdatedEvent = serde_json::from_value(value)?;
         assert_eq!(roundtrip, event);
         Ok(())
     }
@@ -3806,8 +3894,10 @@ mod tests {
 
         assert_eq!(source.get_agent_role(), Some("explorer".to_string()));
         assert_eq!(source.get_agent_persona(), None);
+        assert_eq!(source.get_thread_note(), None);
 
         let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            thread_note,
             allow_list,
             deny_list,
             ..
@@ -3816,6 +3906,7 @@ mod tests {
             panic!("expected thread spawn source");
         };
 
+        assert_eq!(thread_note, None);
         assert_eq!(allow_list, None);
         assert_eq!(deny_list, None);
         Ok(())
@@ -3829,6 +3920,7 @@ mod tests {
             agent_nickname: Some("Atlas".to_string()),
             agent_role: Some("worker".to_string()),
             agent_persona: Some("runner".to_string()),
+            thread_note: Some("prefer shell over web".to_string()),
             allow_list: Some(vec!["shell".to_string(), "web.search".to_string()]),
             deny_list: Some(vec!["exec_command".to_string()]),
         });
@@ -3838,6 +3930,50 @@ mod tests {
 
         assert_eq!(roundtrip, source);
         assert_eq!(roundtrip.get_agent_persona(), Some("runner".to_string()));
+        assert_eq!(
+            roundtrip.get_thread_note(),
+            Some("prefer shell over web".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn initial_history_thread_note_falls_back_to_nested_thread_spawn_source() -> Result<()> {
+        let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")?,
+            depth: 1,
+            agent_nickname: None,
+            agent_role: None,
+            agent_persona: None,
+            thread_note: Some("remember the audit".to_string()),
+            allow_list: None,
+            deny_list: None,
+        });
+        let history = InitialHistory::Forked(vec![RolloutItem::SessionMeta(SessionMetaLine {
+            meta: SessionMeta {
+                id: ThreadId::from_string("019cc863-08e1-70c3-8a8c-9858271aab69")?,
+                forked_from_id: None,
+                timestamp: "2026-03-07T13:00:59.000Z".to_string(),
+                cwd: PathBuf::from("/"),
+                originator: "codex".to_string(),
+                cli_version: "0.111.0".to_string(),
+                agent_nickname: None,
+                agent_role: None,
+                agent_persona: None,
+                thread_note: None,
+                source,
+                model_provider: Some("mock_provider".to_string()),
+                base_instructions: None,
+                dynamic_tools: None,
+                memory_mode: None,
+            },
+            git: None,
+        })]);
+
+        assert_eq!(
+            history.get_thread_note(),
+            Some("remember the audit".to_string())
+        );
         Ok(())
     }
 }

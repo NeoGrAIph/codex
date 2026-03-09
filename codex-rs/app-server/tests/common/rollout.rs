@@ -87,6 +87,7 @@ pub fn create_fake_rollout_with_source(
         base_instructions: None,
         dynamic_tools: None,
         memory_mode: None,
+        thread_note: None,
     };
     let payload = serde_json::to_value(SessionMetaLine {
         meta,
@@ -170,6 +171,7 @@ pub fn create_fake_rollout_with_text_elements(
         base_instructions: None,
         dynamic_tools: None,
         memory_mode: None,
+        thread_note: None,
     };
     let payload = serde_json::to_value(SessionMetaLine {
         meta,
@@ -261,6 +263,62 @@ pub fn set_rollout_thread_spawn_agent_persona(
         }
         None => {
             source.remove("agent_persona");
+        }
+    }
+
+    *first_line = serde_json::to_string(&rollout_line)?;
+    fs::write(path, lines.join("\n") + "\n")?;
+    Ok(())
+}
+
+pub fn set_rollout_thread_spawn_thread_note(path: &Path, thread_note: Option<&str>) -> Result<()> {
+    let content = fs::read_to_string(path)?;
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    let first_line = lines
+        .first_mut()
+        .ok_or_else(|| anyhow::anyhow!("rollout at {} is empty", path.display()))?;
+    let mut rollout_line: Value = serde_json::from_str(first_line)?;
+    let session_meta = rollout_line
+        .get_mut("payload")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| anyhow::anyhow!("rollout at {} is missing payload", path.display()))?;
+    let session_meta = if session_meta.contains_key("meta") {
+        session_meta
+            .get_mut("meta")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| anyhow::anyhow!("rollout at {} has non-object meta", path.display()))?
+    } else {
+        session_meta
+    };
+    let source = session_meta
+        .get_mut("source")
+        .and_then(Value::as_object_mut)
+        .and_then(|source| {
+            if source.contains_key("subagent") {
+                source.get_mut("subagent")
+            } else {
+                source.get_mut("sub_agent")
+            }
+        })
+        .and_then(Value::as_object_mut)
+        .and_then(|source| source.get_mut("thread_spawn"))
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "rollout at {} does not use sub_agent.thread_spawn",
+                path.display()
+            )
+        })?;
+
+    match thread_note {
+        Some(thread_note) => {
+            source.insert(
+                "thread_note".to_string(),
+                Value::String(thread_note.to_string()),
+            );
+        }
+        None => {
+            source.remove("thread_note");
         }
     }
 

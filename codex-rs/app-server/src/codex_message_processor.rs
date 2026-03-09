@@ -117,6 +117,7 @@ use codex_app_server_protocol::ThreadMetadataGitInfoUpdateParams;
 use codex_app_server_protocol::ThreadMetadataUpdateParams;
 use codex_app_server_protocol::ThreadMetadataUpdateResponse;
 use codex_app_server_protocol::ThreadNameUpdatedNotification;
+use codex_app_server_protocol::ThreadNoteUpdatedNotification;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadRealtimeAppendAudioParams;
@@ -132,6 +133,8 @@ use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadRollbackParams;
 use codex_app_server_protocol::ThreadSetNameParams;
 use codex_app_server_protocol::ThreadSetNameResponse;
+use codex_app_server_protocol::ThreadSetNoteParams;
+use codex_app_server_protocol::ThreadSetNoteResponse;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadStartParams;
@@ -242,8 +245,10 @@ use codex_protocol::protocol::ReviewDelivery as CoreReviewDelivery;
 use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::ReviewTarget as CoreReviewTarget;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionMetaLine;
+use codex_protocol::protocol::ThreadNoteUpdatedEvent;
 use codex_protocol::protocol::USER_MESSAGE_BEGIN;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_protocol::user_input::UserInput as CoreInputItem;
@@ -258,6 +263,7 @@ use std::ffi::OsStr;
 use std::fs::FileTimes;
 use std::fs::OpenOptions;
 use std::io::Error as IoError;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -606,6 +612,10 @@ impl CodexMessageProcessor {
             }
             ClientRequest::ThreadSetName { request_id, params } => {
                 self.thread_set_name(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::ThreadSetNote { request_id, params } => {
+                self.thread_set_note(to_connection_request_id(request_id), params)
                     .await;
             }
             ClientRequest::ThreadMetadataUpdate { request_id, params } => {
@@ -1943,6 +1953,181 @@ impl CodexMessageProcessor {
             .await;
     }
 
+    async fn thread_set_note(&self, request_id: ConnectionRequestId, params: ThreadSetNoteParams) {
+        let ThreadSetNoteParams { thread_id, note } = params;
+        let thread_id = match ThreadId::from_string(&thread_id) {
+            Ok(id) => id,
+            Err(err) => {
+                self.send_invalid_request_error(request_id, format!("invalid thread id: {err}"))
+                    .await;
+                return;
+            }
+        };
+        let note = codex_core::util::normalize_thread_note(note.as_deref());
+
+        let thread_id_str = thread_id.to_string();
+        let mut loaded_thread = self.thread_manager.get_thread(thread_id).await.ok();
+        if loaded_thread.is_none()
+            && !matches!(
+                self.thread_watch_manager
+                    .loaded_status_for_thread(&thread_id_str)
+                    .await,
+                ThreadStatus::NotLoaded
+            )
+        {
+            for _ in 0..10 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                if let Ok(thread) = self.thread_manager.get_thread(thread_id).await {
+                    loaded_thread = Some(thread);
+                    break;
+                }
+            }
+        }
+
+        if let Some(thread) = loaded_thread {
+            if let Err(err) = thread
+                .submit(Op::SetThreadNote { note: note.clone() })
+                .await
+            {
+                self.send_internal_error(request_id, format!("failed to set thread note: {err}"))
+                    .await;
+                return;
+            }
+
+            let mut applied = false;
+            for _ in 0..50 {
+                if thread.config_snapshot().await.thread_note == note {
+                    applied = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            if !applied {
+                self.send_internal_error(
+                    request_id,
+                    format!(
+                        "timed out waiting for thread note update on loaded thread {thread_id}"
+                    ),
+                )
+                .await;
+                return;
+            }
+            self.outgoing
+                .send_response(request_id, ThreadSetNoteResponse {})
+                .await;
+            return;
+        }
+
+        let rollout_path =
+            match find_thread_path_by_id_str(&self.config.codex_home, &thread_id.to_string()).await
+            {
+                Ok(Some(path)) => path,
+                Ok(None) => {
+                    self.send_invalid_request_error(
+                        request_id,
+                        format!("thread not found: {thread_id}"),
+                    )
+                    .await;
+                    return;
+                }
+                Err(err) => {
+                    self.send_invalid_request_error(
+                        request_id,
+                        format!("failed to locate thread id {thread_id}: {err}"),
+                    )
+                    .await;
+                    return;
+                }
+            };
+
+        let state_db_ctx = get_state_db_allow_unready(&self.config).await;
+        let Some(state_db_ctx) = state_db_ctx else {
+            self.send_internal_error(
+                request_id,
+                format!("sqlite state db unavailable for thread {thread_id}"),
+            )
+            .await;
+            return;
+        };
+
+        if let Err(err) =
+            append_thread_note_to_rollout(rollout_path.as_path(), thread_id, note.clone())
+        {
+            self.send_internal_error(request_id, format!("failed to persist thread note: {err}"))
+                .await;
+            return;
+        }
+
+        codex_core::state_db::reconcile_rollout(
+            Some(state_db_ctx.as_ref()),
+            rollout_path.as_path(),
+            self.config.model_provider_id.as_str(),
+            None,
+            &[],
+            None,
+            None,
+        )
+        .await;
+
+        let Some(summary) =
+            read_summary_from_state_db_context_by_thread_id(Some(&state_db_ctx), thread_id).await
+        else {
+            self.send_internal_error(
+                request_id,
+                format!("failed to reconcile thread note for {thread_id} into sqlite state db"),
+            )
+            .await;
+            return;
+        };
+        let Ok(Some(metadata)) = state_db_ctx.get_thread(thread_id).await else {
+            self.send_internal_error(
+                request_id,
+                format!("failed to load reconciled thread note metadata for {thread_id}"),
+            )
+            .await;
+            return;
+        };
+        if metadata.thread_note != note {
+            self.send_internal_error(
+                request_id,
+                format!(
+                    "thread note reconcile mismatch for {thread_id}: expected {:?}, got {:?}",
+                    note, metadata.thread_note
+                ),
+            )
+            .await;
+            return;
+        }
+        if matches!(
+            summary.source,
+            codex_protocol::protocol::SessionSource::SubAgent(_)
+        ) && summary.source.get_thread_note() != note
+        {
+            self.send_internal_error(
+                request_id,
+                format!(
+                    "thread spawn note reconcile mismatch for {thread_id}: expected {:?}, got {:?}",
+                    note,
+                    summary.source.get_thread_note()
+                ),
+            )
+            .await;
+            return;
+        }
+
+        self.outgoing
+            .send_response(request_id, ThreadSetNoteResponse {})
+            .await;
+        self.outgoing
+            .send_server_notification(ServerNotification::ThreadNoteUpdated(
+                ThreadNoteUpdatedNotification {
+                    thread_id: thread_id.to_string(),
+                    thread_note: note,
+                },
+            ))
+            .await;
+    }
+
     async fn thread_metadata_update(
         &self,
         request_id: ConnectionRequestId,
@@ -2097,6 +2282,7 @@ impl CodexMessageProcessor {
 
         let mut thread = summary_to_thread(summary);
         self.attach_thread_name(thread_uuid, &mut thread).await;
+        self.attach_thread_note(thread_uuid, &mut thread).await;
         thread.status = resolve_thread_status(
             self.thread_watch_manager
                 .loaded_status_for_thread(&thread.id)
@@ -2416,6 +2602,7 @@ impl CodexMessageProcessor {
                     false,
                 );
                 self.attach_thread_name(thread_id, &mut thread).await;
+                self.attach_thread_note(thread_id, &mut thread).await;
                 let thread_id = thread.id.clone();
                 let response = ThreadUnarchiveResponse { thread };
                 self.outgoing.send_response(request_id, response).await;
@@ -2596,7 +2783,13 @@ impl CodexMessageProcessor {
             let conversation_id = summary.conversation_id;
             thread_ids.insert(conversation_id);
 
-            let thread = summary_to_thread(summary);
+            let mut thread = summary_to_thread(summary);
+            if let Ok(loaded_thread) = self.thread_manager.get_thread(conversation_id).await {
+                let config_snapshot = loaded_thread.config_snapshot().await;
+                sync_thread_note_with_config_snapshot(&mut thread, &config_snapshot);
+            } else {
+                self.attach_thread_note(conversation_id, &mut thread).await;
+            }
             status_ids.push(thread.id.clone());
             threads.push((conversation_id, thread));
         }
@@ -2743,6 +2936,7 @@ impl CodexMessageProcessor {
             return;
         }
 
+        let mut built_from_loaded_snapshot = false;
         let mut thread = if let Some(summary) = db_summary {
             summary_to_thread(summary)
         } else if let Some(rollout_path) = rollout_path.as_ref() {
@@ -2762,7 +2956,7 @@ impl CodexMessageProcessor {
                 }
             }
         } else {
-            let Some(thread) = loaded_thread else {
+            let Some(ref thread) = loaded_thread else {
                 self.send_invalid_request_error(
                     request_id,
                     format!("thread not loaded: {thread_uuid}"),
@@ -2783,9 +2977,21 @@ impl CodexMessageProcessor {
             if include_turns {
                 rollout_path = loaded_rollout_path.clone();
             }
+            built_from_loaded_snapshot = true;
             build_thread_from_snapshot(thread_uuid, &config_snapshot, loaded_rollout_path)
         };
+        if let Some(loaded_thread) = loaded_thread.as_ref() {
+            let config_snapshot = loaded_thread.config_snapshot().await;
+            if built_from_loaded_snapshot {
+                sync_thread_with_config_snapshot(&mut thread, &config_snapshot);
+            } else {
+                sync_thread_note_with_config_snapshot(&mut thread, &config_snapshot);
+            }
+        }
         self.attach_thread_name(thread_uuid, &mut thread).await;
+        if loaded_thread.is_none() {
+            self.attach_thread_note(thread_uuid, &mut thread).await;
+        }
 
         if include_turns && let Some(rollout_path) = rollout_path.as_ref() {
             match read_rollout_items_from_rollout(rollout_path).await {
@@ -3310,6 +3516,7 @@ impl CodexMessageProcessor {
         rollout_path: &Path,
         fallback_provider: &str,
     ) -> Option<Thread> {
+        let built_from_snapshot = matches!(thread_history, InitialHistory::Forked(_));
         let thread = match thread_history {
             InitialHistory::Resumed(resumed) => {
                 load_thread_summary_for_rollout(
@@ -3355,6 +3562,9 @@ impl CodexMessageProcessor {
             return None;
         }
         self.attach_thread_name(thread_id, &mut thread).await;
+        if !built_from_snapshot {
+            self.attach_thread_note(thread_id, &mut thread).await;
+        }
         Some(thread)
     }
 
@@ -3367,6 +3577,34 @@ impl CodexMessageProcessor {
                 warn!("Failed to read thread name for {thread_id}: {err}");
             }
         }
+    }
+
+    async fn attach_thread_note(&self, thread_id: ThreadId, thread: &mut Thread) {
+        let rollout_thread_note = async {
+            let path = thread.path.as_ref()?;
+            let Ok(history) = RolloutRecorder::get_rollout_history(path.as_path()).await else {
+                return None;
+            };
+            Some(history.get_thread_note())
+        };
+
+        if let Some(state_db_ctx) = get_state_db_allow_unready(&self.config).await
+            && let Ok(Some(metadata)) = state_db_ctx.get_thread(thread_id).await
+        {
+            let thread_note = if metadata.thread_note.is_some() {
+                metadata.thread_note
+            } else {
+                rollout_thread_note.await.flatten()
+            };
+            thread.source =
+                set_thread_spawn_thread_note(thread.source.clone(), thread_note.clone());
+            thread.thread_note = thread_note;
+            return;
+        }
+
+        let thread_note = rollout_thread_note.await.flatten();
+        thread.source = set_thread_spawn_thread_note(thread.source.clone(), thread_note.clone());
+        thread.thread_note = thread_note;
     }
 
     async fn thread_fork(&mut self, request_id: ConnectionRequestId, params: ThreadForkParams) {
@@ -3525,6 +3763,7 @@ impl CodexMessageProcessor {
 
         let SessionConfiguredEvent {
             rollout_path: forked_rollout_path,
+            thread_note: forked_thread_note,
             ..
         } = session_configured;
         let Some(forked_rollout_path) = forked_rollout_path else {
@@ -3568,14 +3807,27 @@ impl CodexMessageProcessor {
                 return;
             }
         };
+        thread.thread_note = forked_thread_note.clone();
+        if thread.thread_note.is_none()
+            && source_thread_id.is_some()
+            && let Ok(history) = RolloutRecorder::get_rollout_history(&rollout_path).await
+        {
+            thread.thread_note = history.get_thread_note();
+        }
         if let Some(source_thread_id) = source_thread_id
             && (thread.agent_nickname.is_none()
                 || thread.agent_role.is_none()
-                || thread.agent_persona.is_none())
-            && let Some(summary) =
-                read_summary_from_state_db_by_thread_id(&self.config, source_thread_id).await
+                || thread.agent_persona.is_none()
+                || thread.thread_note.is_none())
+            && let Ok(source_thread) = load_thread_summary_for_rollout(
+                &self.config,
+                source_thread_id,
+                rollout_path.as_path(),
+                fallback_model_provider.as_str(),
+            )
+            .await
         {
-            merge_mutable_thread_metadata(&mut thread, summary_to_thread(summary));
+            merge_mutable_thread_metadata(&mut thread, source_thread);
         }
         // forked thread names do not inherit the source thread name
         match read_rollout_items_from_rollout(forked_rollout_path.as_path()).await {
@@ -6386,6 +6638,7 @@ async fn handle_pending_thread_resume_request(
             .await,
         has_in_progress_turn,
     );
+    sync_thread_note_with_config_snapshot(&mut thread, &pending.config_snapshot);
     thread.status = status;
 
     match find_thread_name_by_id(codex_home, &conversation_id).await {
@@ -6772,6 +7025,43 @@ async fn derive_config_for_cwd(
         .await
 }
 
+async fn get_state_db_allow_unready(config: &Config) -> Option<StateDbHandle> {
+    if let Some(state_db_ctx) = get_state_db(config, None).await {
+        return Some(state_db_ctx);
+    }
+    if !config
+        .features
+        .enabled(codex_core::features::Feature::Sqlite)
+    {
+        return None;
+    }
+    codex_state::StateRuntime::init(
+        config.sqlite_home.clone(),
+        config.model_provider_id.clone(),
+        None,
+    )
+    .await
+    .ok()
+}
+
+fn append_thread_note_to_rollout(
+    rollout_path: &Path,
+    thread_id: ThreadId,
+    thread_note: Option<String>,
+) -> anyhow::Result<()> {
+    let timestamp = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    let line = RolloutLine {
+        timestamp,
+        item: RolloutItem::EventMsg(EventMsg::ThreadNoteUpdated(ThreadNoteUpdatedEvent {
+            thread_id,
+            thread_note,
+        })),
+    };
+    let mut file = OpenOptions::new().append(true).open(rollout_path)?;
+    file.write_all(format!("{}\n", serde_json::to_string(&line)?).as_bytes())?;
+    Ok(())
+}
+
 async fn read_history_cwd_from_state_db(
     config: &Config,
     thread_id: Option<ThreadId>,
@@ -6829,6 +7119,7 @@ async fn read_summary_from_state_db_context_by_thread_id(
         metadata.agent_nickname,
         metadata.agent_role,
         metadata.agent_persona,
+        metadata.thread_note,
         metadata.git_sha,
         metadata.git_branch,
         metadata.git_origin_url,
@@ -6855,6 +7146,7 @@ async fn summary_from_thread_list_item(
             it.agent_nickname.clone(),
             it.agent_role.clone(),
             it.agent_persona.clone(),
+            None,
         );
         return Some(ConversationSummary {
             conversation_id: thread_id,
@@ -6913,6 +7205,7 @@ fn summary_from_state_db_metadata(
     agent_nickname: Option<String>,
     agent_role: Option<String>,
     agent_persona: Option<String>,
+    thread_note: Option<String>,
     git_sha: Option<String>,
     git_branch: Option<String>,
     git_origin_url: Option<String>,
@@ -6921,8 +7214,14 @@ fn summary_from_state_db_metadata(
     let source = serde_json::from_str(&source)
         .or_else(|_| serde_json::from_value(serde_json::Value::String(source.clone())))
         .unwrap_or(codex_protocol::protocol::SessionSource::Unknown);
-    let source =
-        with_thread_spawn_agent_metadata(source, agent_nickname, agent_role, agent_persona);
+    let source = with_thread_spawn_agent_metadata(
+        source,
+        agent_nickname,
+        agent_role,
+        agent_persona,
+        thread_note.clone(),
+    );
+    let source = set_core_thread_spawn_thread_note(source, thread_note);
     let git_info = if git_sha.is_none() && git_branch.is_none() && git_origin_url.is_none() {
         None
     } else {
@@ -6976,6 +7275,11 @@ pub(crate) async fn read_summary_from_rollout(
         session_meta.agent_nickname.clone(),
         session_meta.agent_role.clone(),
         session_meta.agent_persona.clone(),
+        session_meta.thread_note.clone(),
+    );
+    session_meta.source = set_core_thread_spawn_thread_note(
+        session_meta.source.clone(),
+        session_meta.thread_note.clone(),
     );
 
     let created_at = if session_meta.timestamp.is_empty() {
@@ -7107,6 +7411,11 @@ async fn load_thread_summary_for_rollout(
     if let Some(summary) = read_summary_from_state_db_by_thread_id(config, thread_id).await {
         merge_mutable_thread_metadata(&mut thread, summary_to_thread(summary));
     }
+    if let Ok(history) = RolloutRecorder::get_rollout_history(rollout_path).await {
+        let thread_note = history.get_thread_note();
+        thread.source = set_thread_spawn_thread_note(thread.source.clone(), thread_note.clone());
+        thread.thread_note = thread_note;
+    }
     Ok(thread)
 }
 
@@ -7118,8 +7427,12 @@ fn merge_mutable_thread_metadata(thread: &mut Thread, persisted_thread: Thread) 
             agent_nickname: persisted_thread.agent_nickname,
             agent_role: persisted_thread.agent_role,
             agent_persona: persisted_thread.agent_persona,
+            thread_note: None,
         },
     );
+    thread.source =
+        set_thread_spawn_thread_note(thread.source.clone(), persisted_thread.thread_note.clone());
+    thread.thread_note = persisted_thread.thread_note;
 }
 
 fn preview_from_rollout_items(items: &[RolloutItem]) -> String {
@@ -7144,8 +7457,13 @@ fn with_thread_spawn_agent_metadata(
     agent_nickname: Option<String>,
     agent_role: Option<String>,
     agent_persona: Option<String>,
+    thread_note: Option<String>,
 ) -> codex_protocol::protocol::SessionSource {
-    if agent_nickname.is_none() && agent_role.is_none() && agent_persona.is_none() {
+    if agent_nickname.is_none()
+        && agent_role.is_none()
+        && agent_persona.is_none()
+        && thread_note.is_none()
+    {
         return source;
     }
 
@@ -7157,6 +7475,7 @@ fn with_thread_spawn_agent_metadata(
                 agent_nickname: existing_agent_nickname,
                 agent_role: existing_agent_role,
                 agent_persona: existing_agent_persona,
+                thread_note: existing_thread_note,
                 allow_list,
                 deny_list,
             },
@@ -7167,8 +7486,41 @@ fn with_thread_spawn_agent_metadata(
                 agent_nickname: agent_nickname.or(existing_agent_nickname),
                 agent_role: agent_role.or(existing_agent_role),
                 agent_persona: agent_persona.or(existing_agent_persona),
+                thread_note: thread_note.or(existing_thread_note),
                 allow_list,
                 deny_list,
+            },
+        ),
+        _ => source,
+    }
+}
+
+fn set_core_thread_spawn_thread_note(
+    source: codex_protocol::protocol::SessionSource,
+    thread_note: Option<String>,
+) -> codex_protocol::protocol::SessionSource {
+    match source {
+        codex_protocol::protocol::SessionSource::SubAgent(
+            codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth,
+                agent_nickname,
+                agent_role,
+                agent_persona,
+                allow_list,
+                deny_list,
+                ..
+            },
+        ) => codex_protocol::protocol::SessionSource::SubAgent(
+            codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth,
+                agent_nickname,
+                agent_role,
+                agent_persona,
+                allow_list,
+                deny_list,
+                thread_note,
             },
         ),
         _ => source,
@@ -7180,6 +7532,7 @@ struct ThreadSpawnMetadata {
     agent_nickname: Option<String>,
     agent_role: Option<String>,
     agent_persona: Option<String>,
+    thread_note: Option<String>,
 }
 
 fn build_api_thread_source(
@@ -7190,6 +7543,7 @@ fn build_api_thread_source(
         metadata.agent_nickname.clone(),
         metadata.agent_role.clone(),
         metadata.agent_persona.clone(),
+        metadata.thread_note.clone(),
     )
 }
 
@@ -7197,6 +7551,7 @@ fn sync_thread_spawn_metadata(thread: &mut Thread, metadata: ThreadSpawnMetadata
     let agent_nickname_mirror = metadata.agent_nickname;
     let agent_role_mirror = metadata.agent_role;
     let agent_persona_mirror = metadata.agent_persona;
+    let thread_note_mirror = metadata.thread_note;
     let source = thread.source.clone().with_thread_spawn_metadata(
         agent_nickname_mirror
             .clone()
@@ -7205,6 +7560,7 @@ fn sync_thread_spawn_metadata(thread: &mut Thread, metadata: ThreadSpawnMetadata
         agent_persona_mirror
             .clone()
             .or(thread.agent_persona.clone()),
+        thread_note_mirror.clone().or(thread.thread_note.clone()),
     );
     let agent_nickname = source
         .get_nickname()
@@ -7218,11 +7574,81 @@ fn sync_thread_spawn_metadata(thread: &mut Thread, metadata: ThreadSpawnMetadata
         .get_agent_persona()
         .or(agent_persona_mirror)
         .or(thread.agent_persona.clone());
+    let thread_note = source
+        .get_thread_note()
+        .or(thread_note_mirror)
+        .or(thread.thread_note.clone());
 
     thread.source = source;
     thread.agent_nickname = agent_nickname;
     thread.agent_role = agent_role;
     thread.agent_persona = agent_persona;
+    thread.thread_note = thread_note;
+}
+
+fn sync_thread_with_config_snapshot(thread: &mut Thread, config_snapshot: &ThreadConfigSnapshot) {
+    let source = build_api_thread_source(
+        config_snapshot.session_source.clone(),
+        &ThreadSpawnMetadata {
+            agent_nickname: config_snapshot.session_source.get_nickname(),
+            agent_role: config_snapshot.session_source.get_agent_role(),
+            agent_persona: config_snapshot.session_source.get_agent_persona(),
+            thread_note: config_snapshot
+                .thread_note
+                .clone()
+                .or_else(|| config_snapshot.session_source.get_thread_note()),
+        },
+    );
+    let thread_note = config_snapshot
+        .thread_note
+        .clone()
+        .or_else(|| source.get_thread_note());
+
+    thread.source = source.clone();
+    thread.agent_nickname = source.get_nickname();
+    thread.agent_role = source.get_agent_role();
+    thread.agent_persona = source.get_agent_persona();
+    thread.thread_note = thread_note;
+}
+
+fn sync_thread_note_with_config_snapshot(
+    thread: &mut Thread,
+    config_snapshot: &ThreadConfigSnapshot,
+) {
+    let thread_note = config_snapshot
+        .thread_note
+        .clone()
+        .or_else(|| config_snapshot.session_source.get_thread_note());
+    thread.source = set_thread_spawn_thread_note(thread.source.clone(), thread_note.clone());
+    thread.thread_note = thread_note;
+}
+
+fn set_thread_spawn_thread_note(
+    source: ApiSessionSource,
+    thread_note: Option<String>,
+) -> ApiSessionSource {
+    match source {
+        ApiSessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth,
+            agent_nickname,
+            agent_role,
+            agent_persona,
+            allow_list,
+            deny_list,
+            ..
+        }) => ApiSessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth,
+            agent_nickname,
+            agent_role,
+            agent_persona,
+            allow_list,
+            deny_list,
+            thread_note,
+        }),
+        _ => source,
+    }
 }
 
 fn parse_datetime(timestamp: Option<&str>) -> Option<DateTime<Utc>> {
@@ -7256,7 +7682,8 @@ fn build_thread_from_snapshot(
         &ThreadSpawnMetadata {
             agent_nickname: config_snapshot.session_source.get_nickname(),
             agent_role: config_snapshot.session_source.get_agent_role(),
-            agent_persona: None,
+            agent_persona: config_snapshot.session_source.get_agent_persona(),
+            thread_note: config_snapshot.session_source.get_thread_note(),
         },
     );
     Thread {
@@ -7276,6 +7703,7 @@ fn build_thread_from_snapshot(
         source,
         git_info: None,
         name: None,
+        thread_note: config_snapshot.thread_note.clone(),
         turns: Vec::new(),
     }
 }
@@ -7306,9 +7734,11 @@ pub(crate) fn summary_to_thread(summary: ConversationSummary) -> Thread {
         &ThreadSpawnMetadata {
             agent_nickname: source.get_nickname(),
             agent_role: source.get_agent_role(),
-            agent_persona: None,
+            agent_persona: source.get_agent_persona(),
+            thread_note: source.get_thread_note(),
         },
     );
+    let thread_note = source.get_thread_note();
 
     Thread {
         id: conversation_id.to_string(),
@@ -7327,6 +7757,7 @@ pub(crate) fn summary_to_thread(summary: ConversationSummary) -> Thread {
         source,
         git_info,
         name: None,
+        thread_note,
         turns: Vec::new(),
     }
 }
@@ -7397,6 +7828,7 @@ mod tests {
             ephemeral: false,
             reasoning_effort: None,
             personality: None,
+            thread_note: None,
             session_source: SessionSource::Cli,
         };
 
@@ -7549,6 +7981,7 @@ mod tests {
                 agent_persona: None,
                 allow_list: None,
                 deny_list: None,
+                thread_note: None,
             }),
             agent_nickname: Some("atlas".to_string()),
             agent_role: Some("explorer".to_string()),
@@ -7646,6 +8079,7 @@ mod tests {
                 agent_persona: None,
                 allow_list: None,
                 deny_list: None,
+                thread_note: None,
             }))?;
 
         let summary = summary_from_state_db_metadata(
@@ -7661,6 +8095,7 @@ mod tests {
             Some("atlas".to_string()),
             Some("explorer".to_string()),
             Some("reviewer".to_string()),
+            None,
             None,
             None,
             None,
@@ -7700,9 +8135,11 @@ mod tests {
                 agent_persona: Some("canonical".to_string()),
                 allow_list: None,
                 deny_list: None,
+                thread_note: None,
             }),
             git_info: None,
             name: None,
+            thread_note: None,
             turns: Vec::new(),
         };
 
@@ -7712,6 +8149,7 @@ mod tests {
                 agent_nickname: None,
                 agent_role: None,
                 agent_persona: Some("fallback".to_string()),
+                thread_note: None,
             },
         );
 
