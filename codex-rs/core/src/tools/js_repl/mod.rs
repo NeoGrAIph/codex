@@ -59,6 +59,7 @@ const JS_REPL_EXEC_ID_LOG_LIMIT: usize = 8;
 const JS_REPL_MODEL_DIAG_STDERR_MAX_BYTES: usize = 1_024;
 const JS_REPL_MODEL_DIAG_ERROR_MAX_BYTES: usize = 256;
 const JS_REPL_TOOL_RESPONSE_TEXT_PREVIEW_MAX_BYTES: usize = 512;
+const JS_REPL_MISSING_RUNTIME_PROXY_ERROR: &str = "js_repl managed network is required for this session, but no runtime network proxy is attached";
 
 /// Per-task js_repl handle stored on the turn context.
 pub(crate) struct JsReplHandle {
@@ -815,65 +816,8 @@ impl JsReplManager {
             .await
             .map_err(|err| err.to_string())?;
 
-        let mut env = create_env(&turn.shell_environment_policy, thread_id);
-        env.insert(
-            "CODEX_JS_TMP_DIR".to_string(),
-            self.tmp_dir.path().to_string_lossy().to_string(),
-        );
-        let node_module_dirs_key = "CODEX_JS_REPL_NODE_MODULE_DIRS";
-        if !self.node_module_dirs.is_empty() && !env.contains_key(node_module_dirs_key) {
-            let joined = std::env::join_paths(&self.node_module_dirs)
-                .map_err(|err| format!("failed to join js_repl_node_module_dirs: {err}"))?;
-            env.insert(
-                node_module_dirs_key.to_string(),
-                joined.to_string_lossy().to_string(),
-            );
-        }
-
-        let spec = CommandSpec {
-            program: node_path.to_string_lossy().to_string(),
-            args: vec![
-                "--experimental-vm-modules".to_string(),
-                kernel_path.to_string_lossy().to_string(),
-            ],
-            cwd: turn.cwd.clone(),
-            env,
-            expiration: ExecExpiration::DefaultTimeout,
-            sandbox_permissions: SandboxPermissions::UseDefault,
-            additional_permissions: None,
-            justification: None,
-        };
-
-        let sandbox = SandboxManager::new();
-        let has_managed_network_requirements = turn
-            .config
-            .config_layer_stack
-            .requirements_toml()
-            .network
-            .is_some();
-        let sandbox_type = sandbox.select_initial(
-            &turn.sandbox_policy,
-            SandboxablePreference::Auto,
-            turn.windows_sandbox_level,
-            has_managed_network_requirements,
-        );
-        let exec_env = sandbox
-            .transform(crate::sandboxing::SandboxTransformRequest {
-                spec,
-                policy: &turn.sandbox_policy,
-                sandbox: sandbox_type,
-                enforce_managed_network: has_managed_network_requirements,
-                network: None,
-                sandbox_policy_cwd: &turn.cwd,
-                #[cfg(target_os = "macos")]
-                macos_seatbelt_profile_extensions: None,
-                codex_linux_sandbox_exe: turn.codex_linux_sandbox_exe.as_ref(),
-                use_linux_sandbox_bwrap: turn
-                    .features
-                    .enabled(crate::features::Feature::UseLinuxSandboxBwrap),
-                windows_sandbox_level: turn.windows_sandbox_level,
-            })
-            .map_err(|err| format!("failed to configure sandbox for js_repl: {err}"))?;
+        let exec_env =
+            self.prepare_kernel_exec_request(&turn, thread_id, &node_path, &kernel_path)?;
 
         let mut cmd =
             tokio::process::Command::new(exec_env.command.first().cloned().unwrap_or_default());
@@ -949,6 +893,90 @@ impl JsReplManager {
             exec_contexts,
             shutdown,
         })
+    }
+
+    fn prepare_kernel_exec_request(
+        &self,
+        turn: &TurnContext,
+        thread_id: Option<ThreadId>,
+        node_path: &Path,
+        kernel_path: &Path,
+    ) -> Result<crate::sandboxing::ExecRequest, String> {
+        let (spec, enforce_managed_network) =
+            self.build_kernel_command_spec(turn, thread_id, node_path, kernel_path)?;
+        let runtime_network = turn.network.as_ref();
+        let sandbox = SandboxManager::new();
+        let sandbox_type = sandbox.select_initial(
+            &turn.sandbox_policy,
+            SandboxablePreference::Auto,
+            turn.windows_sandbox_level,
+            enforce_managed_network,
+        );
+        sandbox
+            .transform(crate::sandboxing::SandboxTransformRequest {
+                spec,
+                policy: &turn.sandbox_policy,
+                sandbox: sandbox_type,
+                enforce_managed_network,
+                network: runtime_network,
+                sandbox_policy_cwd: &turn.cwd,
+                #[cfg(target_os = "macos")]
+                macos_seatbelt_profile_extensions: None,
+                codex_linux_sandbox_exe: turn.codex_linux_sandbox_exe.as_ref(),
+                use_linux_sandbox_bwrap: turn
+                    .features
+                    .enabled(crate::features::Feature::UseLinuxSandboxBwrap),
+                windows_sandbox_level: turn.windows_sandbox_level,
+            })
+            .map_err(|err| format!("failed to configure sandbox for js_repl: {err}"))
+    }
+
+    fn build_kernel_command_spec(
+        &self,
+        turn: &TurnContext,
+        thread_id: Option<ThreadId>,
+        node_path: &Path,
+        kernel_path: &Path,
+    ) -> Result<(CommandSpec, bool), String> {
+        let managed_network_required = turn.config.managed_network_requirements_enabled();
+        let runtime_network = turn.network.as_ref();
+        if managed_network_required && runtime_network.is_none() {
+            return Err(JS_REPL_MISSING_RUNTIME_PROXY_ERROR.to_string());
+        }
+
+        let mut env = create_env(&turn.shell_environment_policy, thread_id);
+        env.insert(
+            "CODEX_JS_TMP_DIR".to_string(),
+            self.tmp_dir.path().to_string_lossy().to_string(),
+        );
+        let node_module_dirs_key = "CODEX_JS_REPL_NODE_MODULE_DIRS";
+        if !self.node_module_dirs.is_empty() && !env.contains_key(node_module_dirs_key) {
+            let joined = std::env::join_paths(&self.node_module_dirs)
+                .map_err(|err| format!("failed to join js_repl_node_module_dirs: {err}"))?;
+            env.insert(
+                node_module_dirs_key.to_string(),
+                joined.to_string_lossy().to_string(),
+            );
+        }
+        if let Some(network) = runtime_network {
+            network.apply_to_env(&mut env);
+        }
+
+        let spec = CommandSpec {
+            program: node_path.to_string_lossy().to_string(),
+            args: vec![
+                "--experimental-vm-modules".to_string(),
+                kernel_path.to_string_lossy().to_string(),
+            ],
+            cwd: turn.cwd.clone(),
+            env,
+            expiration: ExecExpiration::DefaultTimeout,
+            sandbox_permissions: SandboxPermissions::UseDefault,
+            additional_permissions: None,
+            justification: None,
+        };
+
+        Ok((spec, runtime_network.is_some()))
     }
 
     async fn write_kernel_script(&self) -> Result<PathBuf, std::io::Error> {
@@ -1709,11 +1737,18 @@ mod tests {
     use super::*;
     use crate::codex::make_session_and_context;
     use crate::codex::make_session_and_context_with_dynamic_tools_and_rx;
+    use crate::config::NetworkProxyAuditMetadata;
+    use crate::config::NetworkProxySpec;
+    use crate::config_loader::ConfigLayerStack;
+    use crate::config_loader::ConfigLayerStackOrdering;
+    use crate::config_loader::NetworkConstraints;
+    use crate::config_loader::NetworkRequirementsToml;
     use crate::features::Feature;
     use crate::protocol::AskForApproval;
     use crate::protocol::EventMsg;
     use crate::protocol::SandboxPolicy;
     use crate::turn_diff_tracker::TurnDiffTracker;
+    use codex_network_proxy::NetworkProxyConfig;
     use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
     use codex_protocol::dynamic_tools::DynamicToolResponse;
     use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -2124,6 +2159,27 @@ mod tests {
         // integration tests instead.
         cfg!(target_os = "macos")
     }
+
+    fn enable_managed_network_requirements(turn: &mut TurnContext) {
+        let mut config = (*turn.config).clone();
+        let requirements = config.config_layer_stack.requirements().clone();
+        let layers = config
+            .config_layer_stack
+            .get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, true)
+            .into_iter()
+            .cloned()
+            .collect();
+        let mut requirements_toml = config.config_layer_stack.requirements_toml().clone();
+        requirements_toml.network = Some(NetworkRequirementsToml {
+            enabled: Some(true),
+            allow_local_binding: Some(true),
+            ..Default::default()
+        });
+        config.config_layer_stack = ConfigLayerStack::new(layers, requirements, requirements_toml)
+            .expect("rebuild config layer stack with network requirements");
+        turn.config = Arc::new(config);
+    }
+
     fn write_js_repl_test_package(base: &Path, name: &str, value: &str) -> anyhow::Result<()> {
         let pkg_dir = base.join("node_modules").join(name);
         fs::create_dir_all(&pkg_dir)?;
@@ -2150,6 +2206,84 @@ mod tests {
             fs::create_dir_all(parent)?;
         }
         fs::write(module_path, contents)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn js_repl_prepare_kernel_exec_request_requires_runtime_proxy_when_managed()
+    -> anyhow::Result<()> {
+        let manager = JsReplManager::new(None, Vec::new()).await?;
+        let (_session, mut turn) = make_session_and_context().await;
+        enable_managed_network_requirements(&mut turn);
+
+        let node_path = resolve_compatible_node(turn.config.js_repl_node_path.as_deref())
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let kernel_path = manager.write_kernel_script().await?;
+        let err = manager
+            .prepare_kernel_exec_request(&turn, None, &node_path, &kernel_path)
+            .expect_err("managed js_repl should require a runtime proxy");
+
+        assert_eq!(err, JS_REPL_MISSING_RUNTIME_PROXY_ERROR);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn js_repl_prepare_kernel_exec_request_applies_runtime_proxy_env() -> anyhow::Result<()> {
+        let manager = JsReplManager::new(None, Vec::new()).await?;
+        let (_session, mut turn) = make_session_and_context().await;
+        enable_managed_network_requirements(&mut turn);
+
+        let proxy_spec = NetworkProxySpec::from_config_and_constraints(
+            NetworkProxyConfig::default(),
+            Some(NetworkConstraints {
+                enabled: Some(true),
+                allow_local_binding: Some(true),
+                ..Default::default()
+            }),
+        )?;
+        let started_proxy = proxy_spec
+            .start_proxy(
+                &turn.sandbox_policy,
+                None,
+                None,
+                turn.config.managed_network_requirements_enabled(),
+                NetworkProxyAuditMetadata::default(),
+            )
+            .await?;
+        turn.network = Some(started_proxy.proxy());
+
+        let node_path = resolve_compatible_node(turn.config.js_repl_node_path.as_deref())
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let kernel_path = manager.write_kernel_script().await?;
+        let (spec, enforce_managed_network) = manager
+            .build_kernel_command_spec(&turn, None, &node_path, &kernel_path)
+            .map_err(anyhow::Error::msg)?;
+
+        assert!(enforce_managed_network);
+        assert_eq!(
+            spec.env
+                .get("HTTP_PROXY")
+                .expect("HTTP_PROXY should be set"),
+            spec.env
+                .get("HTTPS_PROXY")
+                .expect("HTTPS_PROXY should be set")
+        );
+        assert_eq!(
+            spec.env.get("WS_PROXY").expect("WS_PROXY should be set"),
+            spec.env.get("WSS_PROXY").expect("WSS_PROXY should be set")
+        );
+        assert!(
+            spec.env
+                .get("ALL_PROXY")
+                .is_some_and(|value| value.starts_with("socks5h://"))
+        );
+        assert!(
+            spec.env.contains_key("NO_PROXY"),
+            "NO_PROXY should be set for managed proxy sessions"
+        );
+
         Ok(())
     }
 

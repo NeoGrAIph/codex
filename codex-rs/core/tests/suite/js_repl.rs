@@ -1,6 +1,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use anyhow::Result;
+use codex_core::config_loader::ConfigLayerStack;
+use codex_core::config_loader::ConfigLayerStackOrdering;
+use codex_core::config_loader::NetworkRequirementsToml;
 use codex_core::features::Feature;
 use codex_protocol::protocol::EventMsg;
 use core_test_support::responses;
@@ -20,6 +23,24 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use tempfile::tempdir;
 use wiremock::MockServer;
+
+fn enable_managed_network_requirements(config: &mut codex_core::config::Config) {
+    let requirements = config.config_layer_stack.requirements().clone();
+    let layers = config
+        .config_layer_stack
+        .get_layers(ConfigLayerStackOrdering::LowestPrecedenceFirst, true)
+        .into_iter()
+        .cloned()
+        .collect();
+    let mut requirements_toml = config.config_layer_stack.requirements_toml().clone();
+    requirements_toml.network = Some(NetworkRequirementsToml {
+        enabled: Some(true),
+        allow_local_binding: Some(true),
+        ..Default::default()
+    });
+    config.config_layer_stack = ConfigLayerStack::new(layers, requirements, requirements_toml)
+        .expect("rebuild config layer stack with network requirements");
+}
 
 fn custom_tool_output_text_and_success(
     req: &ResponsesRequest,
@@ -254,6 +275,58 @@ async fn js_repl_can_invoke_builtin_tools() -> Result<()> {
         "js_repl call failed unexpectedly: {output}"
     );
     assert!(output.contains("function_call_output"));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn js_repl_reports_missing_runtime_proxy_for_managed_network_session() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::JsRepl)
+            .expect("test config should allow feature update");
+        enable_managed_network_requirements(config);
+    });
+    let test = builder.build(&server).await?;
+
+    responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_custom_tool_call("call-1", "js_repl", "console.log('unreachable');"),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let second_mock = responses::mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-2"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("connect to the runtime managed network proxy from js_repl")
+        .await?;
+
+    let req = second_mock.single_request();
+    let (output, success) = custom_tool_output_text_and_success(&req, "call-1");
+    assert_ne!(
+        success,
+        Some(true),
+        "managed-network session without runtime proxy must not report success: {output}"
+    );
+    assert!(
+        output.contains(
+            "js_repl managed network is required for this session, but no runtime network proxy is attached"
+        ),
+        "expected explicit missing-runtime-proxy error, got: {output}"
+    );
 
     Ok(())
 }
