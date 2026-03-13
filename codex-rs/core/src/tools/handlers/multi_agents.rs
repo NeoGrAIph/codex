@@ -107,6 +107,8 @@ mod spawn {
 
     use crate::agent::exceeds_thread_spawn_depth_limit;
     use crate::agent::next_thread_spawn_depth;
+    use std::path::Path;
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     #[derive(Debug, Deserialize)]
@@ -115,6 +117,7 @@ mod spawn {
         items: Option<Vec<UserInput>>,
         agent_type: Option<String>,
         thread_note: Option<String>,
+        cwd: Option<String>,
         #[serde(default)]
         fork_context: bool,
     }
@@ -138,6 +141,7 @@ mod spawn {
             .as_deref()
             .map(str::trim)
             .filter(|role| !role.is_empty());
+        let cwd_override = resolve_spawn_agent_cwd(args.cwd.as_deref())?;
         let input_items = parse_collab_input(args.message, args.items)?;
         let prompt = input_preview(&input_items);
         let session_source = turn.session_source.clone();
@@ -165,6 +169,9 @@ mod spawn {
             .await
             .map_err(FunctionCallError::RespondToModel)?;
         apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+        if let Some(cwd) = cwd_override {
+            config.cwd = cwd;
+        }
         apply_spawn_agent_overrides(&mut config, child_depth);
 
         let result = session
@@ -234,6 +241,88 @@ mod spawn {
         })?;
 
         Ok(FunctionToolOutput::from_text(content, Some(true)))
+    }
+
+    pub(super) fn resolve_spawn_agent_cwd(
+        cwd: Option<&str>,
+    ) -> Result<Option<PathBuf>, FunctionCallError> {
+        resolve_spawn_agent_cwd_with_home(cwd, dirs::home_dir().as_deref())
+    }
+
+    pub(super) fn resolve_spawn_agent_cwd_with_home(
+        cwd: Option<&str>,
+        home_dir: Option<&Path>,
+    ) -> Result<Option<PathBuf>, FunctionCallError> {
+        let Some(raw_cwd) = cwd else {
+            return Ok(None);
+        };
+
+        let trimmed = raw_cwd.trim();
+        if trimmed.is_empty() {
+            return Err(FunctionCallError::RespondToModel(
+                "spawn_agent.cwd cannot be empty".to_string(),
+            ));
+        }
+
+        let candidate = resolve_spawn_agent_cwd_path(trimmed, home_dir)?;
+        match std::fs::metadata(&candidate) {
+            Ok(metadata) => {
+                if metadata.is_dir() {
+                    Ok(Some(candidate))
+                } else {
+                    Err(FunctionCallError::RespondToModel(format!(
+                        "spawn_agent.cwd is not a directory: {}",
+                        candidate.display()
+                    )))
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Err(FunctionCallError::RespondToModel(format!(
+                    "spawn_agent.cwd does not exist: {}",
+                    candidate.display()
+                )))
+            }
+            Err(err) => Err(FunctionCallError::RespondToModel(format!(
+                "failed to access spawn_agent.cwd {}: {err}",
+                candidate.display()
+            ))),
+        }
+    }
+
+    fn resolve_spawn_agent_cwd_path(
+        raw_cwd: &str,
+        home_dir: Option<&Path>,
+    ) -> Result<PathBuf, FunctionCallError> {
+        if raw_cwd == "~" {
+            let home = require_home_dir_for_spawn_agent_cwd(home_dir)?;
+            return Ok(home.to_path_buf());
+        }
+        if let Some(rest) = raw_cwd
+            .strip_prefix("~/")
+            .or_else(|| raw_cwd.strip_prefix("~\\"))
+        {
+            let home = require_home_dir_for_spawn_agent_cwd(home_dir)?;
+            return Ok(home.join(rest));
+        }
+
+        let path = PathBuf::from(raw_cwd);
+        if path.is_absolute() {
+            return Ok(path);
+        }
+
+        let home = require_home_dir_for_spawn_agent_cwd(home_dir)?;
+        Ok(home.join(path))
+    }
+
+    fn require_home_dir_for_spawn_agent_cwd(
+        home_dir: Option<&Path>,
+    ) -> Result<&Path, FunctionCallError> {
+        home_dir.ok_or_else(|| {
+            FunctionCallError::RespondToModel(
+                "spawn_agent.cwd requires a home directory, but HOME/USERPROFILE is unavailable"
+                    .to_string(),
+            )
+        })
     }
 }
 
@@ -1399,6 +1488,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_agent_applies_cwd_override_to_spawned_thread() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            nickname: Option<String>,
+        }
+
+        let (mut session, mut turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+        let turn_cwd = tempfile::TempDir::new().expect("create turn cwd");
+        turn.cwd = turn_cwd.path().to_path_buf();
+
+        let override_root = tempfile::TempDir::new().expect("create override root");
+        let override_cwd = override_root.path().join("alt-workdir");
+        std::fs::create_dir_all(&override_cwd).expect("create override cwd");
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "run here",
+                "cwd": override_cwd.to_string_lossy(),
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn_agent should succeed");
+        let (content, success) = expect_text_output(output);
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+        assert!(
+            result
+                .nickname
+                .as_deref()
+                .is_some_and(|nickname| !nickname.is_empty())
+        );
+        assert_eq!(success, Some(true));
+
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+        assert_eq!(snapshot.cwd, override_cwd);
+    }
+
+    #[tokio::test]
     async fn spawn_agent_preserves_thread_note_in_result_and_session_source() {
         #[derive(Debug, Deserialize)]
         struct SpawnAgentResult {
@@ -2410,5 +2551,90 @@ mod tests {
             .set(turn.sandbox_policy.get().clone())
             .expect("sandbox policy set");
         assert_eq!(config, expected);
+    }
+
+    #[test]
+    fn resolve_spawn_agent_cwd_accepts_absolute_existing_directory() {
+        let temp_dir = tempfile::TempDir::new().expect("create temp dir");
+        let resolved = spawn::resolve_spawn_agent_cwd_with_home(
+            Some(temp_dir.path().to_string_lossy().as_ref()),
+            Some(temp_dir.path()),
+        )
+        .expect("absolute directory should resolve");
+        assert_eq!(resolved, Some(temp_dir.path().to_path_buf()));
+    }
+
+    #[test]
+    fn resolve_spawn_agent_cwd_resolves_relative_against_home() {
+        let home_dir = tempfile::TempDir::new().expect("create home dir");
+        let nested = home_dir.path().join("nested/work");
+        std::fs::create_dir_all(&nested).expect("create nested workdir");
+
+        let resolved =
+            spawn::resolve_spawn_agent_cwd_with_home(Some("nested/work"), Some(home_dir.path()))
+                .expect("relative path should resolve");
+        assert_eq!(resolved, Some(nested));
+    }
+
+    #[test]
+    fn resolve_spawn_agent_cwd_expands_tilde_against_home() {
+        let home_dir = tempfile::TempDir::new().expect("create home dir");
+        let nested = home_dir.path().join("repo");
+        std::fs::create_dir_all(&nested).expect("create repo");
+
+        let resolved_tilde_home =
+            spawn::resolve_spawn_agent_cwd_with_home(Some("~"), Some(home_dir.path()))
+                .expect("tilde home should resolve");
+        assert_eq!(resolved_tilde_home, Some(home_dir.path().to_path_buf()));
+
+        let resolved_tilde_nested =
+            spawn::resolve_spawn_agent_cwd_with_home(Some("~/repo"), Some(home_dir.path()))
+                .expect("tilde nested should resolve");
+        assert_eq!(resolved_tilde_nested, Some(nested));
+    }
+
+    #[test]
+    fn resolve_spawn_agent_cwd_rejects_missing_home_for_relative_path() {
+        let err =
+            spawn::resolve_spawn_agent_cwd_with_home(Some("relative/path"), None).unwrap_err();
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "spawn_agent.cwd requires a home directory, but HOME/USERPROFILE is unavailable"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_spawn_agent_cwd_rejects_non_existing_path() {
+        let home_dir = tempfile::TempDir::new().expect("create home dir");
+        let err = spawn::resolve_spawn_agent_cwd_with_home(Some("missing"), Some(home_dir.path()))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(format!(
+                "spawn_agent.cwd does not exist: {}",
+                home_dir.path().join("missing").display()
+            ))
+        );
+    }
+
+    #[test]
+    fn resolve_spawn_agent_cwd_rejects_file_path() {
+        let home_dir = tempfile::TempDir::new().expect("create home dir");
+        let file_path = home_dir.path().join("README.md");
+        std::fs::write(&file_path, "test").expect("write file");
+
+        let err =
+            spawn::resolve_spawn_agent_cwd_with_home(Some("~/README.md"), Some(home_dir.path()))
+                .unwrap_err();
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(format!(
+                "spawn_agent.cwd is not a directory: {}",
+                file_path.display()
+            ))
+        );
     }
 }

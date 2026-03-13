@@ -792,6 +792,15 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
             },
         ),
         (
+            "cwd".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional working directory override for the spawned agent. Absolute paths are used as-is. Relative paths and `~` are resolved against the user's home directory. The path must exist and be a directory."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
             "fork_context".to_string(),
             JsonSchema::Boolean {
                 description: Some(
@@ -2505,6 +2514,30 @@ mod tests {
             strip_descriptions_tool(&mut e);
             assert_eq!(a, e, "spec mismatch for {name}");
         }
+    }
+
+    #[test]
+    fn spawn_agent_tool_exposes_cwd_param() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let mut features = Features::with_defaults();
+        features.enable(Feature::Collab);
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
+        });
+        let ToolSpec::Function(ResponsesApiTool { parameters, .. }) =
+            create_spawn_agent_tool(&tools_config)
+        else {
+            panic!("spawn_agent should be a function tool");
+        };
+        let JsonSchema::Object { properties, .. } = parameters else {
+            panic!("spawn_agent parameters should be an object");
+        };
+        assert!(properties.contains_key("cwd"));
     }
 
     #[test]
