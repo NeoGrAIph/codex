@@ -2536,7 +2536,7 @@ impl ChatWidget {
         self.had_work_activity = true;
     }
 
-    fn on_collab_event(&mut self, cell: PlainHistoryCell) {
+    fn on_collab_event(&mut self, cell: impl HistoryCell + 'static) {
         self.flush_answer_stream_with_separator();
         self.add_to_history(cell);
         self.request_redraw();

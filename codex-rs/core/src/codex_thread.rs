@@ -37,6 +37,7 @@ pub struct ThreadConfigSnapshot {
     pub ephemeral: bool,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub personality: Option<Personality>,
+    pub thread_note: Option<String>,
     pub session_source: SessionSource,
 }
 
@@ -134,6 +135,10 @@ impl CodexThread {
 
     pub fn rollout_path(&self) -> Option<PathBuf> {
         self.rollout_path.clone()
+    }
+
+    pub async fn current_rollout_path(&self) -> Option<PathBuf> {
+        self.codex.session.current_rollout_path().await
     }
 
     pub fn state_db(&self) -> Option<StateDbHandle> {

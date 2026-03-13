@@ -7746,6 +7746,7 @@ fn with_thread_spawn_agent_metadata(
                 depth,
                 agent_nickname: existing_agent_nickname,
                 agent_role: existing_agent_role,
+                thread_note,
             },
         ) => codex_protocol::protocol::SessionSource::SubAgent(
             codex_protocol::protocol::SubAgentSource::ThreadSpawn {
@@ -7753,6 +7754,7 @@ fn with_thread_spawn_agent_metadata(
                 depth,
                 agent_nickname: agent_nickname.or(existing_agent_nickname),
                 agent_role: agent_role.or(existing_agent_role),
+                thread_note,
             },
         ),
         _ => source,
@@ -7855,10 +7857,17 @@ mod tests {
     use anyhow::Result;
     use codex_app_server_protocol::ServerRequestPayload;
     use codex_app_server_protocol::ToolRequestUserInputParams;
+
+    use codex_protocol::protocol::EventMsg;
+
+    use codex_protocol::protocol::SessionMeta;
+
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SubAgentSource;
+
     use pretty_assertions::assert_eq;
     use serde_json::json;
+
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -7941,6 +7950,7 @@ mod tests {
             ephemeral: false,
             reasoning_effort: None,
             personality: None,
+            thread_note: None,
             session_source: SessionSource::Cli,
         };
 
@@ -8090,6 +8100,7 @@ mod tests {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             }),
             agent_nickname: Some("atlas".to_string()),
             agent_role: Some("explorer".to_string()),
@@ -8182,6 +8193,7 @@ mod tests {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             }))?;
 
         let summary = summary_from_state_db_metadata(

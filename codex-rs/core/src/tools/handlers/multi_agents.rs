@@ -88,6 +88,7 @@ impl ToolHandler for MultiAgentHandler {
         match tool_name.as_str() {
             "spawn_agent" => spawn::handle(session, turn, call_id, arguments).await,
             "send_input" => send_input::handle(session, turn, call_id, arguments).await,
+            "set_thread_note" => set_thread_note::handle(session, turn, call_id, arguments).await,
             "resume_agent" => resume_agent::handle(session, turn, call_id, arguments).await,
             "wait" => wait::handle(session, turn, call_id, arguments).await,
             "close_agent" => close_agent::handle(session, turn, call_id, arguments).await,
@@ -113,6 +114,7 @@ mod spawn {
         message: Option<String>,
         items: Option<Vec<UserInput>>,
         agent_type: Option<String>,
+        thread_note: Option<String>,
         #[serde(default)]
         fork_context: bool,
     }
@@ -121,6 +123,7 @@ mod spawn {
     struct SpawnAgentResult {
         agent_id: String,
         nickname: Option<String>,
+        thread_note: Option<String>,
     }
 
     pub async fn handle(
@@ -174,6 +177,7 @@ mod spawn {
                     session.conversation_id,
                     child_depth,
                     role_name,
+                    args.thread_note.clone(),
                 )),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
@@ -188,16 +192,17 @@ mod spawn {
             ),
             Err(_) => (None, AgentStatus::NotFound),
         };
-        let (new_agent_nickname, new_agent_role) = match new_thread_id {
+        let (new_agent_nickname, new_agent_role, new_thread_note) = match new_thread_id {
             Some(thread_id) => session
                 .services
                 .agent_control
-                .get_agent_nickname_and_role(thread_id)
+                .get_agent_nickname_role_and_thread_note(thread_id)
                 .await
-                .unwrap_or((None, None)),
-            None => (None, None),
+                .unwrap_or((None, None, None)),
+            None => (None, None, None),
         };
         let nickname = new_agent_nickname.clone();
+        let thread_note = new_thread_note.clone();
         session
             .send_event(
                 &turn,
@@ -207,6 +212,7 @@ mod spawn {
                     new_thread_id,
                     new_agent_nickname,
                     new_agent_role,
+                    new_thread_note,
                     prompt,
                     status,
                 }
@@ -221,6 +227,7 @@ mod spawn {
         let content = serde_json::to_string(&SpawnAgentResult {
             agent_id: new_thread_id.to_string(),
             nickname,
+            thread_note,
         })
         .map_err(|err| {
             FunctionCallError::Fatal(format!("failed to serialize spawn_agent result: {err}"))
@@ -258,12 +265,6 @@ mod send_input {
         let receiver_thread_id = agent_id(&args.id)?;
         let input_items = parse_collab_input(args.message, args.items)?;
         let prompt = input_preview(&input_items);
-        let (receiver_agent_nickname, receiver_agent_role) = session
-            .services
-            .agent_control
-            .get_agent_nickname_and_role(receiver_thread_id)
-            .await
-            .unwrap_or((None, None));
         if args.interrupt {
             session
                 .services
@@ -295,6 +296,12 @@ mod send_input {
             .agent_control
             .get_status(receiver_thread_id)
             .await;
+        let (receiver_agent_nickname, receiver_agent_role, receiver_thread_note) = session
+            .services
+            .agent_control
+            .get_agent_nickname_role_and_thread_note(receiver_thread_id)
+            .await
+            .unwrap_or((None, None, None));
         session
             .send_event(
                 &turn,
@@ -304,6 +311,7 @@ mod send_input {
                     receiver_thread_id,
                     receiver_agent_nickname,
                     receiver_agent_role,
+                    receiver_thread_note,
                     prompt,
                     status,
                 }
@@ -316,6 +324,46 @@ mod send_input {
             FunctionCallError::Fatal(format!("failed to serialize send_input result: {err}"))
         })?;
 
+        Ok(FunctionToolOutput::from_text(content, Some(true)))
+    }
+}
+
+mod set_thread_note {
+    use super::*;
+    use std::sync::Arc;
+
+    #[derive(Debug, Deserialize)]
+    struct SetThreadNoteArgs {
+        id: String,
+        note: Option<String>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct SetThreadNoteResult {
+        thread_note: Option<String>,
+    }
+
+    pub async fn handle(
+        session: Arc<Session>,
+        _turn: Arc<TurnContext>,
+        _call_id: String,
+        arguments: String,
+    ) -> Result<FunctionToolOutput, FunctionCallError> {
+        let args: SetThreadNoteArgs = parse_arguments(&arguments)?;
+        let receiver_thread_id = agent_id(&args.id)?;
+        let thread_note = crate::util::normalize_thread_note(args.note.as_deref());
+        session
+            .services
+            .agent_control
+            .set_thread_note(receiver_thread_id, thread_note.clone())
+            .await
+            .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+        let content =
+            serde_json::to_string(&SetThreadNoteResult { thread_note }).map_err(|err| {
+                FunctionCallError::Fatal(format!(
+                    "failed to serialize set_thread_note result: {err}"
+                ))
+            })?;
         Ok(FunctionToolOutput::from_text(content, Some(true)))
     }
 }
@@ -343,12 +391,12 @@ mod resume_agent {
     ) -> Result<FunctionToolOutput, FunctionCallError> {
         let args: ResumeAgentArgs = parse_arguments(&arguments)?;
         let receiver_thread_id = agent_id(&args.id)?;
-        let (receiver_agent_nickname, receiver_agent_role) = session
+        let (receiver_agent_nickname, receiver_agent_role, _) = session
             .services
             .agent_control
-            .get_agent_nickname_and_role(receiver_thread_id)
+            .get_agent_nickname_role_and_thread_note(receiver_thread_id)
             .await
-            .unwrap_or((None, None));
+            .unwrap_or((None, None, None));
         let child_depth = next_thread_spawn_depth(&turn.session_source);
         let max_depth = turn.config.agent_max_depth;
         if exceeds_thread_spawn_depth_limit(child_depth, max_depth) {
@@ -396,12 +444,12 @@ mod resume_agent {
             None
         };
 
-        let (receiver_agent_nickname, receiver_agent_role) = session
+        let (receiver_agent_nickname, receiver_agent_role, _) = session
             .services
             .agent_control
-            .get_agent_nickname_and_role(receiver_thread_id)
+            .get_agent_nickname_role_and_thread_note(receiver_thread_id)
             .await
-            .unwrap_or((receiver_agent_nickname, receiver_agent_role));
+            .unwrap_or((receiver_agent_nickname, receiver_agent_role, None));
         session
             .send_event(
                 &turn,
@@ -443,7 +491,7 @@ mod resume_agent {
             .resume_agent_from_rollout(
                 config,
                 receiver_thread_id,
-                thread_spawn_source(session.conversation_id, child_depth, None),
+                thread_spawn_source(session.conversation_id, child_depth, None, None),
             )
             .await
             .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
@@ -501,12 +549,12 @@ pub(crate) mod wait {
             .collect::<Result<Vec<_>, _>>()?;
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
         for receiver_thread_id in &receiver_thread_ids {
-            let (agent_nickname, agent_role) = session
+            let (agent_nickname, agent_role, _thread_note) = session
                 .services
                 .agent_control
-                .get_agent_nickname_and_role(*receiver_thread_id)
+                .get_agent_nickname_role_and_thread_note(*receiver_thread_id)
                 .await
-                .unwrap_or((None, None));
+                .unwrap_or((None, None, None));
             receiver_agents.push(CollabAgentRef {
                 thread_id: *receiver_thread_id,
                 agent_nickname,
@@ -680,12 +728,12 @@ pub mod close_agent {
     ) -> Result<FunctionToolOutput, FunctionCallError> {
         let args: CloseAgentArgs = parse_arguments(&arguments)?;
         let agent_id = agent_id(&args.id)?;
-        let (receiver_agent_nickname, receiver_agent_role) = session
+        let (receiver_agent_nickname, receiver_agent_role, _) = session
             .services
             .agent_control
-            .get_agent_nickname_and_role(agent_id)
+            .get_agent_nickname_role_and_thread_note(agent_id)
             .await
-            .unwrap_or((None, None));
+            .unwrap_or((None, None, None));
         session
             .send_event(
                 &turn,
@@ -828,12 +876,14 @@ fn thread_spawn_source(
     parent_thread_id: ThreadId,
     depth: i32,
     agent_role: Option<&str>,
+    thread_note: Option<String>,
 ) -> SessionSource {
     SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id,
         depth,
         agent_nickname: None,
         agent_role: agent_role.map(str::to_string),
+        thread_note: crate::util::normalize_thread_note(thread_note.as_deref()),
     })
 }
 
@@ -971,6 +1021,7 @@ mod tests {
     use crate::ThreadManager;
     use crate::built_in_model_providers;
     use crate::codex::make_session_and_context;
+    use crate::codex::make_session_and_context_with_rx;
     use crate::config::DEFAULT_AGENT_MAX_DEPTH;
     use crate::config::types::ShellEnvironmentPolicy;
     use crate::function_tool::FunctionCallError;
@@ -1281,6 +1332,7 @@ mod tests {
             depth: max_depth,
             agent_nickname: None,
             agent_role: None,
+            thread_note: None,
         });
 
         let invocation = invocation(
@@ -1320,6 +1372,7 @@ mod tests {
             depth: DEFAULT_AGENT_MAX_DEPTH,
             agent_nickname: None,
             agent_role: None,
+            thread_note: None,
         });
 
         let invocation = invocation(
@@ -1343,6 +1396,225 @@ mod tests {
                 .is_some_and(|nickname| !nickname.is_empty())
         );
         assert_eq!(success, Some(true));
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_preserves_thread_note_in_result_and_session_source() {
+        #[derive(Debug, Deserialize)]
+        struct SpawnAgentResult {
+            agent_id: String,
+            nickname: Option<String>,
+            thread_note: Option<String>,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "agent_type": "explorer",
+                "thread_note": "Focus on edge cases",
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("spawn_agent should succeed");
+        let (content, success) = expect_text_output(output);
+        let result: SpawnAgentResult =
+            serde_json::from_str(&content).expect("spawn_agent result should be json");
+        let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+        assert!(
+            result
+                .nickname
+                .as_deref()
+                .is_some_and(|nickname| !nickname.is_empty())
+        );
+        assert_eq!(
+            result.thread_note.as_deref(),
+            Some("Назначение: Focus on edge cases | Компетенции:")
+        );
+
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist")
+            .config_snapshot()
+            .await;
+        assert_eq!(
+            snapshot.session_source.get_thread_note().as_deref(),
+            Some("Назначение: Focus on edge cases | Компетенции:")
+        );
+        assert_eq!(success, Some(true));
+
+        let _ = manager
+            .agent_control()
+            .shutdown_agent(agent_id)
+            .await
+            .expect("shutdown should submit");
+    }
+
+    #[tokio::test]
+    async fn set_thread_note_updates_agent_note_and_returns_normalized_value() {
+        #[derive(Debug, Deserialize)]
+        struct SetThreadNoteResult {
+            thread_note: Option<String>,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let agent_id = manager
+            .agent_control()
+            .spawn_agent(
+                turn.config.as_ref().clone(),
+                vec![UserInput::Text {
+                    text: "hello child".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: session.conversation_id,
+                    depth: 1,
+                    agent_nickname: None,
+                    agent_role: Some("explorer".to_string()),
+                    thread_note: Some(
+                        "Назначение: Repository researcher | Компетенции:".to_string(),
+                    ),
+                })),
+            )
+            .await
+            .expect("child spawn should succeed");
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "set_thread_note",
+            function_payload(json!({
+                "id": agent_id.to_string(),
+                "note": "Release verification specialist"
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("set_thread_note should succeed");
+        let (content, success) = expect_text_output(output);
+        let result: SetThreadNoteResult =
+            serde_json::from_str(&content).expect("set_thread_note result should be json");
+        assert_eq!(
+            result.thread_note.as_deref(),
+            Some("Назначение: Release verification specialist | Компетенции:")
+        );
+        assert_eq!(success, Some(true));
+
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist");
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if snapshot.config_snapshot().await.thread_note.as_deref()
+                    == Some("Назначение: Release verification specialist | Компетенции:")
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("thread note should update");
+        let snapshot = snapshot.config_snapshot().await;
+        assert_eq!(
+            snapshot.thread_note.as_deref(),
+            Some("Назначение: Release verification specialist | Компетенции:")
+        );
+
+        let _ = manager
+            .agent_control()
+            .shutdown_agent(agent_id)
+            .await
+            .expect("shutdown should submit");
+    }
+
+    #[tokio::test]
+    async fn set_thread_note_clears_agent_note() {
+        #[derive(Debug, Deserialize)]
+        struct SetThreadNoteResult {
+            thread_note: Option<String>,
+        }
+
+        let (mut session, turn) = make_session_and_context().await;
+        let manager = thread_manager();
+        session.services.agent_control = manager.agent_control();
+
+        let agent_id = manager
+            .agent_control()
+            .spawn_agent(
+                turn.config.as_ref().clone(),
+                vec![UserInput::Text {
+                    text: "hello child".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: session.conversation_id,
+                    depth: 1,
+                    agent_nickname: None,
+                    agent_role: Some("explorer".to_string()),
+                    thread_note: Some(
+                        "Назначение: Repository researcher | Компетенции:".to_string(),
+                    ),
+                })),
+            )
+            .await
+            .expect("child spawn should succeed");
+
+        let invocation = invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "set_thread_note",
+            function_payload(json!({
+                "id": agent_id.to_string(),
+                "note": "   "
+            })),
+        );
+        let output = MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("set_thread_note clear should succeed");
+        let (content, success) = expect_text_output(output);
+        let result: SetThreadNoteResult =
+            serde_json::from_str(&content).expect("set_thread_note result should be json");
+        assert_eq!(result.thread_note, None);
+        assert_eq!(success, Some(true));
+
+        let snapshot = manager
+            .get_thread(agent_id)
+            .await
+            .expect("spawned agent thread should exist");
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if snapshot.config_snapshot().await.thread_note.is_none() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("thread note should clear");
+        let snapshot = snapshot.config_snapshot().await;
+        assert_eq!(snapshot.thread_note, None);
+
+        let _ = manager
+            .agent_control()
+            .shutdown_agent(agent_id)
+            .await
+            .expect("shutdown should submit");
     }
 
     #[tokio::test]
@@ -1519,6 +1791,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_input_records_receiver_thread_note_in_collab_end_event() {
+        let (mut session, turn, rx_event) = make_session_and_context_with_rx().await;
+        let manager = thread_manager();
+        Arc::get_mut(&mut session)
+            .expect("session should not be shared yet")
+            .services
+            .agent_control = manager.agent_control();
+
+        let agent_id = manager
+            .agent_control()
+            .spawn_agent(
+                turn.config.as_ref().clone(),
+                vec![UserInput::Text {
+                    text: "hello child".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: session.conversation_id,
+                    depth: 1,
+                    agent_nickname: None,
+                    agent_role: Some("explorer".to_string()),
+                    thread_note: Some("Назначение: Focus on edge cases | Компетенции:".to_string()),
+                })),
+            )
+            .await
+            .expect("child spawn should succeed");
+
+        let invocation = invocation(
+            session.clone(),
+            turn.clone(),
+            "send_input",
+            function_payload(json!({"id": agent_id.to_string(), "message": "hi"})),
+        );
+        MultiAgentHandler
+            .handle(invocation)
+            .await
+            .expect("send_input should succeed");
+
+        let event = timeout(Duration::from_secs(1), async {
+            loop {
+                let event = rx_event
+                    .recv()
+                    .await
+                    .expect("event channel should stay open");
+                if let crate::protocol::EventMsg::CollabAgentInteractionEnd(event) = event.msg {
+                    break event;
+                }
+            }
+        })
+        .await
+        .expect("expected collab interaction end event before timeout");
+        assert_eq!(
+            event.receiver_thread_note.as_deref(),
+            Some("Назначение: Focus on edge cases | Компетенции:")
+        );
+        assert_eq!(event.receiver_agent_role.as_deref(), Some("explorer"));
+
+        let _ = manager
+            .agent_control()
+            .shutdown_agent(agent_id)
+            .await
+            .expect("shutdown should submit");
+    }
+
+    #[tokio::test]
     async fn resume_agent_rejects_invalid_id() {
         let (session, turn) = make_session_and_context().await;
         let invocation = invocation(
@@ -1684,6 +2021,7 @@ mod tests {
             depth: max_depth,
             agent_nickname: None,
             agent_role: None,
+            thread_note: None,
         });
 
         let invocation = invocation(

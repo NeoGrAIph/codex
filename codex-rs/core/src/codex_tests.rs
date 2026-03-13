@@ -990,6 +990,7 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
         cwd: turn_context.cwd.clone(),
         current_date: turn_context.current_date.clone(),
         timezone: turn_context.timezone.clone(),
+        thread_note: None,
         approval_policy: turn_context.approval_policy.value(),
         sandbox_policy: turn_context.sandbox_policy.get().clone(),
         network: None,
@@ -1440,6 +1441,7 @@ async fn set_rate_limits_retains_previous_credits() {
         cwd: config.cwd.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
+        thread_note: None,
         original_config_do_not_use: Arc::clone(&config),
         metrics_service_name: None,
         app_server_client_name: None,
@@ -1536,6 +1538,7 @@ async fn set_rate_limits_updates_plan_type_when_present() {
         cwd: config.cwd.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
+        thread_note: None,
         original_config_do_not_use: Arc::clone(&config),
         metrics_service_name: None,
         app_server_client_name: None,
@@ -1890,6 +1893,7 @@ pub(crate) async fn make_session_configuration_for_tests() -> SessionConfigurati
         cwd: config.cwd.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
+        thread_note: None,
         original_config_do_not_use: Arc::clone(&config),
         metrics_service_name: None,
         app_server_client_name: None,
@@ -2043,6 +2047,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_zsh_path() {
         cwd: config.cwd.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
+        thread_note: None,
         original_config_do_not_use: Arc::clone(&config),
         metrics_service_name: None,
         app_server_client_name: None,
@@ -2136,6 +2141,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         cwd: config.cwd.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
+        thread_note: None,
         original_config_do_not_use: Arc::clone(&config),
         metrics_service_name: None,
         app_server_client_name: None,
@@ -2693,6 +2699,7 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
         cwd: config.cwd.clone(),
         codex_home: config.codex_home.clone(),
         thread_name: None,
+        thread_note: None,
         original_config_do_not_use: Arc::clone(&config),
         metrics_service_name: None,
         app_server_client_name: None,
@@ -3006,6 +3013,72 @@ async fn build_settings_update_items_emits_environment_item_for_time_changes() {
 }
 
 #[tokio::test]
+async fn build_settings_update_items_ignores_thread_note_changes_for_model_context() {
+    let (session, previous_context) = make_session_and_context().await;
+    let previous_context = Arc::new(previous_context);
+    let mut current_context = previous_context
+        .with_model(
+            previous_context.model_info.slug.clone(),
+            &session.services.models_manager,
+        )
+        .await;
+    current_context.thread_note = Some(
+        "Назначение: Repository researcher | Компетенции: docs/features; AGENTS.md".to_string(),
+    );
+
+    let reference_context_item = previous_context.to_turn_context_item();
+    let update_items = session
+        .build_settings_update_items(Some(&reference_context_item), &current_context)
+        .await;
+
+    let developer_texts = developer_input_texts(&update_items);
+    assert!(
+        !developer_texts
+            .iter()
+            .any(|text| text.contains("<thread_note>")),
+        "thread note should not create developer update items, got {developer_texts:?}"
+    );
+    assert!(
+        !update_items.iter().any(|item| match item {
+            ResponseItem::Message { role, content, .. } if role == "user" => content
+                .iter()
+                .any(|content| matches!(content, ContentItem::InputText { text } if text.contains("<my_thread_note>"))),
+            _ => false,
+        }),
+        "environment context should not carry my_thread_note anymore"
+    );
+}
+
+#[tokio::test]
+async fn build_settings_update_items_ignores_thread_note_clear_for_model_context() {
+    let (session, previous_context) = make_session_and_context().await;
+    let previous_context = Arc::new(previous_context);
+    let mut current_context = previous_context
+        .with_model(
+            previous_context.model_info.slug.clone(),
+            &session.services.models_manager,
+        )
+        .await;
+    current_context.thread_note = Some(
+        "Назначение: Repository researcher | Компетенции: docs/features; AGENTS.md".to_string(),
+    );
+    let reference_context_item = current_context.to_turn_context_item();
+    current_context.thread_note = None;
+
+    let update_items = session
+        .build_settings_update_items(Some(&reference_context_item), &current_context)
+        .await;
+
+    let developer_texts = developer_input_texts(&update_items);
+    assert!(
+        !developer_texts
+            .iter()
+            .any(|text| text.contains("<thread_note>")),
+        "thread note clear should not create developer update items, got {developer_texts:?}"
+    );
+}
+
+#[tokio::test]
 async fn build_settings_update_items_emits_realtime_start_when_session_becomes_live() {
     let (session, previous_context) = make_session_and_context().await;
     let previous_context = Arc::new(previous_context);
@@ -3182,6 +3255,32 @@ async fn record_context_updates_and_set_reference_context_item_injects_full_cont
         serde_json::to_value(current_context).expect("serialize current context item"),
         serde_json::to_value(Some(turn_context.to_turn_context_item()))
             .expect("serialize expected context item")
+    );
+}
+
+#[tokio::test]
+async fn build_initial_context_omits_thread_note_from_developer_context() {
+    let (session, mut turn_context) = make_session_and_context().await;
+    turn_context.thread_note = Some(
+        "Назначение: Repository researcher | Компетенции: docs/features; AGENTS.md".to_string(),
+    );
+
+    let initial_context = session.build_initial_context(&turn_context).await;
+    let developer_texts = developer_input_texts(&initial_context);
+    assert!(
+        !developer_texts
+            .iter()
+            .any(|text| text.contains("<thread_note>")),
+        "thread note should not appear in developer context, got {developer_texts:?}"
+    );
+    assert!(
+        !initial_context.iter().any(|item| match item {
+            ResponseItem::Message { role, content, .. } if role == "user" => content
+                .iter()
+                .any(|content| matches!(content, ContentItem::InputText { text } if text.contains("<my_thread_note>"))),
+            _ => false,
+        }),
+        "environment context should not include my_thread_note"
     );
 }
 

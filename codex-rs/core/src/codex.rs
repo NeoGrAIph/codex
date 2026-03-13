@@ -519,6 +519,7 @@ impl Codex {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: session_source.get_thread_note(),
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name,
             app_server_client_name: None,
@@ -703,6 +704,7 @@ pub(crate) struct TurnContext {
     pub(crate) cwd: PathBuf,
     pub(crate) current_date: Option<String>,
     pub(crate) timezone: Option<String>,
+    pub(crate) thread_note: Option<String>,
     pub(crate) app_server_client_name: Option<String>,
     pub(crate) developer_instructions: Option<String>,
     pub(crate) compact_prompt: Option<String>,
@@ -801,6 +803,7 @@ impl TurnContext {
             cwd: self.cwd.clone(),
             current_date: self.current_date.clone(),
             timezone: self.timezone.clone(),
+            thread_note: self.thread_note.clone(),
             app_server_client_name: self.app_server_client_name.clone(),
             developer_instructions: self.developer_instructions.clone(),
             compact_prompt: self.compact_prompt.clone(),
@@ -848,6 +851,7 @@ impl TurnContext {
             cwd: self.cwd.clone(),
             current_date: self.current_date.clone(),
             timezone: self.timezone.clone(),
+            thread_note: self.thread_note.clone(),
             approval_policy: self.approval_policy.value(),
             sandbox_policy: self.sandbox_policy.get().clone(),
             network: self.turn_context_network_item(),
@@ -932,6 +936,8 @@ pub(crate) struct SessionConfiguration {
     codex_home: PathBuf,
     /// Optional user-facing name for the thread, updated during the session.
     thread_name: Option<String>,
+    /// Optional user-facing note for the thread, updated during the session.
+    thread_note: Option<String>,
 
     // TODO(pakrym): Remove config from here
     original_config_do_not_use: Arc<Config>,
@@ -961,6 +967,7 @@ impl SessionConfiguration {
             ephemeral: self.original_config_do_not_use.ephemeral,
             reasoning_effort: self.collaboration_mode.reasoning_effort(),
             personality: self.personality,
+            thread_note: self.thread_note.clone(),
             session_source: self.session_source.clone(),
         }
     }
@@ -1217,6 +1224,7 @@ impl Session {
             cwd,
             current_date: Some(current_date),
             timezone: Some(timezone),
+            thread_note: session_configuration.thread_note.clone(),
             app_server_client_name: session_configuration.app_server_client_name.clone(),
             developer_instructions: session_configuration.developer_instructions.clone(),
             compact_prompt: session_configuration.compact_prompt.clone(),
@@ -1526,7 +1534,25 @@ impl Session {
                     None
                 }
             };
+        let thread_note =
+            match session_index::find_thread_note_by_id(&config.codex_home, &conversation_id).await
+            {
+                Ok(note) => note,
+                Err(err) => {
+                    warn!("Failed to read thread note index: {err}");
+                    None
+                }
+            };
         session_configuration.thread_name = thread_name.clone();
+        let source_thread_note = crate::util::normalize_thread_note(
+            session_configuration
+                .session_source
+                .get_thread_note()
+                .as_deref(),
+        );
+        session_configuration.thread_note = thread_note
+            .or_else(|| session_configuration.thread_note.clone())
+            .or(source_thread_note);
         let state = SessionState::new(session_configuration.clone());
         let managed_network_requirements_enabled = config.managed_network_requirements_enabled();
         let network_approval = Arc::new(NetworkApprovalService::default());
@@ -4206,6 +4232,10 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                     handlers::set_thread_name(&sess, sub.id.clone(), name).await;
                     false
                 }
+                Op::SetThreadNote { note } => {
+                    handlers::set_thread_note(&sess, sub.id.clone(), note).await;
+                    false
+                }
                 Op::RunUserShellCommand { command } => {
                     handlers::run_user_shell_command(&sess, sub.id.clone(), command).await;
                     false
@@ -4299,7 +4329,9 @@ mod handlers {
     use codex_protocol::protocol::ReviewDecision;
     use codex_protocol::protocol::ReviewRequest;
     use codex_protocol::protocol::RolloutItem;
+    use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SkillsListEntry;
+    use codex_protocol::protocol::SubAgentSource;
     use codex_protocol::protocol::ThreadNameUpdatedEvent;
     use codex_protocol::protocol::ThreadRolledBackEvent;
     use codex_protocol::protocol::TurnAbortReason;
@@ -5038,6 +5070,56 @@ mod handlers {
         .await;
     }
 
+    /// Persists the thread note in the note index and updates in-memory state on success.
+    ///
+    /// Returns an error event if session persistence is disabled or the note index cannot be
+    /// updated.
+    pub async fn set_thread_note(sess: &Arc<Session>, sub_id: String, note: Option<String>) {
+        let note = crate::util::normalize_thread_note(note.as_deref());
+        let persistence_enabled = {
+            let rollout = sess.services.rollout.lock().await;
+            rollout.is_some()
+        };
+        if !persistence_enabled {
+            let event = Event {
+                id: sub_id,
+                msg: EventMsg::Error(ErrorEvent {
+                    message: "Session persistence is disabled; cannot update thread note."
+                        .to_string(),
+                    codex_error_info: Some(CodexErrorInfo::Other),
+                }),
+            };
+            sess.send_event_raw(event).await;
+            return;
+        }
+
+        let codex_home = sess.codex_home().await;
+        if let Err(err) =
+            session_index::append_thread_note(&codex_home, sess.conversation_id, note.as_deref())
+                .await
+        {
+            let event = Event {
+                id: sub_id,
+                msg: EventMsg::Error(ErrorEvent {
+                    message: format!("Failed to set thread note: {err}"),
+                    codex_error_info: Some(CodexErrorInfo::Other),
+                }),
+            };
+            sess.send_event_raw(event).await;
+            return;
+        }
+
+        {
+            let mut state = sess.state.lock().await;
+            state.session_configuration.thread_note = note.clone();
+            if let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { thread_note, .. }) =
+                &mut state.session_configuration.session_source
+            {
+                *thread_note = note.clone();
+            }
+        }
+    }
+
     pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
         sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
         let _ = sess.conversation.shutdown().await;
@@ -5214,6 +5296,7 @@ async fn spawn_review_thread(
         ghost_snapshot: parent_turn_context.ghost_snapshot.clone(),
         current_date: parent_turn_context.current_date.clone(),
         timezone: parent_turn_context.timezone.clone(),
+        thread_note: parent_turn_context.thread_note.clone(),
         app_server_client_name: parent_turn_context.app_server_client_name.clone(),
         developer_instructions: None,
         user_instructions: None,

@@ -3,10 +3,12 @@ source: tui/src/multi_agents.rs
 expression: snapshot
 ---
 • Spawned Robie [explorer]
-  └ Compute 11! and reply with just the integer result.
+  └ Note: Focus on edge cases
+    Compute 11! and reply with just the integer result.
 
 • Sent input to Robie [explorer]
-  └ Please continue and return the answer only.
+  └ Note: Focus on edge cases
+    Please continue and return the answer only.
 
 • Waiting for Robie [explorer]
 

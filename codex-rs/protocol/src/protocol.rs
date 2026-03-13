@@ -449,6 +449,11 @@ pub enum Op {
     /// involve the model.
     SetThreadName { name: String },
 
+    /// Set or clear a user-facing thread note for the current session.
+    /// This is a local-only operation handled by codex-core; it does not
+    /// involve the model.
+    SetThreadNote { note: Option<String> },
+
     /// Request Codex to undo a turn (turn are stacked so it is the same effect as CMD + Z).
     Undo,
 
@@ -2210,6 +2215,8 @@ pub enum SubAgentSource {
         agent_nickname: Option<String>,
         #[serde(default, alias = "agent_type")]
         agent_role: Option<String>,
+        #[serde(default)]
+        thread_note: Option<String>,
     },
     MemoryConsolidation,
     Other(String),
@@ -2248,6 +2255,15 @@ impl SessionSource {
             }
             SessionSource::SubAgent(SubAgentSource::MemoryConsolidation) => {
                 Some("memory builder".to_string())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn get_thread_note(&self) -> Option<String> {
+        match self {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { thread_note, .. }) => {
+                thread_note.clone()
             }
             _ => None,
         }
@@ -2385,6 +2401,8 @@ pub struct TurnContextItem {
     pub current_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_note: Option<String>,
     pub approval_policy: AskForApproval,
     pub sandbox_policy: SandboxPolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3167,6 +3185,9 @@ pub struct CollabAgentSpawnEndEvent {
     /// Optional role assigned to the new agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_agent_role: Option<String>,
+    /// Optional thread note assigned to the new agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_thread_note: Option<String>,
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
@@ -3201,6 +3222,9 @@ pub struct CollabAgentInteractionEndEvent {
     /// Optional role assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_role: Option<String>,
+    /// Optional thread note assigned to the receiver agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_thread_note: Option<String>,
     /// Prompt sent from the sender to the receiver. Can be empty to prevent CoT
     /// leaking at the beginning.
     pub prompt: String,
@@ -4141,6 +4165,7 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             current_date: None,
             timezone: None,
+            thread_note: None,
             approval_policy: AskForApproval::Never,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             network: Some(TurnContextNetworkItem {
@@ -4277,6 +4302,42 @@ mod tests {
         assert_eq!(value["msg"]["failed"][0]["server"], "b");
         assert_eq!(value["msg"]["failed"][0]["error"], "bad");
         assert_eq!(value["msg"]["cancelled"][0], "c");
+        Ok(())
+    }
+
+    #[test]
+    fn collab_agent_interaction_end_roundtrips_thread_note() -> Result<()> {
+        let event = CollabAgentInteractionEndEvent {
+            call_id: "call-send".to_string(),
+            sender_thread_id: ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")?,
+            receiver_thread_id: ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c9")?,
+            receiver_agent_nickname: Some("Robie".to_string()),
+            receiver_agent_role: Some("explorer".to_string()),
+            receiver_thread_note: Some("Keep the audit narrow".to_string()),
+            prompt: "continue".to_string(),
+            status: AgentStatus::Running,
+        };
+
+        let value = serde_json::to_value(&event)?;
+        let roundtrip: CollabAgentInteractionEndEvent = serde_json::from_value(value)?;
+        assert_eq!(roundtrip, event);
+        Ok(())
+    }
+
+    #[test]
+    fn collab_agent_interaction_end_defaults_missing_thread_note_to_none() -> Result<()> {
+        let value = json!({
+            "call_id": "call-send",
+            "sender_thread_id": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+            "receiver_thread_id": "67e55044-10b1-426f-9247-bb680e5fe0c9",
+            "receiver_agent_nickname": "Robie",
+            "receiver_agent_role": "explorer",
+            "prompt": "continue",
+            "status": "running"
+        });
+
+        let event: CollabAgentInteractionEndEvent = serde_json::from_value(value)?;
+        assert_eq!(event.receiver_thread_note, None);
         Ok(())
     }
 

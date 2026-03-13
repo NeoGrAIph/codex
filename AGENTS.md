@@ -24,11 +24,12 @@ In the codex-rs folder where the rust code lives:
 ## Fork Feature Delivery Contract
 
 - Treat each fork feature as a documented contract, not as an implicit code-only customization.
-- Every new fork feature or material fork behavior change must ship with `docs/features/<code-name>.md`.
-- Every fork implementation aligned to a release baseline must also maintain `docs/research/<release>/` as an active research package.
+- Every new fork feature or material fork behavior change must ship with `docs/fork/features/<code-name>.md`.
+- For non-trivial fork features, add `docs/fork/projects/<code-name>/` as the implementation dossier.
+- Every fork implementation aligned to a release baseline must also maintain `docs/fork/research/<release>/` as an active research package.
 - If API, wire shape, config semantics, TUI behavior, or operational behavior changes, update the relevant user/developer docs in the same change set.
 
-Minimum requirements for `docs/features/<code-name>.md`:
+Minimum requirements for `docs/fork/features/<code-name>.md`:
 
 - Feature passport: code name, status, goal, scope in/out.
 - User contract: exact behavior, transitions, empty/error states, and critical strings where wording matters.
@@ -36,7 +37,13 @@ Minimum requirements for `docs/features/<code-name>.md`:
 - Verification matrix: required commands/tests and the surfaces they validate.
 - Doc changelog: concise dated entries when contract or implementation expectations change.
 
-Minimum requirements for `docs/research/<release>/`:
+Minimum requirements for `docs/fork/projects/<code-name>/`:
+
+- `README.md`: entry point, current status, canonical links, and a compact map of the implementation surfaces.
+- `design.md`: canonical state, projections, data flow, invariants, and intentional implementation tradeoffs.
+- `verification.md`: scenario-focused test matrix, validation commands, and known coverage gaps.
+
+Minimum requirements for `docs/fork/research/<release>/`:
 
 - baseline release/tag and commit reference;
 - gap analysis between upstream baseline and fork behavior;
@@ -62,7 +69,7 @@ Minimum requirements for `docs/research/<release>/`:
 
 ## Porting Decision Record
 
-- Before implementing or porting a fork feature, record the upstream baseline and the expected fork gap in `docs/research/<release>/`.
+- Before implementing or porting a fork feature, record the upstream baseline and the expected fork gap in `docs/fork/research/<release>/`.
 - Before changing source-of-truth files, decide whether the target behavior is a literal port or an upstream-shaped adaptation, and capture that choice in the feature/research docs.
 - After implementation, verify contract surfaces explicitly: protocol/wire behavior, runtime behavior, UI/API text, generated artifacts, and persistence/config semantics when applicable.
 - If the final implementation differs materially from the historical fork commit because of upstream adaptation, document the reason so future ports do not re-open the same decision.

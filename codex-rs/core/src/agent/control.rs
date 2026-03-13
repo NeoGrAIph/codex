@@ -111,6 +111,7 @@ impl AgentControl {
                 parent_thread_id,
                 depth,
                 agent_role,
+                thread_note,
                 ..
             })) => {
                 let candidate_names = agent_nickname_candidates(&config, agent_role.as_deref());
@@ -122,6 +123,7 @@ impl AgentControl {
                     depth,
                     agent_nickname: Some(agent_nickname),
                     agent_role,
+                    thread_note,
                 }))
             }
             other => other,
@@ -227,6 +229,10 @@ impl AgentControl {
     ) -> CodexResult<ThreadId> {
         let state = self.upgrade()?;
         let mut reservation = self.state.reserve_spawn_slot(config.agent_max_threads)?;
+        let rollout_path =
+            find_thread_path_by_id_str(config.codex_home.as_path(), &thread_id.to_string())
+                .await?
+                .ok_or_else(|| CodexErr::ThreadNotFound(thread_id))?;
         let session_source = match session_source {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
@@ -262,6 +268,7 @@ impl AgentControl {
                     depth,
                     agent_nickname: reserved_agent_nickname,
                     agent_role: resumed_agent_role,
+                    thread_note: None,
                 })
             }
             other => other,
@@ -270,11 +277,6 @@ impl AgentControl {
         let inherited_shell_snapshot = self
             .inherited_shell_snapshot_for_source(&state, Some(&session_source))
             .await;
-        let rollout_path =
-            find_thread_path_by_id_str(config.codex_home.as_path(), &thread_id.to_string())
-                .await?
-                .ok_or_else(|| CodexErr::ThreadNotFound(thread_id))?;
-
         let resumed_thread = state
             .resume_thread_from_rollout_with_source(
                 config,
@@ -322,6 +324,16 @@ impl AgentControl {
         state.send_op(agent_id, Op::Interrupt).await
     }
 
+    /// Update a user-facing thread note for an existing agent thread.
+    pub(crate) async fn set_thread_note(
+        &self,
+        agent_id: ThreadId,
+        note: Option<String>,
+    ) -> CodexResult<String> {
+        let state = self.upgrade()?;
+        state.send_op(agent_id, Op::SetThreadNote { note }).await
+    }
+
     /// Submit a shutdown request to an existing agent thread.
     pub(crate) async fn shutdown_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
@@ -343,20 +355,24 @@ impl AgentControl {
         thread.agent_status().await
     }
 
-    pub(crate) async fn get_agent_nickname_and_role(
+    pub(crate) async fn get_agent_nickname_role_and_thread_note(
         &self,
         agent_id: ThreadId,
-    ) -> Option<(Option<String>, Option<String>)> {
+    ) -> Option<(Option<String>, Option<String>, Option<String>)> {
         let Ok(state) = self.upgrade() else {
             return None;
         };
         let Ok(thread) = state.get_thread(agent_id).await else {
             return None;
         };
-        let session_source = thread.config_snapshot().await.session_source;
+        let config_snapshot = thread.config_snapshot().await;
+        let session_source = config_snapshot.session_source;
         Some((
             session_source.get_nickname(),
             session_source.get_agent_role(),
+            config_snapshot
+                .thread_note
+                .or_else(|| session_source.get_thread_note()),
         ))
     }
 
@@ -903,6 +919,7 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: None,
+                    thread_note: None,
                 })),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: Some(parent_spawn_call_id),
@@ -985,6 +1002,7 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: None,
+                    thread_note: None,
                 })),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -1054,6 +1072,7 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: None,
+                    thread_note: None,
                 })),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -1307,6 +1326,7 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
+                    thread_note: None,
                 })),
             )
             .await
@@ -1338,6 +1358,7 @@ mod tests {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                thread_note: None,
             })),
         );
 
@@ -1378,6 +1399,7 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
+                    thread_note: None,
                 })),
             )
             .await
@@ -1395,6 +1417,7 @@ mod tests {
             depth,
             agent_nickname,
             agent_role,
+            thread_note: _,
         }) = snapshot.session_source
         else {
             panic!("expected thread-spawn sub-agent source");
@@ -1428,6 +1451,7 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("researcher".to_string()),
+                    thread_note: None,
                 })),
             )
             .await
@@ -1479,6 +1503,7 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: Some("explorer".to_string()),
+                    thread_note: None,
                 })),
             )
             .await
@@ -1547,6 +1572,7 @@ mod tests {
                     depth: 1,
                     agent_nickname: None,
                     agent_role: None,
+                    thread_note: None,
                 }),
             )
             .await
@@ -1565,6 +1591,7 @@ mod tests {
             depth: resumed_depth,
             agent_nickname: resumed_nickname,
             agent_role: resumed_role,
+            thread_note: _,
         }) = resumed_snapshot.session_source
         else {
             panic!("expected thread-spawn sub-agent source");
@@ -1579,5 +1606,101 @@ mod tests {
             .shutdown_agent(resumed_thread_id)
             .await
             .expect("resumed child shutdown should submit");
+    }
+
+    #[tokio::test]
+    async fn resume_agent_restores_thread_note_from_index() {
+        let harness = AgentControlHarness::new().await;
+        let (parent_thread_id, _parent_thread) = harness.start_thread().await;
+
+        let child_thread_id = harness
+            .control
+            .spawn_agent(
+                harness.config.clone(),
+                text_input("hello child"),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_nickname: None,
+                    agent_role: Some("explorer".to_string()),
+                    thread_note: Some("Repository researcher".to_string()),
+                })),
+            )
+            .await
+            .expect("child spawn should succeed");
+
+        let updated_note =
+            "Назначение: Release verification specialist | Компетенции: runtime validation";
+        harness
+            .control
+            .set_thread_note(child_thread_id, Some(updated_note.to_string()))
+            .await
+            .expect("thread note update should submit");
+
+        let child_thread = harness
+            .manager
+            .get_thread(child_thread_id)
+            .await
+            .expect("child thread should exist");
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if child_thread.config_snapshot().await.thread_note.as_deref() == Some(updated_note)
+                {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("thread note should update before shutdown");
+
+        let _ = harness
+            .control
+            .shutdown_agent(child_thread_id)
+            .await
+            .expect("shutdown child thread");
+
+        let resumed_thread_id = harness
+            .control
+            .resume_agent_from_rollout(
+                harness.config.clone(),
+                child_thread_id,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_nickname: None,
+                    agent_role: Some("explorer".to_string()),
+                    thread_note: None,
+                }),
+            )
+            .await
+            .expect("resume child thread");
+        assert_eq!(resumed_thread_id, child_thread_id);
+
+        let resumed = harness
+            .manager
+            .get_thread(child_thread_id)
+            .await
+            .expect("resumed child thread should exist");
+        let snapshot = resumed.config_snapshot().await;
+        assert_eq!(snapshot.thread_note.as_deref(), Some(updated_note));
+        assert_eq!(
+            harness
+                .control
+                .get_agent_nickname_role_and_thread_note(child_thread_id)
+                .await
+                .expect("thread metadata should be readable"),
+            (
+                snapshot.session_source.get_nickname(),
+                snapshot.session_source.get_agent_role(),
+                Some(updated_note.to_string()),
+            )
+        );
+
+        let _ = harness
+            .control
+            .shutdown_agent(child_thread_id)
+            .await
+            .expect("shutdown resumed child thread");
     }
 }

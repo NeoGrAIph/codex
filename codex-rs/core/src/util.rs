@@ -85,6 +85,11 @@ pub fn normalize_thread_name(name: &str) -> Option<String> {
     }
 }
 
+/// Trim a thread note and return `None` if it is empty after trimming.
+pub fn normalize_thread_note(note: Option<&str>) -> Option<String> {
+    codex_protocol::thread_note::normalize_thread_note(note)
+}
+
 pub fn resume_command(thread_name: Option<&str>, thread_id: Option<ThreadId>) -> Option<String> {
     let resume_target = thread_name
         .filter(|name| !name.is_empty())

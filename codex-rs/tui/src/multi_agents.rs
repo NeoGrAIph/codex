@@ -1,4 +1,4 @@
-use crate::history_cell::PlainHistoryCell;
+use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::render::line_utils::prefix_lines;
 use crate::text_formatting::truncate_text;
 use codex_protocol::ThreadId;
@@ -15,6 +15,7 @@ use codex_protocol::protocol::CollabWaitingEndEvent;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -74,13 +75,14 @@ pub(crate) fn sort_agent_picker_threads(agent_threads: &mut [(ThreadId, AgentPic
     });
 }
 
-pub(crate) fn spawn_end(ev: CollabAgentSpawnEndEvent) -> PlainHistoryCell {
+pub(crate) fn spawn_end(ev: CollabAgentSpawnEndEvent) -> CollabHistoryCell {
     let CollabAgentSpawnEndEvent {
         call_id: _,
         sender_thread_id: _,
         new_thread_id,
         new_agent_nickname,
         new_agent_role,
+        new_thread_note,
         prompt,
         status: _,
     } = ev;
@@ -98,19 +100,23 @@ pub(crate) fn spawn_end(ev: CollabAgentSpawnEndEvent) -> PlainHistoryCell {
     };
 
     let mut details = Vec::new();
-    if let Some(line) = prompt_line(&prompt) {
+    if let Some(line) = note_line(new_thread_note.as_deref()) {
         details.push(line);
+    }
+    if let Some(line) = prompt_line(&prompt) {
+        details.push(CollabDetailLine::Plain(line));
     }
     collab_event(title, details)
 }
 
-pub(crate) fn interaction_end(ev: CollabAgentInteractionEndEvent) -> PlainHistoryCell {
+pub(crate) fn interaction_end(ev: CollabAgentInteractionEndEvent) -> CollabHistoryCell {
     let CollabAgentInteractionEndEvent {
         call_id: _,
         sender_thread_id: _,
         receiver_thread_id,
         receiver_agent_nickname,
         receiver_agent_role,
+        receiver_thread_note,
         prompt,
         status: _,
     } = ev;
@@ -125,13 +131,16 @@ pub(crate) fn interaction_end(ev: CollabAgentInteractionEndEvent) -> PlainHistor
     );
 
     let mut details = Vec::new();
-    if let Some(line) = prompt_line(&prompt) {
+    if let Some(line) = note_line(receiver_thread_note.as_deref()) {
         details.push(line);
+    }
+    if let Some(line) = prompt_line(&prompt) {
+        details.push(CollabDetailLine::Plain(line));
     }
     collab_event(title, details)
 }
 
-pub(crate) fn waiting_begin(ev: CollabWaitingBeginEvent) -> PlainHistoryCell {
+pub(crate) fn waiting_begin(ev: CollabWaitingBeginEvent) -> CollabHistoryCell {
     let CollabWaitingBeginEvent {
         sender_thread_id: _,
         receiver_thread_ids,
@@ -155,21 +164,30 @@ pub(crate) fn waiting_begin(ev: CollabWaitingBeginEvent) -> PlainHistoryCell {
         Vec::new()
     };
 
-    collab_event(title, details)
+    collab_event(
+        title,
+        details
+            .into_iter()
+            .map(CollabDetailLine::Plain)
+            .collect::<Vec<_>>(),
+    )
 }
 
-pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> PlainHistoryCell {
+pub(crate) fn waiting_end(ev: CollabWaitingEndEvent) -> CollabHistoryCell {
     let CollabWaitingEndEvent {
         call_id: _,
         sender_thread_id: _,
         agent_statuses,
         statuses,
     } = ev;
-    let details = wait_complete_lines(&statuses, &agent_statuses);
+    let details = wait_complete_lines(&statuses, &agent_statuses)
+        .into_iter()
+        .map(CollabDetailLine::Plain)
+        .collect::<Vec<_>>();
     collab_event(title_text("Finished waiting"), details)
 }
 
-pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
+pub(crate) fn close_end(ev: CollabCloseEndEvent) -> CollabHistoryCell {
     let CollabCloseEndEvent {
         call_id: _,
         sender_thread_id: _,
@@ -192,7 +210,7 @@ pub(crate) fn close_end(ev: CollabCloseEndEvent) -> PlainHistoryCell {
     )
 }
 
-pub(crate) fn resume_begin(ev: CollabResumeBeginEvent) -> PlainHistoryCell {
+pub(crate) fn resume_begin(ev: CollabResumeBeginEvent) -> CollabHistoryCell {
     let CollabResumeBeginEvent {
         call_id: _,
         sender_thread_id: _,
@@ -214,7 +232,7 @@ pub(crate) fn resume_begin(ev: CollabResumeBeginEvent) -> PlainHistoryCell {
     )
 }
 
-pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
+pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> CollabHistoryCell {
     let CollabResumeEndEvent {
         call_id: _,
         sender_thread_id: _,
@@ -233,16 +251,74 @@ pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
                 role: receiver_agent_role.as_deref(),
             },
         ),
-        vec![status_summary_line(&status)],
+        vec![CollabDetailLine::Plain(status_summary_line(&status))],
     )
 }
 
-fn collab_event(title: Line<'static>, details: Vec<Line<'static>>) -> PlainHistoryCell {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CollabDetailLine {
+    Plain(Line<'static>),
+    Note(Line<'static>),
+}
+
+#[derive(Debug)]
+pub(crate) struct CollabHistoryCell {
+    lines: Vec<Line<'static>>,
+    note_line_indexes: BTreeSet<usize>,
+}
+
+impl CollabHistoryCell {
+    fn new(lines: Vec<Line<'static>>, note_line_indexes: BTreeSet<usize>) -> Self {
+        Self {
+            lines,
+            note_line_indexes,
+        }
+    }
+}
+
+impl crate::history_cell::HistoryCell for CollabHistoryCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let max_width = usize::from(width);
+        self.lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| {
+                if self.note_line_indexes.contains(&index) {
+                    truncate_line_with_ellipsis_if_overflow(line.clone(), max_width)
+                } else {
+                    line.clone()
+                }
+            })
+            .collect()
+    }
+}
+
+fn collab_event(title: Line<'static>, details: Vec<CollabDetailLine>) -> CollabHistoryCell {
     let mut lines: Vec<Line<'static>> = vec![title];
     if !details.is_empty() {
-        lines.extend(prefix_lines(details, "  └ ".dim(), "    ".into()));
+        let note_detail_indexes = details
+            .iter()
+            .enumerate()
+            .filter_map(|(index, detail)| match detail {
+                CollabDetailLine::Note(_) => Some(index),
+                CollabDetailLine::Plain(_) => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let detail_lines = details
+            .into_iter()
+            .map(|detail| match detail {
+                CollabDetailLine::Plain(line) | CollabDetailLine::Note(line) => line,
+            })
+            .collect::<Vec<_>>();
+        lines.extend(prefix_lines(detail_lines, "  └ ".dim(), "    ".into()));
+        let base_index = 1usize;
+        let note_line_indexes = note_detail_indexes
+            .into_iter()
+            .map(|index| base_index + index)
+            .collect::<BTreeSet<_>>();
+        return CollabHistoryCell::new(lines, note_line_indexes);
     }
-    PlainHistoryCell::new(lines)
+    CollabHistoryCell::new(lines, BTreeSet::new())
 }
 
 fn title_text(title: impl Into<String>) -> Line<'static> {
@@ -308,6 +384,13 @@ fn prompt_line(prompt: &str) -> Option<Line<'static>> {
             COLLAB_PROMPT_PREVIEW_GRAPHEMES,
         ))))
     }
+}
+
+fn note_line(note: Option<&str>) -> Option<CollabDetailLine> {
+    let trimmed = note.map(str::trim).filter(|note| !note.is_empty())?;
+    Some(CollabDetailLine::Note(
+        vec!["Note: ".dim(), Span::from(trimmed.to_string())].into(),
+    ))
 }
 
 fn merge_wait_receivers(
@@ -466,6 +549,7 @@ mod tests {
             new_thread_id: Some(robie_id),
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_role: Some("explorer".to_string()),
+            new_thread_note: Some("Focus on edge cases".to_string()),
             prompt: "Compute 11! and reply with just the integer result.".to_string(),
             status: AgentStatus::PendingInit,
         });
@@ -476,6 +560,7 @@ mod tests {
             receiver_thread_id: robie_id,
             receiver_agent_nickname: Some("Robie".to_string()),
             receiver_agent_role: Some("explorer".to_string()),
+            receiver_thread_note: Some("Focus on edge cases".to_string()),
             prompt: "Please continue and return the answer only.".to_string(),
             status: AgentStatus::Running,
         });
@@ -546,6 +631,7 @@ mod tests {
             new_thread_id: Some(robie_id),
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_role: Some("explorer".to_string()),
+            new_thread_note: None,
             prompt: String::new(),
             status: AgentStatus::PendingInit,
         });
@@ -560,7 +646,58 @@ mod tests {
         assert!(!title.spans[4].style.add_modifier.contains(Modifier::DIM));
     }
 
-    fn cell_to_text(cell: &PlainHistoryCell) -> String {
+    #[test]
+    fn note_line_is_absent_for_empty_note() {
+        assert_eq!(note_line(None), None);
+        assert_eq!(note_line(Some("   ")), None);
+    }
+
+    #[test]
+    fn note_line_uses_full_text_when_width_allows_it() {
+        let cell = spawn_end(CollabAgentSpawnEndEvent {
+            call_id: "call-spawn".to_string(),
+            sender_thread_id: ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+                .expect("valid sender thread id"),
+            new_thread_id: Some(
+                ThreadId::from_string("00000000-0000-0000-0000-000000000002")
+                    .expect("valid receiver thread id"),
+            ),
+            new_agent_nickname: Some("Robie".to_string()),
+            new_agent_role: Some("explorer".to_string()),
+            new_thread_note: Some("Focus on edge cases and verify resume semantics".to_string()),
+            prompt: String::new(),
+            status: AgentStatus::PendingInit,
+        });
+
+        let lines = cell.display_lines(120);
+        assert_eq!(
+            line_to_text(&lines[1]),
+            "  └ Note: Focus on edge cases and verify resume semantics"
+        );
+    }
+
+    #[test]
+    fn note_line_truncates_only_when_width_is_too_small() {
+        let cell = spawn_end(CollabAgentSpawnEndEvent {
+            call_id: "call-spawn".to_string(),
+            sender_thread_id: ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+                .expect("valid sender thread id"),
+            new_thread_id: Some(
+                ThreadId::from_string("00000000-0000-0000-0000-000000000002")
+                    .expect("valid receiver thread id"),
+            ),
+            new_agent_nickname: Some("Robie".to_string()),
+            new_agent_role: Some("explorer".to_string()),
+            new_thread_note: Some("Focus on edge cases and verify resume semantics".to_string()),
+            prompt: String::new(),
+            status: AgentStatus::PendingInit,
+        });
+
+        let lines = cell.display_lines(28);
+        assert_eq!(line_to_text(&lines[1]), "  └ Note: Focus on edge cas…");
+    }
+
+    fn cell_to_text(cell: &impl HistoryCell) -> String {
         cell.display_lines(200)
             .iter()
             .map(line_to_text)

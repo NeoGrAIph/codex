@@ -783,6 +783,15 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
             },
         ),
         (
+            "thread_note".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional stable note describing the new thread's specialization and competencies. Plain text is normalized to `Назначение: <text> | Компетенции:`. Use `Назначение:` for the stable seed role of the thread and `Компетенции:` for refinements discovered over time. Do not use it for temporary status or the current task."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
             "fork_context".to_string(),
             JsonSchema::Boolean {
                 description: Some(
@@ -995,6 +1004,39 @@ fn create_send_input_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "send_input".to_string(),
         description: "Send a message to an existing agent. Use interrupt=true to redirect work immediately. You should reuse the agent by send_input if you believe your assigned task is highly dependent on the context of a previous task."
+            .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["id".to_string()]),
+            additional_properties: Some(false.into()),
+        },
+        output_schema: None,
+    })
+}
+
+fn create_set_thread_note_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "id".to_string(),
+            JsonSchema::String {
+                description: Some("Agent id whose thread note should be updated.".to_string()),
+            },
+        ),
+        (
+            "note".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Stable thread note in the format `Назначение: ... | Компетенции: ...`. For routine updates, preserve `Назначение:` and refine `Компетенции:`. Replace the entire note only when the thread's specialization genuinely changes. Do not use it for temporary status or the current task."
+                        .to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "set_thread_note".to_string(),
+        description: "Update or clear the stable specialization/competency note for an existing agent thread."
             .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
@@ -2168,11 +2210,13 @@ pub(crate) fn build_specs(
         let multi_agent_handler = Arc::new(MultiAgentHandler);
         builder.push_spec(create_spawn_agent_tool(config));
         builder.push_spec(create_send_input_tool());
+        builder.push_spec(create_set_thread_note_tool());
         builder.push_spec(create_resume_agent_tool());
         builder.push_spec(create_wait_tool());
         builder.push_spec(create_close_agent_tool());
         builder.register_handler("spawn_agent", multi_agent_handler.clone());
         builder.register_handler("send_input", multi_agent_handler.clone());
+        builder.register_handler("set_thread_note", multi_agent_handler.clone());
         builder.register_handler("resume_agent", multi_agent_handler.clone());
         builder.register_handler("wait", multi_agent_handler.clone());
         builder.register_handler("close_agent", multi_agent_handler);
@@ -2482,6 +2526,7 @@ mod tests {
             &[
                 "spawn_agent",
                 "send_input",
+                "set_thread_note",
                 "wait",
                 "close_agent",
                 "spawn_agents_on_csv",
@@ -2530,6 +2575,7 @@ mod tests {
             &[
                 "spawn_agent",
                 "send_input",
+                "set_thread_note",
                 "resume_agent",
                 "wait",
                 "close_agent",
