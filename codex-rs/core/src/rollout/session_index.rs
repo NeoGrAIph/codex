@@ -14,12 +14,21 @@ use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
 
 const SESSION_INDEX_FILE: &str = "session_index.jsonl";
+const THREAD_NOTE_INDEX_FILE: &str = "thread_note_index.jsonl";
 const READ_CHUNK_SIZE: usize = 8192;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionIndexEntry {
     pub id: ThreadId,
     pub thread_name: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ThreadNoteIndexEntry {
+    pub id: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_note: Option<String>,
     pub updated_at: String,
 }
 
@@ -42,6 +51,37 @@ pub async fn append_thread_name(
         updated_at,
     };
     append_session_index_entry(codex_home, &entry).await
+}
+
+/// Append a thread note update to the thread note index.
+/// The index is append-only; the most recent entry wins for each thread id.
+pub async fn append_thread_note(
+    codex_home: &Path,
+    thread_id: ThreadId,
+    note: Option<&str>,
+) -> std::io::Result<()> {
+    use time::OffsetDateTime;
+    use time::format_description::well_known::Rfc3339;
+
+    let updated_at = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+    let entry = ThreadNoteIndexEntry {
+        id: thread_id,
+        thread_note: normalize_thread_note_entry(note.map(ToString::to_string)),
+        updated_at,
+    };
+    let path = thread_note_index_path(codex_home);
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .await?;
+    let mut line = serde_json::to_string(&entry).map_err(std::io::Error::other)?;
+    line.push('\n');
+    file.write_all(line.as_bytes()).await?;
+    file.flush().await?;
+    Ok(())
 }
 
 /// Append a raw session index entry to `session_index.jsonl`.
@@ -77,6 +117,38 @@ pub async fn find_thread_name_by_id(
         .await
         .map_err(std::io::Error::other)??;
     Ok(entry.map(|entry| entry.thread_name))
+}
+
+/// Find the latest thread note for a thread id, if any.
+/// Returns `None` when no note exists or the latest entry clears it.
+pub async fn find_thread_note_by_id(
+    codex_home: &Path,
+    thread_id: &ThreadId,
+) -> std::io::Result<Option<String>> {
+    let path = thread_note_index_path(codex_home);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let file = tokio::fs::File::open(&path).await?;
+    let reader = tokio::io::BufReader::new(file);
+    let mut lines = reader.lines();
+    let mut latest: Option<Option<String>> = None;
+
+    while let Some(line) = lines.next_line().await? {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<ThreadNoteIndexEntry>(trimmed) else {
+            continue;
+        };
+        if entry.id == *thread_id {
+            latest = Some(normalize_thread_note_entry(entry.thread_note));
+        }
+    }
+
+    Ok(latest.flatten())
 }
 
 /// Find the latest thread names for a batch of thread ids.
@@ -144,6 +216,21 @@ pub async fn find_thread_path_by_name_str(
 
 fn session_index_path(codex_home: &Path) -> PathBuf {
     codex_home.join(SESSION_INDEX_FILE)
+}
+
+fn thread_note_index_path(codex_home: &Path) -> PathBuf {
+    codex_home.join(THREAD_NOTE_INDEX_FILE)
+}
+
+fn normalize_thread_note_entry(thread_note: Option<String>) -> Option<String> {
+    thread_note.and_then(|note| {
+        let note = note.trim();
+        if note.is_empty() {
+            None
+        } else {
+            Some(note.to_string())
+        }
+    })
 }
 
 fn scan_index_from_end_by_id(

@@ -22,6 +22,18 @@
     },
     "CollabAgentState": {
       "properties": {
+        "agentNickname": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agentRole": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "message": {
           "type": [
             "string",
@@ -30,6 +42,12 @@
         },
         "status": {
           "$ref": "#/definitions/CollabAgentStatus"
+        },
+        "threadNote": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

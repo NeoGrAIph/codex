@@ -134,6 +134,7 @@ use codex_protocol::protocol::ApplyPatchApprovalRequestEvent;
 use codex_protocol::protocol::BackgroundEventEvent;
 #[cfg(test)]
 use codex_protocol::protocol::CodexErrorInfo as CoreCodexErrorInfo;
+use codex_protocol::protocol::CollabAgentRef;
 #[cfg(test)]
 use codex_protocol::protocol::CollabAgentSpawnBeginEvent;
 use codex_protocol::protocol::CollabAgentStatusEntry;
@@ -615,6 +616,13 @@ struct PendingGuardianReviewStatusEntry {
     detail: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct CollabAgentMetadata {
+    agent_nickname: Option<String>,
+    agent_role: Option<String>,
+    thread_note: Option<String>,
+}
+
 impl PendingGuardianReviewStatus {
     fn start_or_update(&mut self, id: String, detail: String) {
         if let Some(existing) = self.entries.iter_mut().find(|entry| entry.id == id) {
@@ -726,6 +734,7 @@ pub(crate) struct ChatWidget {
     last_copyable_output: Option<String>,
     running_commands: HashMap<String, RunningCommand>,
     pending_collab_spawn_requests: HashMap<String, multi_agents::SpawnRequestSummary>,
+    collab_agent_metadata: HashMap<ThreadId, CollabAgentMetadata>,
     suppressed_exec_calls: HashSet<String>,
     skills_all: Vec<ProtocolSkillMetadata>,
     skills_initial_state: Option<HashMap<PathBuf, bool>>,
@@ -1339,9 +1348,18 @@ fn app_server_collab_state_to_core(state: &AppServerCollabAgentState) -> AgentSt
     }
 }
 
+fn app_server_collab_metadata(state: &AppServerCollabAgentState) -> CollabAgentMetadata {
+    CollabAgentMetadata {
+        agent_nickname: state.agent_nickname.clone(),
+        agent_role: state.agent_role.clone(),
+        thread_note: state.thread_note.clone(),
+    }
+}
+
 fn app_server_collab_agent_statuses_to_core(
     receiver_thread_ids: &[String],
     agents_states: &HashMap<String, AppServerCollabAgentState>,
+    known_agents: &HashMap<ThreadId, CollabAgentMetadata>,
 ) -> (Vec<CollabAgentStatusEntry>, HashMap<ThreadId, AgentStatus>) {
     let mut agent_statuses = Vec::new();
     let mut statuses = HashMap::new();
@@ -1354,10 +1372,17 @@ fn app_server_collab_agent_statuses_to_core(
             continue;
         };
         let status = app_server_collab_state_to_core(agent_state);
+        let cached_metadata = known_agents.get(&thread_id);
         agent_statuses.push(CollabAgentStatusEntry {
             thread_id,
-            agent_nickname: None,
-            agent_role: None,
+            agent_nickname: agent_state
+                .agent_nickname
+                .clone()
+                .or_else(|| cached_metadata.and_then(|meta| meta.agent_nickname.clone())),
+            agent_role: agent_state
+                .agent_role
+                .clone()
+                .or_else(|| cached_metadata.and_then(|meta| meta.agent_role.clone())),
             status: status.clone(),
         });
         statuses.insert(thread_id, status);
@@ -3296,6 +3321,33 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    fn update_collab_agent_metadata(&mut self, thread_id: ThreadId, metadata: CollabAgentMetadata) {
+        if metadata.agent_nickname.is_none()
+            && metadata.agent_role.is_none()
+            && metadata.thread_note.is_none()
+        {
+            return;
+        }
+        self.collab_agent_metadata
+            .entry(thread_id)
+            .and_modify(|existing| {
+                if metadata.agent_nickname.is_some() {
+                    existing.agent_nickname = metadata.agent_nickname.clone();
+                }
+                if metadata.agent_role.is_some() {
+                    existing.agent_role = metadata.agent_role.clone();
+                }
+                if metadata.thread_note.is_some() {
+                    existing.thread_note = metadata.thread_note.clone();
+                }
+            })
+            .or_insert(metadata);
+    }
+
+    fn collab_agent_metadata(&self, thread_id: ThreadId) -> Option<&CollabAgentMetadata> {
+        self.collab_agent_metadata.get(&thread_id)
+    }
+
     fn on_collab_agent_tool_call(&mut self, item: ThreadItem) {
         let ThreadItem::CollabAgentToolCall {
             id,
@@ -3317,6 +3369,9 @@ impl ChatWidget {
         let first_receiver = receiver_thread_ids
             .first()
             .and_then(|thread_id| app_server_collab_thread_id_to_core(thread_id));
+        let first_receiver_state = first_receiver
+            .as_ref()
+            .and_then(|thread_id| agents_states.get(&thread_id.to_string()));
 
         match tool {
             CollabAgentTool::SpawnAgent => {
@@ -3342,19 +3397,29 @@ impl ChatWidget {
                                     }
                                 })
                         });
+                    if let (Some(receiver_thread_id), Some(agent_state)) =
+                        (first_receiver, first_receiver_state)
+                    {
+                        self.update_collab_agent_metadata(
+                            receiver_thread_id,
+                            app_server_collab_metadata(agent_state),
+                        );
+                    }
                     self.on_collab_event(multi_agents::spawn_end(
                         codex_protocol::protocol::CollabAgentSpawnEndEvent {
                             call_id: id,
                             sender_thread_id,
                             new_thread_id: first_receiver,
-                            new_agent_nickname: None,
-                            new_agent_role: None,
+                            new_agent_nickname: first_receiver_state
+                                .and_then(|state| state.agent_nickname.clone()),
+                            new_agent_role: first_receiver_state
+                                .and_then(|state| state.agent_role.clone()),
+                            new_thread_note: first_receiver_state
+                                .and_then(|state| state.thread_note.clone()),
                             prompt: prompt.unwrap_or_default(),
                             model: String::new(),
                             reasoning_effort: ReasoningEffortConfig::Medium,
-                            status: first_receiver
-                                .as_ref()
-                                .and_then(|thread_id| agents_states.get(&thread_id.to_string()))
+                            status: first_receiver_state
                                 .map(app_server_collab_state_to_core)
                                 .unwrap_or_else(|| {
                                     AgentStatus::Errored("Agent spawn failed".into())
@@ -3368,17 +3433,37 @@ impl ChatWidget {
                 if let Some(receiver_thread_id) = first_receiver
                     && !matches!(status, CollabAgentToolCallStatus::InProgress)
                 {
+                    if let Some(agent_state) = first_receiver_state {
+                        self.update_collab_agent_metadata(
+                            receiver_thread_id,
+                            app_server_collab_metadata(agent_state),
+                        );
+                    }
                     self.on_collab_event(multi_agents::interaction_end(
                         codex_protocol::protocol::CollabAgentInteractionEndEvent {
                             call_id: id,
                             sender_thread_id,
                             receiver_thread_id,
-                            receiver_agent_nickname: None,
-                            receiver_agent_role: None,
+                            receiver_agent_nickname: first_receiver_state
+                                .and_then(|state| state.agent_nickname.clone())
+                                .or_else(|| {
+                                    self.collab_agent_metadata(receiver_thread_id)
+                                        .and_then(|meta| meta.agent_nickname.clone())
+                                }),
+                            receiver_agent_role: first_receiver_state
+                                .and_then(|state| state.agent_role.clone())
+                                .or_else(|| {
+                                    self.collab_agent_metadata(receiver_thread_id)
+                                        .and_then(|meta| meta.agent_role.clone())
+                                }),
+                            receiver_thread_note: first_receiver_state
+                                .and_then(|state| state.thread_note.clone())
+                                .or_else(|| {
+                                    self.collab_agent_metadata(receiver_thread_id)
+                                        .and_then(|meta| meta.thread_note.clone())
+                                }),
                             prompt: prompt.unwrap_or_default(),
-                            status: receiver_thread_ids
-                                .iter()
-                                .find_map(|thread_id| agents_states.get(thread_id))
+                            status: first_receiver_state
                                 .map(app_server_collab_state_to_core)
                                 .unwrap_or_else(|| {
                                     AgentStatus::Errored("Agent interaction failed".into())
@@ -3395,21 +3480,39 @@ impl ChatWidget {
                                 call_id: id,
                                 sender_thread_id,
                                 receiver_thread_id,
-                                receiver_agent_nickname: None,
-                                receiver_agent_role: None,
+                                receiver_agent_nickname: self
+                                    .collab_agent_metadata(receiver_thread_id)
+                                    .and_then(|meta| meta.agent_nickname.clone()),
+                                receiver_agent_role: self
+                                    .collab_agent_metadata(receiver_thread_id)
+                                    .and_then(|meta| meta.agent_role.clone()),
                             },
                         ));
                     } else {
+                        if let Some(agent_state) = first_receiver_state {
+                            self.update_collab_agent_metadata(
+                                receiver_thread_id,
+                                app_server_collab_metadata(agent_state),
+                            );
+                        }
                         self.on_collab_event(multi_agents::resume_end(
                             codex_protocol::protocol::CollabResumeEndEvent {
                                 call_id: id,
                                 sender_thread_id,
                                 receiver_thread_id,
-                                receiver_agent_nickname: None,
-                                receiver_agent_role: None,
-                                status: receiver_thread_ids
-                                    .iter()
-                                    .find_map(|thread_id| agents_states.get(thread_id))
+                                receiver_agent_nickname: first_receiver_state
+                                    .and_then(|state| state.agent_nickname.clone())
+                                    .or_else(|| {
+                                        self.collab_agent_metadata(receiver_thread_id)
+                                            .and_then(|meta| meta.agent_nickname.clone())
+                                    }),
+                                receiver_agent_role: first_receiver_state
+                                    .and_then(|state| state.agent_role.clone())
+                                    .or_else(|| {
+                                        self.collab_agent_metadata(receiver_thread_id)
+                                            .and_then(|meta| meta.agent_role.clone())
+                                    }),
+                                status: first_receiver_state
                                     .map(app_server_collab_state_to_core)
                                     .unwrap_or_else(|| {
                                         AgentStatus::Errored("Agent resume failed".into())
@@ -3421,6 +3524,18 @@ impl ChatWidget {
             }
             CollabAgentTool::Wait => {
                 if matches!(status, CollabAgentToolCallStatus::InProgress) {
+                    let receiver_agents = receiver_thread_ids
+                        .iter()
+                        .filter_map(|thread_id| {
+                            let thread_id = app_server_collab_thread_id_to_core(thread_id)?;
+                            let metadata = self.collab_agent_metadata(thread_id)?;
+                            Some(CollabAgentRef {
+                                thread_id,
+                                agent_nickname: metadata.agent_nickname.clone(),
+                                agent_role: metadata.agent_role.clone(),
+                            })
+                        })
+                        .collect();
                     self.on_collab_event(multi_agents::waiting_begin(
                         codex_protocol::protocol::CollabWaitingBeginEvent {
                             sender_thread_id,
@@ -3430,7 +3545,7 @@ impl ChatWidget {
                                     app_server_collab_thread_id_to_core(thread_id)
                                 })
                                 .collect(),
-                            receiver_agents: Vec::new(),
+                            receiver_agents,
                             call_id: id,
                         },
                     ));
@@ -3438,7 +3553,20 @@ impl ChatWidget {
                     let (agent_statuses, statuses) = app_server_collab_agent_statuses_to_core(
                         &receiver_thread_ids,
                         &agents_states,
+                        &self.collab_agent_metadata,
                     );
+                    for agent_status in &agent_statuses {
+                        self.update_collab_agent_metadata(
+                            agent_status.thread_id,
+                            CollabAgentMetadata {
+                                agent_nickname: agent_status.agent_nickname.clone(),
+                                agent_role: agent_status.agent_role.clone(),
+                                thread_note: self
+                                    .collab_agent_metadata(agent_status.thread_id)
+                                    .and_then(|meta| meta.thread_note.clone()),
+                            },
+                        );
+                    }
                     self.on_collab_event(multi_agents::waiting_end(
                         codex_protocol::protocol::CollabWaitingEndEvent {
                             sender_thread_id,
@@ -3453,16 +3581,30 @@ impl ChatWidget {
                 if let Some(receiver_thread_id) = first_receiver
                     && !matches!(status, CollabAgentToolCallStatus::InProgress)
                 {
+                    if let Some(agent_state) = first_receiver_state {
+                        self.update_collab_agent_metadata(
+                            receiver_thread_id,
+                            app_server_collab_metadata(agent_state),
+                        );
+                    }
                     self.on_collab_event(multi_agents::close_end(
                         codex_protocol::protocol::CollabCloseEndEvent {
                             call_id: id,
                             sender_thread_id,
                             receiver_thread_id,
-                            receiver_agent_nickname: None,
-                            receiver_agent_role: None,
-                            status: receiver_thread_ids
-                                .iter()
-                                .find_map(|thread_id| agents_states.get(thread_id))
+                            receiver_agent_nickname: first_receiver_state
+                                .and_then(|state| state.agent_nickname.clone())
+                                .or_else(|| {
+                                    self.collab_agent_metadata(receiver_thread_id)
+                                        .and_then(|meta| meta.agent_nickname.clone())
+                                }),
+                            receiver_agent_role: first_receiver_state
+                                .and_then(|state| state.agent_role.clone())
+                                .or_else(|| {
+                                    self.collab_agent_metadata(receiver_thread_id)
+                                        .and_then(|meta| meta.agent_role.clone())
+                                }),
+                            status: first_receiver_state
                                 .map(app_server_collab_state_to_core)
                                 .unwrap_or_else(|| {
                                     AgentStatus::Errored("Agent close failed".into())
@@ -4196,6 +4338,7 @@ impl ChatWidget {
             last_copyable_output: None,
             running_commands: HashMap::new(),
             pending_collab_spawn_requests: HashMap::new(),
+            collab_agent_metadata: HashMap::new(),
             suppressed_exec_calls: HashSet::new(),
             last_unified_wait: None,
             unified_exec_wait_streak: None,

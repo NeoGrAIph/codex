@@ -414,6 +414,7 @@ async fn spawn_agent_can_fork_parent_thread_history() {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id),
@@ -497,6 +498,7 @@ async fn spawn_agent_fork_injects_output_for_parent_spawn_call() {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -567,6 +569,7 @@ async fn spawn_agent_fork_flushes_parent_rollout_before_loading_history() {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -820,6 +823,7 @@ async fn spawn_child_completion_notifies_parent_history() {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                thread_note: None,
             })),
         )
         .await
@@ -851,6 +855,7 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
             depth: 1,
             agent_nickname: None,
             agent_role: Some("explorer".to_string()),
+            thread_note: None,
         })),
     );
 
@@ -891,6 +896,7 @@ async fn spawn_thread_subagent_gets_random_nickname_in_session_source() {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                thread_note: None,
             })),
         )
         .await
@@ -908,6 +914,7 @@ async fn spawn_thread_subagent_gets_random_nickname_in_session_source() {
         depth,
         agent_nickname,
         agent_role,
+        ..
     }) = snapshot.session_source
     else {
         panic!("expected thread-spawn sub-agent source");
@@ -941,6 +948,7 @@ async fn spawn_thread_subagent_uses_role_specific_nickname_candidates() {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: Some("researcher".to_string()),
+                thread_note: None,
             })),
         )
         .await
@@ -992,6 +1000,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                thread_note: None,
             })),
         )
         .await
@@ -1060,6 +1069,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             }),
         )
         .await
@@ -1078,6 +1088,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
         depth: resumed_depth,
         agent_nickname: resumed_nickname,
         agent_role: resumed_role,
+        ..
     }) = resumed_snapshot.session_source
     else {
         panic!("expected thread-spawn sub-agent source");

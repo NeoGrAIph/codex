@@ -1,0 +1,11 @@
+---
+source: tui_app_server/src/chatwidget/tests.rs
+expression: combined
+---
+• Resumed Robie [explorer]
+  └ Completed - Resumed
+
+
+• Sent input to Robie [explorer]
+  └ Note: Назначение: Проверка resume path | Компетенции: cached note
+    Inspect the restored note

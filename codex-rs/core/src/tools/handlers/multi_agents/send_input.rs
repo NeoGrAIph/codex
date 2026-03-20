@@ -27,12 +27,12 @@ impl ToolHandler for Handler {
         let receiver_thread_id = agent_id(&args.id)?;
         let input_items = parse_collab_input(args.message, args.items)?;
         let prompt = input_preview(&input_items);
-        let (receiver_agent_nickname, receiver_agent_role) = session
+        let (receiver_agent_nickname, receiver_agent_role, receiver_thread_note) = session
             .services
             .agent_control
-            .get_agent_nickname_and_role(receiver_thread_id)
+            .get_agent_nickname_role_and_thread_note(receiver_thread_id)
             .await
-            .unwrap_or((None, None));
+            .unwrap_or((None, None, None));
         if args.interrupt {
             session
                 .services
@@ -73,6 +73,7 @@ impl ToolHandler for Handler {
                     receiver_thread_id,
                     receiver_agent_nickname,
                     receiver_agent_role,
+                    receiver_thread_note,
                     prompt,
                     status,
                 }

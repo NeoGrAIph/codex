@@ -2,16 +2,18 @@
 source: tui/src/multi_agents.rs
 expression: snapshot
 ---
-• Spawned Robie [explorer] (gpt-5 high)
-  └ Compute 11! and reply with just the integer result.
+• Spawned Robie [explorer] 00000000-0000-0000-0000-000000000002 (gpt-5 high)
+  └ Note: Назначение: Исследователь репозитория | Компетенции: docs/fork/features; AGENTS.md
+    Compute 11! and reply with just the integer result.
 
-• Sent input to Robie [explorer]
-  └ Please continue and return the answer only.
+• Sent input to Robie [explorer] 00000000-0000-0000-0000-000000000002
+  └ Note: Назначение: Исследователь репозитория | Компетенции: docs/fork/features; AGENTS.md
+    Please continue and return the answer only.
 
-• Waiting for Robie [explorer]
+• Waiting for Robie [explorer] 00000000-0000-0000-0000-000000000002
 
 • Finished waiting
-  └ Robie [explorer]: Completed - 39916800
-    Bob [worker]: Error - tool timeout
+  └ Robie [explorer] 00000000-0000-0000-0000-000000000002: Completed - 39916800
+    Bob [worker] 00000000-0000-0000-0000-000000000003: Error - tool timeout
 
-• Closed Robie [explorer]
+• Closed Robie [explorer] 00000000-0000-0000-0000-000000000002

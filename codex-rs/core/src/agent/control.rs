@@ -115,6 +115,7 @@ impl AgentControl {
                 parent_thread_id,
                 depth,
                 agent_role,
+                thread_note,
                 ..
             })) => {
                 let candidate_names = agent_nickname_candidates(&config, agent_role.as_deref());
@@ -126,6 +127,7 @@ impl AgentControl {
                     depth,
                     agent_nickname: Some(agent_nickname),
                     agent_role,
+                    thread_note,
                 }))
             }
             other => other,
@@ -237,6 +239,7 @@ impl AgentControl {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,
+                thread_note,
                 ..
             }) => {
                 // Collab resume callers rebuild a placeholder ThreadSpawn source. Rehydrate the
@@ -268,6 +271,7 @@ impl AgentControl {
                     depth,
                     agent_nickname: reserved_agent_nickname,
                     agent_role: resumed_agent_role,
+                    thread_note,
                 })
             }
             other => other,
@@ -332,6 +336,15 @@ impl AgentControl {
         state.send_op(agent_id, Op::Interrupt).await
     }
 
+    pub(crate) async fn set_thread_note(
+        &self,
+        agent_id: ThreadId,
+        note: Option<String>,
+    ) -> CodexResult<String> {
+        let state = self.upgrade()?;
+        state.send_op(agent_id, Op::SetThreadNote { note }).await
+    }
+
     /// Submit a shutdown request to an existing agent thread.
     pub(crate) async fn shutdown_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
@@ -357,16 +370,29 @@ impl AgentControl {
         &self,
         agent_id: ThreadId,
     ) -> Option<(Option<String>, Option<String>)> {
+        self.get_agent_nickname_role_and_thread_note(agent_id)
+            .await
+            .map(|(nickname, role, _)| (nickname, role))
+    }
+
+    pub(crate) async fn get_agent_nickname_role_and_thread_note(
+        &self,
+        agent_id: ThreadId,
+    ) -> Option<(Option<String>, Option<String>, Option<String>)> {
         let Ok(state) = self.upgrade() else {
             return None;
         };
         let Ok(thread) = state.get_thread(agent_id).await else {
             return None;
         };
-        let session_source = thread.config_snapshot().await.session_source;
+        let config_snapshot = thread.config_snapshot().await;
+        let session_source = config_snapshot.session_source;
         Some((
             session_source.get_nickname(),
             session_source.get_agent_role(),
+            config_snapshot
+                .thread_note
+                .or_else(|| session_source.get_thread_note()),
         ))
     }
 

@@ -2090,6 +2090,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
             new_thread_id: Some(spawned_thread_id),
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_role: Some("explorer".to_string()),
+            new_thread_note: None,
             prompt: "Explore the repo".to_string(),
             model: "gpt-5".to_string(),
             reasoning_effort: ReasoningEffortConfig::High,

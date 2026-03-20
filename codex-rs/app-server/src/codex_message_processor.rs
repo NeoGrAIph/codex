@@ -8057,6 +8057,7 @@ fn with_thread_spawn_agent_metadata(
                 depth,
                 agent_nickname: existing_agent_nickname,
                 agent_role: existing_agent_role,
+                thread_note,
             },
         ) => codex_protocol::protocol::SessionSource::SubAgent(
             codex_protocol::protocol::SubAgentSource::ThreadSpawn {
@@ -8064,6 +8065,7 @@ fn with_thread_spawn_agent_metadata(
                 depth,
                 agent_nickname: agent_nickname.or(existing_agent_nickname),
                 agent_role: agent_role.or(existing_agent_role),
+                thread_note,
             },
         ),
         _ => source,
@@ -8288,6 +8290,7 @@ mod tests {
             ephemeral: false,
             reasoning_effort: None,
             personality: None,
+            thread_note: None,
             session_source: SessionSource::Cli,
         };
 
@@ -8437,6 +8440,7 @@ mod tests {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             }),
             agent_nickname: Some("atlas".to_string()),
             agent_role: Some("explorer".to_string()),
@@ -8529,6 +8533,7 @@ mod tests {
                 depth: 1,
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             }))?;
 
         let summary = summary_from_state_db_metadata(

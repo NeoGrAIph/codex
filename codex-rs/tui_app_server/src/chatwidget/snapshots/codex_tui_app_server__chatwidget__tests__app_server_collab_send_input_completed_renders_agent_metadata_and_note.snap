@@ -1,0 +1,7 @@
+---
+source: tui_app_server/src/chatwidget/tests.rs
+expression: combined
+---
+• Sent input to Robie [explorer] 019cff70-2599-75e2-af72-b91781b41a8e
+  └ Note: Назначение: Проверка live TUI | Компетенции: collab history
+    Inspect the thread note

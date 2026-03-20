@@ -154,6 +154,7 @@ async fn try_resume_closed_agent(
                 session.conversation_id,
                 child_depth,
                 /*agent_role*/ None,
+                /*thread_note*/ None,
             ),
         )
         .await

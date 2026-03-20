@@ -1900,6 +1900,7 @@ async fn make_chatwidget_manual(
         last_copyable_output: None,
         running_commands: HashMap::new(),
         pending_collab_spawn_requests: HashMap::new(),
+        collab_agent_metadata: HashMap::new(),
         suppressed_exec_calls: HashSet::new(),
         skills_all: Vec::new(),
         skills_initial_state: None,
@@ -2107,6 +2108,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
             new_thread_id: Some(spawned_thread_id),
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_role: Some("explorer".to_string()),
+            new_thread_note: None,
             prompt: "Explore the repo".to_string(),
             model: "gpt-5".to_string(),
             reasoning_effort: ReasoningEffortConfig::High,
@@ -4325,6 +4327,22 @@ async fn live_app_server_collab_wait_items_render_history() {
         ThreadId::from_string("019cff70-2599-75e2-af72-b958ce5dc1cc").expect("valid thread id");
     let other_receiver_thread_id =
         ThreadId::from_string("019cff70-2599-75e2-af72-b96db334332d").expect("valid thread id");
+    chat.collab_agent_metadata.insert(
+        receiver_thread_id,
+        CollabAgentMetadata {
+            agent_nickname: Some("Robie".to_string()),
+            agent_role: Some("explorer".to_string()),
+            thread_note: None,
+        },
+    );
+    chat.collab_agent_metadata.insert(
+        other_receiver_thread_id,
+        CollabAgentMetadata {
+            agent_nickname: Some("Bob".to_string()),
+            agent_role: Some("worker".to_string()),
+            thread_note: None,
+        },
+    );
 
     chat.handle_server_notification(
         ServerNotification::ItemStarted(ItemStartedNotification {
@@ -4370,6 +4388,9 @@ async fn live_app_server_collab_wait_items_render_history() {
                         AppServerCollabAgentState {
                             status: AppServerCollabAgentStatus::Completed,
                             message: Some("Done".to_string()),
+                            agent_nickname: Some("Robie".to_string()),
+                            agent_role: Some("explorer".to_string()),
+                            thread_note: None,
                         },
                     ),
                     (
@@ -4377,6 +4398,9 @@ async fn live_app_server_collab_wait_items_render_history() {
                         AppServerCollabAgentState {
                             status: AppServerCollabAgentStatus::Running,
                             message: None,
+                            agent_nickname: Some("Bob".to_string()),
+                            agent_role: Some("worker".to_string()),
+                            thread_note: None,
                         },
                     ),
                 ]),
@@ -4438,6 +4462,12 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                     AppServerCollabAgentState {
                         status: AppServerCollabAgentStatus::PendingInit,
                         message: None,
+                        agent_nickname: Some("Robie".to_string()),
+                        agent_role: Some("explorer".to_string()),
+                        thread_note: Some(
+                            "Назначение: Исследователь репозитория | Компетенции: docs/fork"
+                                .to_string(),
+                        ),
                     },
                 )]),
             },
@@ -4452,6 +4482,163 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
         .join("\n");
     assert_snapshot!(
         "app_server_collab_spawn_completed_renders_requested_model_and_effort",
+        combined
+    );
+}
+
+#[tokio::test]
+async fn live_app_server_collab_send_input_completed_renders_agent_metadata_and_note() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    let sender_thread_id =
+        ThreadId::from_string("019cff70-2599-75e2-af72-b90000000002").expect("valid thread id");
+    let receiver_thread_id =
+        ThreadId::from_string("019cff70-2599-75e2-af72-b91781b41a8e").expect("valid thread id");
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "send-1".to_string(),
+                tool: AppServerCollabAgentTool::SendInput,
+                status: AppServerCollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: Some("Inspect the thread note".to_string()),
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::from([(
+                    receiver_thread_id.to_string(),
+                    AppServerCollabAgentState {
+                        status: AppServerCollabAgentStatus::Completed,
+                        message: Some("Done".to_string()),
+                        agent_nickname: Some("Robie".to_string()),
+                        agent_role: Some("explorer".to_string()),
+                        thread_note: Some(
+                            "Назначение: Проверка live TUI | Компетенции: collab history"
+                                .to_string(),
+                        ),
+                    },
+                )]),
+            },
+        }),
+        None,
+    );
+
+    let combined = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_snapshot!(
+        "app_server_collab_send_input_completed_renders_agent_metadata_and_note",
+        combined
+    );
+}
+
+#[tokio::test]
+async fn live_app_server_resume_keeps_cached_thread_note_for_follow_up_send_input() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+    let sender_thread_id =
+        ThreadId::from_string("019cff70-2599-75e2-af72-b90000000002").expect("valid thread id");
+    let receiver_thread_id =
+        ThreadId::from_string("019cff70-2599-75e2-af72-b91781b41a8e").expect("valid thread id");
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "spawn-1".to_string(),
+                tool: AppServerCollabAgentTool::SpawnAgent,
+                status: AppServerCollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: Some("Explore the repo".to_string()),
+                model: Some("gpt-5".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                agents_states: HashMap::from([(
+                    receiver_thread_id.to_string(),
+                    AppServerCollabAgentState {
+                        status: AppServerCollabAgentStatus::PendingInit,
+                        message: None,
+                        agent_nickname: Some("Robie".to_string()),
+                        agent_role: Some("explorer".to_string()),
+                        thread_note: Some(
+                            "Назначение: Проверка resume path | Компетенции: cached note"
+                                .to_string(),
+                        ),
+                    },
+                )]),
+            },
+        }),
+        None,
+    );
+    let _ = drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-2".to_string(),
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "resume-1".to_string(),
+                tool: AppServerCollabAgentTool::ResumeAgent,
+                status: AppServerCollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::from([(
+                    receiver_thread_id.to_string(),
+                    AppServerCollabAgentState {
+                        status: AppServerCollabAgentStatus::Completed,
+                        message: Some("Resumed".to_string()),
+                        agent_nickname: Some("Robie".to_string()),
+                        agent_role: Some("explorer".to_string()),
+                        thread_note: None,
+                    },
+                )]),
+            },
+        }),
+        None,
+    );
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-3".to_string(),
+            item: AppServerThreadItem::CollabAgentToolCall {
+                id: "send-1".to_string(),
+                tool: AppServerCollabAgentTool::SendInput,
+                status: AppServerCollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: Some("Inspect the restored note".to_string()),
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::from([(
+                    receiver_thread_id.to_string(),
+                    AppServerCollabAgentState {
+                        status: AppServerCollabAgentStatus::Completed,
+                        message: Some("Done".to_string()),
+                        agent_nickname: Some("Robie".to_string()),
+                        agent_role: Some("explorer".to_string()),
+                        thread_note: None,
+                    },
+                )]),
+            },
+        }),
+        None,
+    );
+
+    let combined = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_snapshot!(
+        "app_server_collab_resume_keeps_cached_thread_note_for_follow_up_send_input",
         combined
     );
 }

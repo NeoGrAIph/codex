@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use crate::RequestId;
 use crate::protocol::common::AuthMode;
 use codex_experimental_api_macros::ExperimentalApi;
+use codex_protocol::ThreadId;
 use codex_protocol::account::PlanType;
 use codex_protocol::approvals::ElicitationRequest as CoreElicitationRequest;
 use codex_protocol::approvals::ExecApprovalRequestSkillMetadata as CoreExecApprovalRequestSkillMetadata;
@@ -1456,6 +1457,72 @@ pub enum CommandAction {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case", export_to = "v2/")]
+pub enum SubAgentSource {
+    Review,
+    Compact,
+    ThreadSpawn {
+        parent_thread_id: ThreadId,
+        depth: i32,
+        #[serde(default)]
+        #[ts(optional)]
+        agent_nickname: Option<String>,
+        #[serde(default, alias = "agentType")]
+        #[ts(optional, rename = "agentType")]
+        agent_role: Option<String>,
+    },
+    MemoryConsolidation,
+    Other(String),
+}
+
+impl From<CoreSubAgentSource> for SubAgentSource {
+    fn from(value: CoreSubAgentSource) -> Self {
+        match value {
+            CoreSubAgentSource::Review => SubAgentSource::Review,
+            CoreSubAgentSource::Compact => SubAgentSource::Compact,
+            CoreSubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth,
+                agent_nickname,
+                agent_role,
+                ..
+            } => SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth,
+                agent_nickname,
+                agent_role,
+            },
+            CoreSubAgentSource::MemoryConsolidation => SubAgentSource::MemoryConsolidation,
+            CoreSubAgentSource::Other(label) => SubAgentSource::Other(label),
+        }
+    }
+}
+
+impl From<SubAgentSource> for CoreSubAgentSource {
+    fn from(value: SubAgentSource) -> Self {
+        match value {
+            SubAgentSource::Review => CoreSubAgentSource::Review,
+            SubAgentSource::Compact => CoreSubAgentSource::Compact,
+            SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth,
+                agent_nickname,
+                agent_role,
+            } => CoreSubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth,
+                agent_nickname,
+                agent_role,
+                thread_note: None,
+            },
+            SubAgentSource::MemoryConsolidation => CoreSubAgentSource::MemoryConsolidation,
+            SubAgentSource::Other(label) => CoreSubAgentSource::Other(label),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase", export_to = "v2/")]
 #[derive(Default)]
@@ -1468,7 +1535,7 @@ pub enum SessionSource {
     Exec,
     AppServer,
     Custom(String),
-    SubAgent(CoreSubAgentSource),
+    SubAgent(SubAgentSource),
     #[serde(other)]
     Unknown,
 }
@@ -1481,7 +1548,7 @@ impl From<CoreSessionSource> for SessionSource {
             CoreSessionSource::Exec => SessionSource::Exec,
             CoreSessionSource::Mcp => SessionSource::AppServer,
             CoreSessionSource::Custom(source) => SessionSource::Custom(source),
-            CoreSessionSource::SubAgent(sub) => SessionSource::SubAgent(sub),
+            CoreSessionSource::SubAgent(sub) => SessionSource::SubAgent(sub.into()),
             CoreSessionSource::Unknown => SessionSource::Unknown,
         }
     }
@@ -1495,7 +1562,7 @@ impl From<SessionSource> for CoreSessionSource {
             SessionSource::Exec => CoreSessionSource::Exec,
             SessionSource::AppServer => CoreSessionSource::Mcp,
             SessionSource::Custom(source) => CoreSessionSource::Custom(source),
-            SessionSource::SubAgent(sub) => CoreSessionSource::SubAgent(sub),
+            SessionSource::SubAgent(sub) => CoreSessionSource::SubAgent(sub.into()),
             SessionSource::Unknown => CoreSessionSource::Unknown,
         }
     }
@@ -4521,6 +4588,9 @@ pub enum CollabAgentStatus {
 pub struct CollabAgentState {
     pub status: CollabAgentStatus,
     pub message: Option<String>,
+    pub agent_nickname: Option<String>,
+    pub agent_role: Option<String>,
+    pub thread_note: Option<String>,
 }
 
 impl From<CoreAgentStatus> for CollabAgentState {
@@ -4529,30 +4599,51 @@ impl From<CoreAgentStatus> for CollabAgentState {
             CoreAgentStatus::PendingInit => Self {
                 status: CollabAgentStatus::PendingInit,
                 message: None,
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
             },
             CoreAgentStatus::Running => Self {
                 status: CollabAgentStatus::Running,
                 message: None,
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
             },
             CoreAgentStatus::Interrupted => Self {
                 status: CollabAgentStatus::Interrupted,
                 message: None,
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
             },
             CoreAgentStatus::Completed(message) => Self {
                 status: CollabAgentStatus::Completed,
                 message,
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
             },
             CoreAgentStatus::Errored(message) => Self {
                 status: CollabAgentStatus::Errored,
                 message: Some(message),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
             },
             CoreAgentStatus::Shutdown => Self {
                 status: CollabAgentStatus::Shutdown,
                 message: None,
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
             },
             CoreAgentStatus::NotFound => Self {
                 status: CollabAgentStatus::NotFound,
                 message: None,
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
             },
         }
     }
@@ -5864,6 +5955,9 @@ mod tests {
             CollabAgentState {
                 status: CollabAgentStatus::Interrupted,
                 message: None,
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
             }
         );
     }

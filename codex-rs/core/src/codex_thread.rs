@@ -40,6 +40,7 @@ pub struct ThreadConfigSnapshot {
     pub ephemeral: bool,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub personality: Option<Personality>,
+    pub thread_note: Option<String>,
     pub session_source: SessionSource,
 }
 

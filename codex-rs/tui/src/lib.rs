@@ -1323,6 +1323,7 @@ mod tests {
             cwd,
             current_date: None,
             timezone: None,
+            thread_note: None,
             approval_policy: config.permissions.approval_policy.value(),
             sandbox_policy: config.permissions.sandbox_policy.get().clone(),
             network: None,

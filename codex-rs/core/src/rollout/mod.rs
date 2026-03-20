@@ -25,7 +25,9 @@ pub use list::rollout_date_parts;
 pub use recorder::RolloutRecorder;
 pub use recorder::RolloutRecorderParams;
 pub use session_index::append_thread_name;
+pub use session_index::append_thread_note;
 pub use session_index::find_thread_name_by_id;
+pub use session_index::find_thread_note_by_id;
 pub use session_index::find_thread_path_by_name_str;
 
 #[cfg(test)]

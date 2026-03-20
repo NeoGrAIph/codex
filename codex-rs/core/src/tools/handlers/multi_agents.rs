@@ -51,6 +51,7 @@ use std::sync::Arc;
 pub(crate) use close_agent::Handler as CloseAgentHandler;
 pub(crate) use resume_agent::Handler as ResumeAgentHandler;
 pub(crate) use send_input::Handler as SendInputHandler;
+pub(crate) use set_thread_note::Handler as SetThreadNoteHandler;
 pub(crate) use spawn::Handler as SpawnAgentHandler;
 pub(crate) use wait::Handler as WaitAgentHandler;
 
@@ -108,6 +109,7 @@ where
 pub mod close_agent;
 mod resume_agent;
 mod send_input;
+mod set_thread_note;
 mod spawn;
 pub(crate) mod wait;
 
@@ -181,12 +183,14 @@ fn thread_spawn_source(
     parent_thread_id: ThreadId,
     depth: i32,
     agent_role: Option<&str>,
+    thread_note: Option<String>,
 ) -> SessionSource {
     SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id,
         depth,
         agent_nickname: None,
         agent_role: agent_role.map(str::to_string),
+        thread_note,
     })
 }
 

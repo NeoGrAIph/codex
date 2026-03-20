@@ -40,6 +40,7 @@ async fn write_session_with_user_event(codex_home: &Path) -> io::Result<()> {
             source: SessionSource::Cli,
             agent_nickname: None,
             agent_role: None,
+            thread_note: None,
             model_provider: None,
             base_instructions: None,
             dynamic_tools: None,

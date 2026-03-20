@@ -140,9 +140,27 @@ fn spawn_agent_output_schema() -> JsonValue {
             "nickname": {
                 "type": ["string", "null"],
                 "description": "User-facing nickname for the spawned agent when available."
+            },
+            "thread_note": {
+                "type": ["string", "null"],
+                "description": "Metadata-only note assigned to the spawned agent when available."
             }
         },
-        "required": ["agent_id", "nickname"],
+        "required": ["agent_id", "nickname", "thread_note"],
+        "additionalProperties": false
+    })
+}
+
+fn set_thread_note_output_schema() -> JsonValue {
+    json!({
+        "type": "object",
+        "properties": {
+            "thread_note": {
+                "type": ["string", "null"],
+                "description": "Normalized metadata-only note for the current agent, or null when cleared."
+            }
+        },
+        "required": ["thread_note"],
         "additionalProperties": false
     })
 }
@@ -1067,6 +1085,15 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
             },
         ),
         (
+            "thread_note".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional metadata-only note for the new agent. This note is persisted for restart/resume and shown in collaboration transcripts, but it is not injected into model instructions."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
             "model".to_string(),
             JsonSchema::String {
                 description: Some(
@@ -1335,6 +1362,32 @@ fn create_send_input_tool() -> ToolSpec {
             additional_properties: Some(false.into()),
         },
         output_schema: Some(send_input_output_schema()),
+    })
+}
+
+fn create_set_thread_note_tool() -> ToolSpec {
+    let properties = BTreeMap::from([(
+        "note".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional metadata-only note for the current agent. Pass an empty or whitespace-only string to clear it."
+                    .to_string(),
+            ),
+        },
+    )]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "set_thread_note".to_string(),
+        description: "Set or clear a metadata-only note for the current agent. The note persists across restart/resume and appears in collaboration transcripts, but it is not injected into model instructions."
+            .to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+        output_schema: Some(set_thread_note_output_schema()),
     })
 }
 
@@ -2536,6 +2589,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
     use crate::tools::handlers::multi_agents::CloseAgentHandler;
     use crate::tools::handlers::multi_agents::ResumeAgentHandler;
     use crate::tools::handlers::multi_agents::SendInputHandler;
+    use crate::tools::handlers::multi_agents::SetThreadNoteHandler;
     use crate::tools::handlers::multi_agents::SpawnAgentHandler;
     use crate::tools::handlers::multi_agents::WaitAgentHandler;
     use std::sync::Arc;
@@ -2930,6 +2984,12 @@ pub(crate) fn build_specs_with_discoverable_tools(
         );
         push_tool_spec(
             &mut builder,
+            create_set_thread_note_tool(),
+            /*supports_parallel_tool_calls*/ false,
+            config.code_mode_enabled,
+        );
+        push_tool_spec(
+            &mut builder,
             create_resume_agent_tool(),
             /*supports_parallel_tool_calls*/ false,
             config.code_mode_enabled,
@@ -2948,6 +3008,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
         );
         builder.register_handler("spawn_agent", Arc::new(SpawnAgentHandler));
         builder.register_handler("send_input", Arc::new(SendInputHandler));
+        builder.register_handler("set_thread_note", Arc::new(SetThreadNoteHandler));
         builder.register_handler("resume_agent", Arc::new(ResumeAgentHandler));
         builder.register_handler("wait_agent", Arc::new(WaitAgentHandler));
         builder.register_handler("close_agent", Arc::new(CloseAgentHandler));
