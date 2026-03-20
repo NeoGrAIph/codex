@@ -41,6 +41,59 @@ In the codex-rs folder where the rust code lives:
   - When extracting code from a large module, move the related tests and module/type docs toward
     the new implementation so the invariants stay close to the code that owns them.
 
+## Fork Feature Delivery Contract
+
+- Treat each fork feature as a documented contract, not as an implicit code-only customization.
+- Every new fork feature or material fork behavior change must ship with `docs/fork/features/<code-name>.md`.
+- For non-trivial fork features, add `docs/fork/projects/<code-name>/` as the implementation dossier.
+- Every fork implementation aligned to a release baseline must also maintain `docs/fork/research/<release>/` as an active research package.
+- If API, wire shape, config semantics, TUI behavior, or operational behavior changes, update the relevant user/developer docs in the same change set.
+
+Minimum requirements for `docs/fork/features/<code-name>.md`:
+
+- Feature passport: code name, status, goal, scope in/out.
+- User contract: exact behavior, transitions, empty/error states, and critical strings where wording matters.
+- Integration and compatibility notes: what remains upstream behavior, what is fork-specific, and what intentionally diverges.
+- Verification matrix: required commands/tests and the surfaces they validate.
+- Doc changelog: concise dated entries when contract or implementation expectations change.
+
+Minimum requirements for `docs/fork/projects/<code-name>/`:
+
+- `README.md`: entry point, current status, canonical links, and a compact map of the implementation surfaces.
+- `design.md`: canonical state, projections, data flow, invariants, and intentional implementation tradeoffs.
+- `verification.md`: scenario-focused test matrix, validation commands, and known coverage gaps.
+
+Minimum requirements for `docs/fork/research/<release>/`:
+
+- baseline release/tag and commit reference;
+- gap analysis between upstream baseline and fork behavior;
+- notes for risky integration points and conflict-prone source-of-truth files;
+- release-specific verification notes for the changed contract.
+
+## Fork Feature Integration Rules
+
+- Use an `Upstream-first` approach by default: prefer the target release's architecture, control flow, and source-of-truth patterns as the baseline.
+- Prefer additive and localized fork changes when that keeps maintenance and reasoning simpler.
+- If a fork feature must modify an existing upstream-owned path directly, document the tradeoff in the feature doc instead of treating the divergence as self-evident.
+- Preserve existing upstream behavior by default. If existing behavior must change, document that change explicitly as part of the fork contract.
+- Do not introduce silent fallback behavior, hidden branching, or compatibility shims for fork logic without documenting why they exist and how they are validated.
+- When choosing between a literal backport and an upstream-shaped adaptation, prefer the upstream-shaped implementation unless it would break a documented fork contract.
+
+## Compatibility And Regression Gates
+
+- Every fork feature change must include evidence for the new behavior and for the most important existing path that could regress because of the change.
+- If protocol, schema, state, or config contracts change, regenerate the canonical artifacts in the same change set and keep generated diffs minimal.
+- If a regenerated artifact differs only by formatting, ordering noise, or trailing whitespace without a real contract change, revert it and keep only meaningful generated deltas.
+- Do not treat "tests passed" as sufficient on its own; ensure the feature docs and affected public docs reflect the implemented contract.
+- Before finalizing, confirm that the fork change still has one clear source of truth, one baseline release context, and one documented explanation for any intentional upstream divergence.
+
+## Porting Decision Record
+
+- Before implementing or porting a fork feature, record the upstream baseline and the expected fork gap in `docs/fork/research/<release>/`.
+- Before changing source-of-truth files, decide whether the target behavior is a literal port or an upstream-shaped adaptation, and capture that choice in the feature/research docs.
+- After implementation, verify contract surfaces explicitly: protocol/wire behavior, runtime behavior, UI/API text, generated artifacts, and persistence/config semantics when applicable.
+- If the final implementation differs materially from the historical fork commit because of upstream adaptation, document the reason so future ports do not re-open the same decision.
+
 Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, run the tests:
 
 1. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `cargo test -p codex-tui`.
