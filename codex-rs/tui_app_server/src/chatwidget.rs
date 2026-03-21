@@ -3512,6 +3512,12 @@ impl ChatWidget {
                                         self.collab_agent_metadata(receiver_thread_id)
                                             .and_then(|meta| meta.agent_role.clone())
                                     }),
+                                receiver_thread_note: first_receiver_state
+                                    .and_then(|state| state.thread_note.clone())
+                                    .or_else(|| {
+                                        self.collab_agent_metadata(receiver_thread_id)
+                                            .and_then(|meta| meta.thread_note.clone())
+                                    }),
                                 status: first_receiver_state
                                     .map(app_server_collab_state_to_core)
                                     .unwrap_or_else(|| {

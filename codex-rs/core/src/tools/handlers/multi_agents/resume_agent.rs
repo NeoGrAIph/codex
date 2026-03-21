@@ -26,12 +26,12 @@ impl ToolHandler for Handler {
         let arguments = function_arguments(payload)?;
         let args: ResumeAgentArgs = parse_arguments(&arguments)?;
         let receiver_thread_id = agent_id(&args.id)?;
-        let (receiver_agent_nickname, receiver_agent_role) = session
+        let (receiver_agent_nickname, receiver_agent_role, receiver_thread_note) = session
             .services
             .agent_control
-            .get_agent_nickname_and_role(receiver_thread_id)
+            .get_agent_nickname_role_and_thread_note(receiver_thread_id)
             .await
-            .unwrap_or((None, None));
+            .unwrap_or((None, None, None));
         let child_depth = next_thread_spawn_depth(&turn.session_source);
         let max_depth = turn.config.agent_max_depth;
         if exceeds_thread_spawn_depth_limit(child_depth, max_depth) {
@@ -78,12 +78,16 @@ impl ToolHandler for Handler {
             None
         };
 
-        let (receiver_agent_nickname, receiver_agent_role) = session
+        let (receiver_agent_nickname, receiver_agent_role, receiver_thread_note) = session
             .services
             .agent_control
-            .get_agent_nickname_and_role(receiver_thread_id)
+            .get_agent_nickname_role_and_thread_note(receiver_thread_id)
             .await
-            .unwrap_or((receiver_agent_nickname, receiver_agent_role));
+            .unwrap_or((
+                receiver_agent_nickname,
+                receiver_agent_role,
+                receiver_thread_note,
+            ));
         session
             .send_event(
                 &turn,
@@ -93,6 +97,7 @@ impl ToolHandler for Handler {
                     receiver_thread_id,
                     receiver_agent_nickname,
                     receiver_agent_role,
+                    receiver_thread_note,
                     status: status.clone(),
                 }
                 .into(),

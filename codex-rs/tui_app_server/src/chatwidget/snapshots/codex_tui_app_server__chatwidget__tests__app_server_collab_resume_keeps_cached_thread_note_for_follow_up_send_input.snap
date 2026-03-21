@@ -2,10 +2,11 @@
 source: tui_app_server/src/chatwidget/tests.rs
 expression: combined
 ---
-• Resumed Robie [explorer]
-  └ Completed - Resumed
+• Resumed Robie [explorer] 019cff70-2599-75e2-af72-b91781b41a8e
+  └ Note: Назначение: Проверка resume path | Компетенции: cached note
+    Completed - Resumed
 
 
-• Sent input to Robie [explorer]
+• Sent input to Robie [explorer] 019cff70-2599-75e2-af72-b91781b41a8e
   └ Note: Назначение: Проверка resume path | Компетенции: cached note
     Inspect the restored note

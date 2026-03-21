@@ -2398,6 +2398,7 @@ mod tests {
                     .expect("valid receiver thread id"),
                 receiver_agent_nickname: None,
                 receiver_agent_role: None,
+                receiver_thread_note: None,
                 status: AgentStatus::Completed(None),
             }),
         ];

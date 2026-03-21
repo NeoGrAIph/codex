@@ -2693,7 +2693,7 @@ fn collab_resume_end_item(end_event: codex_protocol::protocol::CollabResumeEndEv
             end_event.status,
             end_event.receiver_agent_nickname,
             end_event.receiver_agent_role,
-            /*thread_note*/ None,
+            end_event.receiver_thread_note,
         ),
     )]
     .into_iter()
@@ -3144,6 +3144,7 @@ mod tests {
             receiver_thread_id: ThreadId::new(),
             receiver_agent_nickname: None,
             receiver_agent_role: None,
+            receiver_thread_note: Some("Назначение: Resume smoke".to_string()),
             status: codex_protocol::protocol::AgentStatus::NotFound,
         };
 
@@ -3160,7 +3161,12 @@ mod tests {
             reasoning_effort: None,
             agents_states: [(
                 receiver_id,
-                V2CollabAgentStatus::from(codex_protocol::protocol::AgentStatus::NotFound),
+                collab_agent_state_with_metadata(
+                    codex_protocol::protocol::AgentStatus::NotFound,
+                    None,
+                    None,
+                    Some("Назначение: Resume smoke".to_string()),
+                ),
             )]
             .into_iter()
             .collect(),

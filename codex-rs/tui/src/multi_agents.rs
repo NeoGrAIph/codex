@@ -338,8 +338,15 @@ pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
         receiver_thread_id,
         receiver_agent_nickname,
         receiver_agent_role,
+        receiver_thread_note,
         status,
     } = ev;
+
+    let mut details = Vec::new();
+    if let Some(line) = note_line(receiver_thread_note.as_deref()) {
+        details.push(line);
+    }
+    details.push(status_summary_line(&status));
 
     collab_event(
         title_with_agent(
@@ -351,7 +358,7 @@ pub(crate) fn resume_end(ev: CollabResumeEndEvent) -> PlainHistoryCell {
             },
             /*spawn_request*/ None,
         ),
-        vec![status_summary_line(&status)],
+        details,
     )
 }
 
@@ -420,10 +427,11 @@ fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
     }
 
     if nickname.is_some()
-        && let Some(thread_id) = thread_id {
-            spans.push(Span::from(" ").dim());
-            spans.push(Span::from(thread_id).dim());
-        }
+        && let Some(thread_id) = thread_id
+    {
+        spans.push(Span::from(" ").dim());
+        spans.push(Span::from(thread_id).dim());
+    }
 
     spans
 }
@@ -835,6 +843,9 @@ mod tests {
             receiver_thread_id: robie_id,
             receiver_agent_nickname: Some("Robie".to_string()),
             receiver_agent_role: Some("explorer".to_string()),
+            receiver_thread_note: Some(
+                "Назначение: Исследование | Компетенции: docs; runtime".to_string(),
+            ),
             status: AgentStatus::Interrupted,
         });
 
