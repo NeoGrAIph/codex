@@ -94,6 +94,7 @@ Minimum requirements for `docs/fork/research/<release>/`:
 - Every fork feature change must include evidence for the new behavior and for the most important existing path that could regress because of the change.
 - If protocol, schema, state, or config contracts change, regenerate the canonical artifacts in the same change set and keep generated diffs minimal.
 - If a regenerated artifact differs only by formatting, ordering noise, or trailing whitespace without a real contract change, revert it and keep only meaningful generated deltas.
+- If fork work regenerates `insta` snapshots, accept them through the normal `cargo insta review` / `cargo insta accept` flow. Do not manually rename `.snap.new` files into `.snap`, and do not keep review-only metadata such as `assertion_line` in final accepted snapshots.
 - Do not treat "tests passed" as sufficient on its own; ensure the feature docs and affected public docs reflect the implemented contract.
 - Before finalizing, confirm that the fork change still has one clear source of truth, one baseline release context, and one documented explanation for any intentional upstream divergence.
 
