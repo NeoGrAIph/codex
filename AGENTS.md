@@ -45,6 +45,8 @@ In the codex-rs folder where the rust code lives:
 ## Fork Feature Delivery Contract
 
 - Treat each fork feature as a documented contract, not as an implicit code-only customization.
+- Use `docs/fork/CONTRIBUTING.md` as the practical authoring guide for fork docs; `AGENTS.md`
+  remains the policy source of truth.
 - Every new fork feature or material fork behavior change must ship with `docs/fork/features/<code-name>.md`.
 - For non-trivial fork features, add `docs/fork/projects/<code-name>/` as the implementation dossier.
 - Every fork implementation aligned to a release baseline must also maintain `docs/fork/research/<release>/` as an active research package.
