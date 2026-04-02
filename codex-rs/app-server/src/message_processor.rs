@@ -59,6 +59,7 @@ use codex_core::AnalyticsEventsClient;
 use codex_core::AuthManager;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
+use codex_core::config::ConfigService;
 use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::config_loader::LoaderOverrides;
 use codex_core::default_client::SetOriginatorError;
@@ -224,6 +225,12 @@ impl MessageProcessor {
                     .enabled(Feature::DefaultModeRequestUserInput),
             },
             environment_manager,
+            ConfigService::new(
+                config.codex_home.clone(),
+                cli_overrides.clone(),
+                loader_overrides.clone(),
+                cloud_requirements.clone(),
+            ),
         ));
         auth_manager.set_forced_chatgpt_workspace_id(config.forced_chatgpt_workspace_id.clone());
         let analytics_events_client = AnalyticsEventsClient::new(

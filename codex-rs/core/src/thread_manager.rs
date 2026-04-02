@@ -10,6 +10,7 @@ use crate::codex::CodexSpawnOk;
 use crate::codex::INITIAL_SUBMIT_ID;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
+use crate::config::ConfigService;
 use crate::error::CodexErr;
 use crate::error::Result as CodexResult;
 use crate::file_watcher::FileWatcher;
@@ -206,6 +207,7 @@ pub(crate) struct ThreadManagerState {
     plugins_manager: Arc<PluginsManager>,
     mcp_manager: Arc<McpManager>,
     skills_watcher: Arc<SkillsWatcher>,
+    config_service: ConfigService,
     session_source: SessionSource,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
@@ -218,6 +220,7 @@ impl ThreadManager {
         session_source: SessionSource,
         collaboration_modes_config: CollaborationModesConfig,
         environment_manager: Arc<EnvironmentManager>,
+        config_service: ConfigService,
     ) -> Self {
         let codex_home = config.codex_home.clone();
         let restriction_product = session_source.restriction_product();
@@ -254,6 +257,7 @@ impl ThreadManager {
                 plugins_manager,
                 mcp_manager,
                 skills_watcher,
+                config_service,
                 auth_manager,
                 session_source,
                 ops_log: should_use_test_thread_manager_behavior()
@@ -314,7 +318,7 @@ impl ThreadManager {
                 threads: Arc::new(RwLock::new(HashMap::new())),
                 thread_created_tx,
                 models_manager: Arc::new(ModelsManager::with_provider_for_tests(
-                    codex_home,
+                    codex_home.clone(),
                     auth_manager.clone(),
                     provider,
                 )),
@@ -323,6 +327,7 @@ impl ThreadManager {
                 plugins_manager,
                 mcp_manager,
                 skills_watcher,
+                config_service: ConfigService::new_with_defaults(codex_home),
                 auth_manager,
                 session_source: SessionSource::Exec,
                 ops_log: should_use_test_thread_manager_behavior()
@@ -852,6 +857,7 @@ impl ThreadManagerState {
             codex, thread_id, ..
         } = Codex::spawn(CodexSpawnArgs {
             config,
+            config_service: self.config_service.clone(),
             auth_manager,
             models_manager: Arc::clone(&self.models_manager),
             environment_manager: Arc::clone(&self.environment_manager),

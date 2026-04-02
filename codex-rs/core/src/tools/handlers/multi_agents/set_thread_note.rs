@@ -17,9 +17,7 @@ impl ToolHandler for Handler {
 
     async fn handle(&self, invocation: ToolInvocation) -> Result<Self::Output, FunctionCallError> {
         let ToolInvocation {
-            session,
-            payload,
-            ..
+            session, payload, ..
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: SetThreadNoteArgs = parse_arguments(&arguments)?;

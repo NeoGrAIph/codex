@@ -50,6 +50,7 @@ use codex_protocol::protocol::ViewImageToolCallEvent;
 use codex_protocol::protocol::WebSearchBeginEvent;
 use codex_protocol::protocol::WebSearchEndEvent;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -74,11 +75,13 @@ fn collab_agent_state_with_metadata(
     status: AgentStatus,
     agent_nickname: Option<String>,
     agent_role: Option<String>,
+    cwd: Option<PathBuf>,
     thread_note: Option<String>,
 ) -> CollabAgentState {
     let mut state = CollabAgentState::from(status);
     state.agent_nickname = agent_nickname;
     state.agent_role = agent_role;
+    state.cwd = cwd;
     state.thread_note = thread_note;
     state
 }
@@ -652,6 +655,7 @@ impl ThreadHistoryBuilder {
                     payload.status.clone(),
                     payload.new_agent_nickname.clone(),
                     payload.new_agent_role.clone(),
+                    payload.new_thread_cwd.clone(),
                     payload.new_thread_note.clone(),
                 );
                 (
@@ -705,6 +709,7 @@ impl ThreadHistoryBuilder {
             payload.status.clone(),
             payload.receiver_agent_nickname.clone(),
             payload.receiver_agent_role.clone(),
+            None,
             payload.receiver_thread_note.clone(),
         );
         self.upsert_item_in_current_turn(ThreadItem::CollabAgentToolCall {
@@ -769,6 +774,7 @@ impl ThreadHistoryBuilder {
                         entry.agent_nickname.clone(),
                         entry.agent_role.clone(),
                         None,
+                        None,
                     ),
                 )
             })
@@ -816,6 +822,7 @@ impl ThreadHistoryBuilder {
                 payload.status.clone(),
                 payload.receiver_agent_nickname.clone(),
                 payload.receiver_agent_role.clone(),
+                None,
                 None,
             ),
         )]
@@ -867,6 +874,7 @@ impl ThreadHistoryBuilder {
                 payload.status.clone(),
                 payload.receiver_agent_nickname.clone(),
                 payload.receiver_agent_role.clone(),
+                None,
                 None,
             ),
         )]
@@ -2543,6 +2551,7 @@ mod tests {
                         agent_nickname: None,
                         agent_role: None,
                         thread_note: None,
+                        cwd: None,
                     },
                 )]
                 .into_iter()
@@ -2570,6 +2579,7 @@ mod tests {
                 new_thread_id: Some(spawned_thread_id),
                 new_agent_nickname: Some("Scout".into()),
                 new_agent_role: Some("explorer".into()),
+                new_thread_cwd: Some(PathBuf::from("/tmp/scout")),
                 new_thread_note: None,
                 prompt: "inspect the repo".into(),
                 model: "gpt-5.4-mini".into(),
@@ -2604,6 +2614,7 @@ mod tests {
                         agent_nickname: Some("Scout".into()),
                         agent_role: Some("explorer".into()),
                         thread_note: None,
+                        cwd: Some(PathBuf::from("/tmp/scout")),
                     },
                 )]
                 .into_iter()
@@ -2676,6 +2687,7 @@ mod tests {
                         agent_nickname: None,
                         agent_role: None,
                         thread_note: None,
+                        cwd: None,
                     },
                 )]
                 .into_iter()

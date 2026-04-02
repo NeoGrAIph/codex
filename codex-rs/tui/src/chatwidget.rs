@@ -958,6 +958,7 @@ pub(crate) struct ChatWidget {
 struct CollabAgentMetadata {
     agent_nickname: Option<String>,
     agent_role: Option<String>,
+    cwd: Option<std::path::PathBuf>,
     thread_note: Option<String>,
 }
 
@@ -1525,6 +1526,7 @@ fn app_server_collab_metadata(state: &AppServerCollabAgentState) -> CollabAgentM
     CollabAgentMetadata {
         agent_nickname: state.agent_nickname.clone(),
         agent_role: state.agent_role.clone(),
+        cwd: state.cwd.clone(),
         thread_note: state.thread_note.clone(),
     }
 }
@@ -1654,6 +1656,7 @@ impl ChatWidget {
             CollabAgentMetadata {
                 agent_nickname,
                 agent_role,
+                cwd: None,
                 thread_note: None,
             },
         );
@@ -3882,6 +3885,9 @@ impl ChatWidget {
                             new_agent_role: first_receiver_state
                                 .and_then(|s| s.agent_role.clone())
                                 .or_else(|| cached.and_then(|m| m.agent_role.clone())),
+                            new_thread_cwd: first_receiver_state
+                                .and_then(|s| s.cwd.clone())
+                                .or_else(|| cached.and_then(|m| m.cwd.clone())),
                             new_thread_note: cached.and_then(|m| m.thread_note.clone()),
                             prompt: prompt.unwrap_or_default(),
                             model: String::new(),

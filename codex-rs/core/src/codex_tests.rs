@@ -1,6 +1,7 @@
 use super::*;
 use crate::CodexAuth;
 use crate::config::ConfigBuilder;
+use crate::config::ConfigService;
 use crate::config::test_config;
 use crate::config_loader::ConfigLayerStack;
 use crate::config_loader::ConfigLayerStackOrdering;
@@ -2546,6 +2547,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_zsh_path() {
     let result = Session::new(
         session_configuration,
         Arc::clone(&config),
+        ConfigService::new_with_defaults(config.codex_home.clone()),
         auth_manager,
         models_manager,
         Arc::new(ExecPolicyManager::default()),
@@ -2685,6 +2687,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         shell_snapshot_tx: watch::channel(None).0,
         show_raw_agent_reasoning: config.show_raw_agent_reasoning,
         exec_policy,
+        config_service: ConfigService::new_with_defaults(config.codex_home.clone()),
         auth_manager: auth_manager.clone(),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
@@ -3529,6 +3532,7 @@ pub(crate) async fn make_session_and_context_with_dynamic_tools_and_rx(
         shell_snapshot_tx: watch::channel(None).0,
         show_raw_agent_reasoning: config.show_raw_agent_reasoning,
         exec_policy,
+        config_service: ConfigService::new_with_defaults(config.codex_home.clone()),
         auth_manager: Arc::clone(&auth_manager),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),

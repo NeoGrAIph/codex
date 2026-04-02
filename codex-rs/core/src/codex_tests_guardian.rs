@@ -1,5 +1,6 @@
 use super::*;
 use crate::compact::InitialContextInjection;
+use crate::config::ConfigService;
 use crate::config_loader::ConfigLayerEntry;
 use crate::config_loader::ConfigRequirements;
 use crate::config_loader::ConfigRequirementsToml;
@@ -438,6 +439,7 @@ async fn guardian_subagent_does_not_inherit_parent_exec_policy_rules() {
 
     let CodexSpawnOk { codex, .. } = Codex::spawn(CodexSpawnArgs {
         config,
+        config_service: ConfigService::new_with_defaults(codex_home.path().to_path_buf()),
         auth_manager,
         models_manager,
         environment_manager: Arc::new(EnvironmentManager::new(/*exec_server_url*/ None)),

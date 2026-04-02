@@ -1,5 +1,6 @@
 use super::ConfigToml;
 use super::deserialize_config_toml_with_base;
+use crate::config::Config;
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::config::managed_features::validate_explicit_feature_settings_in_config_toml;
@@ -192,6 +193,21 @@ impl ConfigService {
                     .collect()
             }),
         })
+    }
+
+    pub async fn load_config_for_cwd(&self, cwd: PathBuf) -> Result<Config, ConfigServiceError> {
+        let cwd = AbsolutePathBuf::try_from(cwd).map_err(|err| {
+            ConfigServiceError::io("failed to resolve config cwd to an absolute path", err)
+        })?;
+        crate::config::ConfigBuilder::default()
+            .codex_home(self.codex_home.clone())
+            .cli_overrides(self.cli_overrides.clone())
+            .loader_overrides(self.loader_overrides.clone())
+            .fallback_cwd(Some(cwd.to_path_buf()))
+            .cloud_requirements(self.cloud_requirements.clone())
+            .build()
+            .await
+            .map_err(|err| ConfigServiceError::io("failed to load configuration", err))
     }
 
     pub async fn read_requirements(

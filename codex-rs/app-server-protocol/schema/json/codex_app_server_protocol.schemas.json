@@ -5700,6 +5700,12 @@
               "null"
             ]
           },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "message": {
             "type": [
               "string",

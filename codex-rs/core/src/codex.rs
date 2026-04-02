@@ -168,6 +168,7 @@ use crate::client_common::ResponseEvent;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::compact::collect_user_messages;
 use crate::config::Config;
+use crate::config::ConfigService;
 use crate::config::Constrained;
 use crate::config::ConstraintResult;
 use crate::config::GhostSnapshotConfig;
@@ -404,6 +405,7 @@ pub struct CodexSpawnOk {
 
 pub(crate) struct CodexSpawnArgs {
     pub(crate) config: Config,
+    pub(crate) config_service: ConfigService,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) models_manager: Arc<ModelsManager>,
     pub(crate) environment_manager: Arc<EnvironmentManager>,
@@ -458,6 +460,7 @@ impl Codex {
     async fn spawn_internal(args: CodexSpawnArgs) -> CodexResult<CodexSpawnOk> {
         let CodexSpawnArgs {
             mut config,
+            config_service,
             auth_manager,
             models_manager,
             environment_manager,
@@ -646,6 +649,7 @@ impl Codex {
         let session = Session::new(
             session_configuration,
             config.clone(),
+            config_service,
             auth_manager.clone(),
             models_manager.clone(),
             exec_policy,
@@ -1534,6 +1538,7 @@ impl Session {
     async fn new(
         mut session_configuration: SessionConfiguration,
         config: Arc<Config>,
+        config_service: ConfigService,
         auth_manager: Arc<AuthManager>,
         models_manager: Arc<ModelsManager>,
         exec_policy: Arc<ExecPolicyManager>,
@@ -1960,6 +1965,7 @@ impl Session {
             shell_snapshot_tx,
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
             exec_policy,
+            config_service,
             auth_manager: Arc::clone(&auth_manager),
             session_telemetry,
             models_manager: Arc::clone(&models_manager),

@@ -6,6 +6,7 @@
 
 use crate::history_cell::PlainHistoryCell;
 use crate::render::line_utils::prefix_lines;
+use crate::status::format_directory_display;
 use crate::text_formatting::truncate_text;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -181,6 +182,7 @@ pub(crate) fn spawn_end(
         new_thread_id,
         new_agent_nickname,
         new_agent_role,
+        new_thread_cwd,
         new_thread_note,
         prompt,
         status: _,
@@ -201,6 +203,9 @@ pub(crate) fn spawn_end(
     };
 
     let mut details = Vec::new();
+    if let Some(line) = directory_line(new_thread_cwd.as_deref()) {
+        details.push(line);
+    }
     if let Some(line) = note_line(new_thread_note.as_deref()) {
         details.push(line);
     }
@@ -456,6 +461,14 @@ fn note_line(note: Option<&str>) -> Option<Line<'static>> {
     ))))
 }
 
+fn directory_line(directory: Option<&std::path::Path>) -> Option<Line<'static>> {
+    let directory = directory?;
+    Some(Line::from(Span::from(format!(
+        "Directory: {}",
+        format_directory_display(directory, /*max_width*/ None)
+    ))))
+}
+
 fn prompt_line(prompt: &str) -> Option<Line<'static>> {
     let trimmed = prompt.trim();
     if trimmed.is_empty() {
@@ -632,6 +645,7 @@ mod tests {
                 new_thread_id: Some(robie_id),
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),
+                new_thread_cwd: Some(std::path::PathBuf::from("/tmp/research")),
                 new_thread_note: Some(
                     "Назначение: Исследователь репозитория | Компетенции: docs/fork/features; AGENTS.md"
                         .to_string(),
@@ -778,6 +792,7 @@ mod tests {
                 new_thread_id: Some(robie_id),
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),
+                new_thread_cwd: None,
                 new_thread_note: None,
                 prompt: String::new(),
                 model: "gpt-5".to_string(),

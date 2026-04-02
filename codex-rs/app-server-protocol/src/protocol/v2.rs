@@ -4766,6 +4766,7 @@ pub struct CollabAgentState {
     pub message: Option<String>,
     pub agent_nickname: Option<String>,
     pub agent_role: Option<String>,
+    pub cwd: Option<PathBuf>,
     pub thread_note: Option<String>,
 }
 
@@ -4777,6 +4778,7 @@ impl From<CoreAgentStatus> for CollabAgentState {
                 message: None,
                 agent_nickname: None,
                 agent_role: None,
+                cwd: None,
                 thread_note: None,
             },
             CoreAgentStatus::Running => Self {
@@ -4784,6 +4786,7 @@ impl From<CoreAgentStatus> for CollabAgentState {
                 message: None,
                 agent_nickname: None,
                 agent_role: None,
+                cwd: None,
                 thread_note: None,
             },
             CoreAgentStatus::Interrupted => Self {
@@ -4791,6 +4794,7 @@ impl From<CoreAgentStatus> for CollabAgentState {
                 message: None,
                 agent_nickname: None,
                 agent_role: None,
+                cwd: None,
                 thread_note: None,
             },
             CoreAgentStatus::Completed(message) => Self {
@@ -4798,6 +4802,7 @@ impl From<CoreAgentStatus> for CollabAgentState {
                 message,
                 agent_nickname: None,
                 agent_role: None,
+                cwd: None,
                 thread_note: None,
             },
             CoreAgentStatus::Errored(message) => Self {
@@ -4805,6 +4810,7 @@ impl From<CoreAgentStatus> for CollabAgentState {
                 message: Some(message),
                 agent_nickname: None,
                 agent_role: None,
+                cwd: None,
                 thread_note: None,
             },
             CoreAgentStatus::Shutdown => Self {
@@ -4812,6 +4818,7 @@ impl From<CoreAgentStatus> for CollabAgentState {
                 message: None,
                 agent_nickname: None,
                 agent_role: None,
+                cwd: None,
                 thread_note: None,
             },
             CoreAgentStatus::NotFound => Self {
@@ -4819,6 +4826,7 @@ impl From<CoreAgentStatus> for CollabAgentState {
                 message: None,
                 agent_nickname: None,
                 agent_role: None,
+                cwd: None,
                 thread_note: None,
             },
         }
@@ -6141,6 +6149,7 @@ mod tests {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                cwd: None,
             }
         );
     }

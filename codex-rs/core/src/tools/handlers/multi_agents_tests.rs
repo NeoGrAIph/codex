@@ -240,6 +240,7 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
     #[derive(Debug, Deserialize)]
     struct SpawnAgentResult {
         agent_id: String,
+        cwd: Option<std::path::PathBuf>,
         nickname: Option<String>,
         thread_note: Option<String>,
     }
@@ -393,6 +394,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
     #[derive(Debug, Deserialize)]
     struct SpawnAgentResult {
         task_name: String,
+        cwd: Option<std::path::PathBuf>,
         nickname: Option<String>,
     }
 
@@ -1234,6 +1236,7 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
     #[derive(Debug, Deserialize)]
     struct SpawnAgentResult {
         agent_id: String,
+        cwd: Option<std::path::PathBuf>,
         nickname: Option<String>,
     }
 
@@ -1346,6 +1349,7 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
     #[derive(Debug, Deserialize)]
     struct SpawnAgentResult {
         agent_id: String,
+        cwd: Option<std::path::PathBuf>,
         nickname: Option<String>,
     }
 
@@ -2768,7 +2772,7 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
             .unwrap_or(base)
     }
 
-    let (_session, mut turn) = make_session_and_context().await;
+    let (session, mut turn) = make_session_and_context().await;
     let base_instructions = BaseInstructions {
         text: "base".to_string(),
     };
@@ -2797,7 +2801,9 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
         .set(AskForApproval::OnRequest)
         .expect("approval policy set");
 
-    let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
+    let config = build_agent_spawn_config(&session, &base_instructions, &turn, None)
+        .await
+        .expect("spawn config");
     let mut expected = (*turn.config).clone();
     expected.base_instructions = Some(base_instructions.text);
     expected.model = Some(turn.model_info.slug.clone());
@@ -2826,7 +2832,7 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
 
 #[tokio::test]
 async fn build_agent_spawn_config_preserves_base_user_instructions() {
-    let (_session, mut turn) = make_session_and_context().await;
+    let (session, mut turn) = make_session_and_context().await;
     let mut base_config = (*turn.config).clone();
     base_config.user_instructions = Some("base-user".to_string());
     turn.user_instructions = Some("resolved-user".to_string());
@@ -2835,9 +2841,58 @@ async fn build_agent_spawn_config_preserves_base_user_instructions() {
         text: "base".to_string(),
     };
 
-    let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
+    let config = build_agent_spawn_config(&session, &base_instructions, &turn, None)
+        .await
+        .expect("spawn config");
 
     assert_eq!(config.user_instructions, base_config.user_instructions);
+}
+
+#[tokio::test]
+async fn spawn_agent_uses_requested_relative_cwd_for_child_session() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+        cwd: Option<std::path::PathBuf>,
+        nickname: Option<String>,
+        thread_note: Option<String>,
+    }
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let parent_dir = tempfile::tempdir().expect("parent temp dir");
+    let child_dir = parent_dir.path().join("child");
+    std::fs::create_dir_all(&child_dir).expect("create child dir");
+    turn.cwd = parent_dir.abs();
+
+    let output = SpawnAgentHandler
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "cwd": "child"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let agent_id = parse_agent_id(&result.agent_id);
+    let snapshot = manager
+        .get_thread(agent_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(result.cwd, Some(child_dir.clone()));
+    assert!(result.nickname.is_some());
+    assert_eq!(result.thread_note, None);
+    assert_eq!(snapshot.cwd, child_dir);
 }
 
 #[tokio::test]

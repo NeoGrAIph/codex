@@ -3459,6 +3459,9 @@ pub struct CollabAgentSpawnEndEvent {
     /// Optional role assigned to the new agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_agent_role: Option<String>,
+    /// Optional effective cwd assigned to the new agent session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_thread_cwd: Option<PathBuf>,
     /// Optional thread note assigned to the new agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_thread_note: Option<String>,

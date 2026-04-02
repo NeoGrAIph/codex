@@ -5,6 +5,7 @@ use crate::config::Config;
 use crate::error::CodexErr;
 use crate::function_tool::FunctionCallError;
 use crate::models_manager::manager::RefreshStrategy;
+use crate::path_utils::normalize_for_native_workdir;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
@@ -15,12 +16,15 @@ use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::permissions::FileSystemSandboxPolicy;
+use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabAgentStatusEntry;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -202,11 +206,13 @@ pub(crate) fn parse_collab_input(
 /// approval policy, sandbox, and cwd. Role-specific overrides are layered after this step;
 /// skipping this helper and cloning stale config state directly can send the child agent out with
 /// the wrong provider or runtime policy.
-pub(crate) fn build_agent_spawn_config(
+pub(crate) async fn build_agent_spawn_config(
+    session: &Session,
     base_instructions: &BaseInstructions,
     turn: &TurnContext,
+    requested_cwd: Option<&str>,
 ) -> Result<Config, FunctionCallError> {
-    let mut config = build_agent_shared_config(turn)?;
+    let mut config = build_agent_shared_config(session, turn, requested_cwd).await?;
     config.base_instructions = Some(base_instructions.text.clone());
     Ok(config)
 }
@@ -215,25 +221,63 @@ pub(crate) fn build_agent_resume_config(
     turn: &TurnContext,
     child_depth: i32,
 ) -> Result<Config, FunctionCallError> {
-    let mut config = build_agent_shared_config(turn)?;
-    apply_spawn_agent_overrides(&mut config, child_depth);
-    // For resume, keep base instructions sourced from rollout/session metadata.
-    config.base_instructions = None;
-    Ok(config)
-}
-
-fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallError> {
-    let base_config = turn.config.clone();
-    let mut config = (*base_config).clone();
+    let mut config = (*turn.config).clone();
     config.model = Some(turn.model_info.slug.clone());
     config.model_provider = turn.provider.clone();
     config.model_reasoning_effort = turn.reasoning_effort;
     config.model_reasoning_summary = Some(turn.reasoning_summary);
     config.developer_instructions = turn.developer_instructions.clone();
     config.compact_prompt = turn.compact_prompt.clone();
-    apply_spawn_agent_runtime_overrides(&mut config, turn)?;
+    apply_spawn_agent_runtime_overrides(&mut config, turn, None)?;
+    apply_spawn_agent_overrides(&mut config, child_depth);
+    // For resume, keep base instructions sourced from rollout/session metadata.
+    config.base_instructions = None;
+    Ok(config)
+}
+
+async fn build_agent_shared_config(
+    session: &Session,
+    turn: &TurnContext,
+    requested_cwd: Option<&str>,
+) -> Result<Config, FunctionCallError> {
+    let resolved_requested_cwd = resolve_requested_spawn_agent_cwd(turn, requested_cwd)?;
+    let mut config = match resolved_requested_cwd.clone() {
+        Some(cwd) => session
+            .services
+            .config_service
+            .load_config_for_cwd(cwd.to_path_buf())
+            .await
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!(
+                    "failed to build agent config for requested cwd: {err}"
+                ))
+            })?,
+        None => (*turn.config).clone(),
+    };
+    config.model = Some(turn.model_info.slug.clone());
+    config.model_provider = turn.provider.clone();
+    config.model_reasoning_effort = turn.reasoning_effort;
+    config.model_reasoning_summary = Some(turn.reasoning_summary);
+    config.developer_instructions = turn.developer_instructions.clone();
+    config.compact_prompt = turn.compact_prompt.clone();
+    apply_spawn_agent_runtime_overrides(&mut config, turn, resolved_requested_cwd.as_ref())?;
 
     Ok(config)
+}
+
+fn resolve_requested_spawn_agent_cwd(
+    turn: &TurnContext,
+    requested_cwd: Option<&str>,
+) -> Result<Option<AbsolutePathBuf>, FunctionCallError> {
+    let Some(requested_cwd) = requested_cwd.map(str::trim).filter(|cwd| !cwd.is_empty()) else {
+        return Ok(None);
+    };
+    AbsolutePathBuf::resolve_path_against_base(
+        normalize_for_native_workdir(requested_cwd),
+        turn.cwd.as_path(),
+    )
+    .map(Some)
+    .map_err(|err| FunctionCallError::RespondToModel(format!("invalid cwd for spawn_agent: {err}")))
 }
 
 /// Copies runtime-only turn state onto a child config before it is handed to `AgentControl`.
@@ -243,6 +287,7 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
 pub(crate) fn apply_spawn_agent_runtime_overrides(
     config: &mut Config,
     turn: &TurnContext,
+    requested_cwd: Option<&AbsolutePathBuf>,
 ) -> Result<(), FunctionCallError> {
     config
         .permissions
@@ -253,7 +298,6 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
         })?;
     config.permissions.shell_environment_policy = turn.shell_environment_policy.clone();
     config.codex_linux_sandbox_exe = turn.codex_linux_sandbox_exe.clone();
-    config.cwd = turn.cwd.clone();
     config
         .permissions
         .sandbox_policy
@@ -261,8 +305,14 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
         .map_err(|err| {
             FunctionCallError::RespondToModel(format!("sandbox_policy is invalid: {err}"))
         })?;
-    config.permissions.file_system_sandbox_policy = turn.file_system_sandbox_policy.clone();
-    config.permissions.network_sandbox_policy = turn.network_sandbox_policy;
+    config.cwd = requested_cwd.cloned().unwrap_or_else(|| turn.cwd.clone());
+    config.permissions.file_system_sandbox_policy =
+        FileSystemSandboxPolicy::from_legacy_sandbox_policy(
+            config.permissions.sandbox_policy.get(),
+            &config.cwd,
+        );
+    config.permissions.network_sandbox_policy =
+        NetworkSandboxPolicy::from(config.permissions.sandbox_policy.get());
     Ok(())
 }
 

@@ -354,9 +354,13 @@ fn spawn_agent_output_schema_v1() -> Value {
             "nickname": {
                 "type": ["string", "null"],
                 "description": "User-facing nickname for the spawned agent when available."
+            },
+            "cwd": {
+                "type": ["string", "null"],
+                "description": "Effective working directory for the spawned agent session when available."
             }
         },
-        "required": ["agent_id", "nickname"],
+        "required": ["agent_id", "nickname", "cwd"],
         "additionalProperties": false
     })
 }
@@ -376,9 +380,13 @@ fn spawn_agent_output_schema_v2() -> Value {
             "nickname": {
                 "type": ["string", "null"],
                 "description": "User-facing nickname for the spawned agent when available."
+            },
+            "cwd": {
+                "type": ["string", "null"],
+                "description": "Effective working directory for the spawned agent session when available."
             }
         },
-        "required": ["agent_id", "task_name", "nickname"],
+        "required": ["agent_id", "task_name", "nickname", "cwd"],
         "additionalProperties": false
     })
 }
@@ -634,6 +642,15 @@ fn spawn_agent_common_properties(agent_type_description: &str) -> BTreeMap<Strin
             JsonSchema::String {
                 description: Some(
                     "Optional metadata-only note for the new agent. Persisted for restart/resume and shown in transcripts, but not injected into model instructions."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "cwd".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional working directory for the new agent session. Relative paths resolve from the current turn cwd."
                         .to_string(),
                 ),
             },

@@ -1,5 +1,6 @@
 use super::*;
 use crate::codex::make_session_and_context;
+use crate::config::ConfigService;
 use crate::config::test_config;
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use crate::models_manager::manager::RefreshStrategy;
@@ -298,6 +299,7 @@ async fn new_uses_configured_openai_provider_for_model_refresh() {
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
+        ConfigService::new_with_defaults(config.codex_home.clone()),
     );
 
     let _ = manager.list_models(RefreshStrategy::Online).await;
@@ -428,6 +430,7 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
+        ConfigService::new_with_defaults(config.codex_home.clone()),
     );
 
     let source = manager
@@ -528,6 +531,7 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
+        ConfigService::new_with_defaults(config.codex_home.clone()),
     );
 
     let source = manager
@@ -617,6 +621,7 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
+        ConfigService::new_with_defaults(config.codex_home.clone()),
     );
 
     let source = manager

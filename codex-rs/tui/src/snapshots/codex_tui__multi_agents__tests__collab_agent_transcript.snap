@@ -3,7 +3,8 @@ source: tui/src/multi_agents.rs
 expression: snapshot
 ---
 • Spawned Robie [explorer] 00000000-0000-0000-0000-000000000002 (gpt-5 high)
-  └ Note: Назначение: Исследователь репозитория | Компетенции: docs/fork/features; AGENTS.md
+  └ Directory: /tmp/research
+    Note: Назначение: Исследователь репозитория | Компетенции: docs/fork/features; AGENTS.md
     Compute 11! and reply with just the integer result.
 
 • Sent input to Robie [explorer] 00000000-0000-0000-0000-000000000002

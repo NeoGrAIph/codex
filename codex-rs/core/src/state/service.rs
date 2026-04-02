@@ -5,6 +5,7 @@ use crate::RolloutRecorder;
 use crate::SkillsManager;
 use crate::agent::AgentControl;
 use crate::client::ModelClient;
+use crate::config::ConfigService;
 use crate::config::StartedNetworkProxy;
 use crate::exec_policy::ExecPolicyManager;
 use crate::mcp::McpManager;
@@ -42,6 +43,7 @@ pub(crate) struct SessionServices {
     pub(crate) shell_snapshot_tx: watch::Sender<Option<Arc<crate::shell_snapshot::ShellSnapshot>>>,
     pub(crate) show_raw_agent_reasoning: bool,
     pub(crate) exec_policy: Arc<ExecPolicyManager>,
+    pub(crate) config_service: ConfigService,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) models_manager: Arc<ModelsManager>,
     pub(crate) session_telemetry: SessionTelemetry,

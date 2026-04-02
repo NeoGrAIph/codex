@@ -17,6 +17,7 @@ use codex_core::ModelProviderInfo;
 use codex_core::ThreadManager;
 use codex_core::built_in_model_providers;
 use codex_core::config::Config;
+use codex_core::config::ConfigService;
 use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_core::shell::Shell;
 use codex_core::shell::get_shell_by_model_provided_path;
@@ -488,6 +489,7 @@ impl TestCodexBuilder {
                 SessionSource::Exec,
                 CollaborationModesConfig::default(),
                 Arc::clone(&environment_manager),
+                ConfigService::new_with_defaults(config.codex_home.clone()),
             )
         } else {
             codex_core::test_support::thread_manager_with_models_provider_and_home(

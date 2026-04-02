@@ -10,6 +10,7 @@ use codex_core::ThreadManager;
 use codex_core::WireApi;
 use codex_core::auth::AuthCredentialsStoreMode;
 use codex_core::built_in_model_providers;
+use codex_core::config::ConfigService;
 use codex_core::default_client::originator;
 use codex_core::error::CodexErr;
 use codex_core::models_manager::collaboration_mode_presets::CollaborationModesConfig;
@@ -1066,6 +1067,7 @@ async fn prefers_apikey_when_config_prefers_apikey_even_with_chatgpt_tokens() {
         Arc::new(codex_exec_server::EnvironmentManager::new(
             /*exec_server_url*/ None,
         )),
+        ConfigService::new_with_defaults(config.codex_home.clone()),
     );
     let NewThread { thread: codex, .. } = thread_manager
         .start_thread(config)
