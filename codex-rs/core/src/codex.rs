@@ -628,6 +628,7 @@ impl Codex {
             cwd: config.cwd.clone(),
             codex_home: config.codex_home.clone(),
             thread_name: None,
+            thread_note: None,
             original_config_do_not_use: Arc::clone(&config),
             metrics_service_name,
             app_server_client_name: None,
@@ -855,6 +856,7 @@ pub(crate) struct TurnContext {
     pub(crate) cwd: AbsolutePathBuf,
     pub(crate) current_date: Option<String>,
     pub(crate) timezone: Option<String>,
+    pub(crate) thread_note: Option<String>,
     pub(crate) app_server_client_name: Option<String>,
     pub(crate) developer_instructions: Option<String>,
     pub(crate) compact_prompt: Option<String>,
@@ -963,6 +965,7 @@ impl TurnContext {
             cwd: self.cwd.clone(),
             current_date: self.current_date.clone(),
             timezone: self.timezone.clone(),
+            thread_note: self.thread_note.clone(),
             app_server_client_name: self.app_server_client_name.clone(),
             developer_instructions: self.developer_instructions.clone(),
             compact_prompt: self.compact_prompt.clone(),
@@ -1011,6 +1014,7 @@ impl TurnContext {
             cwd: self.cwd.to_path_buf(),
             current_date: self.current_date.clone(),
             timezone: self.timezone.clone(),
+            thread_note: self.thread_note.clone(),
             approval_policy: self.approval_policy.value(),
             sandbox_policy: self.sandbox_policy.get().clone(),
             network: self.turn_context_network_item(),
@@ -1101,6 +1105,8 @@ pub(crate) struct SessionConfiguration {
     codex_home: PathBuf,
     /// Optional user-facing name for the thread, updated during the session.
     thread_name: Option<String>,
+    /// Optional metadata-only note for the thread, updated during the session.
+    thread_note: Option<String>,
 
     // TODO(pakrym): Remove config from here
     original_config_do_not_use: Arc<Config>,
@@ -1132,6 +1138,7 @@ impl SessionConfiguration {
             ephemeral: self.original_config_do_not_use.ephemeral,
             reasoning_effort: self.collaboration_mode.reasoning_effort(),
             personality: self.personality,
+            thread_note: self.thread_note.clone(),
             session_source: self.session_source.clone(),
         }
     }
@@ -1322,6 +1329,69 @@ impl Session {
         state.session_configuration.codex_home().clone()
     }
 
+    async fn read_latest_thread_note_from_rollout(
+        path: &Path,
+    ) -> std::io::Result<Option<Option<String>>> {
+        let text = tokio::fs::read_to_string(path).await?;
+        for line in text.lines().rev() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(rollout_line) =
+                serde_json::from_str::<codex_protocol::protocol::RolloutLine>(trimmed)
+            else {
+                continue;
+            };
+            if let RolloutItem::TurnContext(item) = rollout_line.item {
+                return Ok(Some(item.thread_note));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn read_persisted_thread_note(
+        codex_home: &Path,
+        conversation_id: &ThreadId,
+    ) -> Option<Option<String>> {
+        let thread_id = conversation_id.to_string();
+        let rollout_path = crate::find_thread_path_by_id_str(codex_home, &thread_id)
+            .await
+            .ok()
+            .flatten()
+            .or(
+                crate::find_archived_thread_path_by_id_str(codex_home, &thread_id)
+                    .await
+                    .ok()
+                    .flatten(),
+            );
+
+        if let Some(path) = rollout_path {
+            match Self::read_latest_thread_note_from_rollout(&path).await {
+                Ok(Some(note)) => return Some(note),
+                Ok(None) => {}
+                Err(err) => {
+                    warn!("Failed to read rollout for thread note: {err}");
+                }
+            }
+            match crate::read_session_meta_line(&path).await {
+                Ok(meta_line) => return Some(meta_line.meta.thread_note),
+                Err(err) => {
+                    warn!("Failed to read session metadata for thread note: {err}");
+                }
+            }
+        }
+
+        match session_index::find_thread_note_by_id(codex_home, conversation_id).await {
+            Ok(Some(note)) => Some(Some(note)),
+            Ok(None) => None,
+            Err(err) => {
+                warn!("Failed to read legacy thread note index: {err}");
+                None
+            }
+        }
+    }
+
     pub(crate) fn subscribe_out_of_band_elicitation_pause_state(&self) -> watch::Receiver<bool> {
         self.out_of_band_elicitation_paused.subscribe()
     }
@@ -1429,6 +1499,7 @@ impl Session {
             cwd,
             current_date: Some(current_date),
             timezone: Some(timezone),
+            thread_note: session_configuration.thread_note.clone(),
             app_server_client_name: session_configuration.app_server_client_name.clone(),
             developer_instructions: session_configuration.developer_instructions.clone(),
             compact_prompt: session_configuration.compact_prompt.clone(),
@@ -1776,6 +1847,16 @@ impl Session {
                 }
             };
         session_configuration.thread_name = thread_name.clone();
+        let thread_note = Self::read_persisted_thread_note(&config.codex_home, &conversation_id)
+            .instrument(info_span!(
+                "session_init.thread_note_lookup",
+                otel.name = "session_init.thread_note_lookup",
+            ))
+            .await;
+        session_configuration.thread_note = match thread_note {
+            Some(note) => note,
+            None => session_configuration.session_source.get_thread_note(),
+        };
         let state = SessionState::new(session_configuration.clone());
         let managed_network_requirements_enabled = config.managed_network_requirements_enabled();
         let network_approval = Arc::new(NetworkApprovalService::default());
@@ -4457,6 +4538,10 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                     handlers::set_thread_name(&sess, sub.id.clone(), name).await;
                     false
                 }
+                Op::SetThreadNote { note } => {
+                    handlers::set_thread_note(&sess, sub.id.clone(), note).await;
+                    false
+                }
                 Op::RunUserShellCommand { command } => {
                     handlers::run_user_shell_command(&sess, sub.id.clone(), command).await;
                     false
@@ -4572,6 +4657,7 @@ mod handlers {
     use codex_protocol::protocol::WarningEvent;
     use codex_protocol::request_permissions::RequestPermissionsResponse;
     use codex_protocol::request_user_input::RequestUserInputResponse;
+    use codex_protocol::thread_note::normalize_thread_note;
 
     use crate::context_manager::is_user_turn_boundary;
     use codex_protocol::config_types::CollaborationMode;
@@ -4579,6 +4665,8 @@ mod handlers {
     use codex_protocol::config_types::Settings;
     use codex_protocol::dynamic_tools::DynamicToolResponse;
     use codex_protocol::mcp::RequestId as ProtocolRequestId;
+    use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentSource;
     use codex_protocol::user_input::UserInput;
     use codex_rmcp_client::ElicitationAction;
     use codex_rmcp_client::ElicitationResponse;
@@ -5277,6 +5365,56 @@ mod handlers {
         .await;
     }
 
+    /// Persists the thread note in the rollout thread file and updates the live session metadata.
+    pub async fn set_thread_note(sess: &Arc<Session>, sub_id: String, note: Option<String>) {
+        let note = normalize_thread_note(note.as_deref());
+        let persistence_enabled = {
+            let rollout = sess.services.rollout.lock().await;
+            rollout.is_some()
+        };
+        if !persistence_enabled {
+            let event = Event {
+                id: sub_id,
+                msg: EventMsg::Error(ErrorEvent {
+                    message: "Session persistence is disabled; cannot update thread note."
+                        .to_string(),
+                    codex_error_info: Some(CodexErrorInfo::Other),
+                }),
+            };
+            sess.send_event_raw(event).await;
+            return;
+        }
+
+        let reference_context_item = {
+            let mut state = sess.state.lock().await;
+            state.session_configuration.thread_note = note.clone();
+            if let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { thread_note, .. }) =
+                &mut state.session_configuration.session_source
+            {
+                *thread_note = note.clone();
+            }
+            state.reference_context_item().map(|mut item| {
+                item.thread_note = note.clone();
+                item
+            })
+        };
+
+        if let Some(turn_context_item) = reference_context_item {
+            sess.persist_rollout_items(&[RolloutItem::TurnContext(turn_context_item.clone())])
+                .await;
+            let mut state = sess.state.lock().await;
+            state.set_reference_context_item(Some(turn_context_item));
+        }
+
+        let codex_home = sess.codex_home().await;
+        if let Err(err) =
+            session_index::append_thread_note(&codex_home, sess.conversation_id, note.as_deref())
+                .await
+        {
+            warn!("Failed to append legacy thread note index entry: {err}");
+        }
+    }
+
     pub async fn shutdown(sess: &Arc<Session>, sub_id: String) -> bool {
         sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
         let _ = sess.conversation.shutdown().await;
@@ -5465,6 +5603,7 @@ async fn spawn_review_thread(
         ghost_snapshot: parent_turn_context.ghost_snapshot.clone(),
         current_date: parent_turn_context.current_date.clone(),
         timezone: parent_turn_context.timezone.clone(),
+        thread_note: parent_turn_context.thread_note.clone(),
         app_server_client_name: parent_turn_context.app_server_client_name.clone(),
         developer_instructions: None,
         user_instructions: None,

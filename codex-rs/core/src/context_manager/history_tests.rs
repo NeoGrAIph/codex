@@ -130,6 +130,7 @@ fn reference_context_item() -> TurnContextItem {
         cwd: PathBuf::from("/tmp/reference-cwd"),
         current_date: Some("2026-03-23".to_string()),
         timezone: Some("America/Los_Angeles".to_string()),
+        thread_note: None,
         approval_policy: AskForApproval::OnRequest,
         sandbox_policy: SandboxPolicy::new_read_only_policy(),
         network: None,

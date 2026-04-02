@@ -2347,6 +2347,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
             new_thread_id: Some(spawned_thread_id),
             new_agent_nickname: Some("Robie".to_string()),
             new_agent_role: Some("explorer".to_string()),
+            new_thread_note: None,
             prompt: "Explore the repo".to_string(),
             model: "gpt-5".to_string(),
             reasoning_effort: ReasoningEffortConfig::High,
@@ -2362,7 +2363,8 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
         .join("\n");
 
     assert!(
-        rendered.contains("Spawned Robie [explorer] (gpt-5 high)"),
+        rendered.contains("Spawned Robie [explorer]")
+            && rendered.contains("(gpt-5 high)"),
         "expected spawn line to include agent metadata and requested model, got {rendered:?}"
     );
 }
@@ -4920,6 +4922,9 @@ async fn live_app_server_collab_wait_items_render_history() {
                         AppServerCollabAgentState {
                             status: AppServerCollabAgentStatus::Completed,
                             message: Some("Done".to_string()),
+                            agent_nickname: None,
+                            agent_role: None,
+                            thread_note: None,
                         },
                     ),
                     (
@@ -4927,6 +4932,9 @@ async fn live_app_server_collab_wait_items_render_history() {
                         AppServerCollabAgentState {
                             status: AppServerCollabAgentStatus::Running,
                             message: None,
+                            agent_nickname: None,
+                            agent_role: None,
+                            thread_note: None,
                         },
                     ),
                 ]),
@@ -4988,6 +4996,9 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                     AppServerCollabAgentState {
                         status: AppServerCollabAgentStatus::PendingInit,
                         message: None,
+                        agent_nickname: None,
+                        agent_role: None,
+                        thread_note: None,
                     },
                 )]),
             },

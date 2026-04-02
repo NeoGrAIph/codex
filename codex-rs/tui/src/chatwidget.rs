@@ -954,16 +954,11 @@ pub(crate) struct ChatWidget {
     last_non_retry_error: Option<(String, String)>,
 }
 
-/// Cached nickname and role for a collab agent thread, used to attach human-readable labels to
-/// rendered tool-call items.
-///
-/// Populated externally by `App` via `set_collab_agent_metadata` and consulted by the
-/// notification-to-core-event conversion helpers. Defaults to empty so that missing metadata
-/// degrades to the previous behavior of showing raw thread ids.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct CollabAgentMetadata {
     agent_nickname: Option<String>,
     agent_role: Option<String>,
+    thread_note: Option<String>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1491,12 +1486,10 @@ fn app_server_collab_state_to_core(state: &AppServerCollabAgentState) -> AgentSt
     }
 }
 
-/// Converts app-server collab agent states into the core protocol representation, enriching each
-/// entry with cached nickname and role metadata so rendered items show human-readable names.
 fn app_server_collab_agent_statuses_to_core(
     receiver_thread_ids: &[String],
     agents_states: &HashMap<String, AppServerCollabAgentState>,
-    collab_agent_metadata: &HashMap<ThreadId, CollabAgentMetadata>,
+    known_agents: &HashMap<ThreadId, CollabAgentMetadata>,
 ) -> (Vec<CollabAgentStatusEntry>, HashMap<ThreadId, AgentStatus>) {
     let mut agent_statuses = Vec::new();
     let mut statuses = HashMap::new();
@@ -1509,20 +1502,31 @@ fn app_server_collab_agent_statuses_to_core(
             continue;
         };
         let status = app_server_collab_state_to_core(agent_state);
-        let metadata = collab_agent_metadata
-            .get(&thread_id)
-            .cloned()
-            .unwrap_or_default();
+        let cached_metadata = known_agents.get(&thread_id);
         agent_statuses.push(CollabAgentStatusEntry {
             thread_id,
-            agent_nickname: metadata.agent_nickname,
-            agent_role: metadata.agent_role,
+            agent_nickname: agent_state
+                .agent_nickname
+                .clone()
+                .or_else(|| cached_metadata.and_then(|meta| meta.agent_nickname.clone())),
+            agent_role: agent_state
+                .agent_role
+                .clone()
+                .or_else(|| cached_metadata.and_then(|meta| meta.agent_role.clone())),
             status: status.clone(),
         });
         statuses.insert(thread_id, status);
     }
 
     (agent_statuses, statuses)
+}
+
+fn app_server_collab_metadata(state: &AppServerCollabAgentState) -> CollabAgentMetadata {
+    CollabAgentMetadata {
+        agent_nickname: state.agent_nickname.clone(),
+        agent_role: state.agent_role.clone(),
+        thread_note: state.thread_note.clone(),
+    }
 }
 
 /// Builds `CollabAgentRef` entries for every valid receiver thread, attaching cached metadata.
@@ -1650,16 +1654,36 @@ impl ChatWidget {
             CollabAgentMetadata {
                 agent_nickname,
                 agent_role,
+                thread_note: None,
             },
         );
     }
 
-    /// Returns the cached metadata for a thread, defaulting to empty if none has been registered.
-    fn collab_agent_metadata(&self, thread_id: ThreadId) -> CollabAgentMetadata {
+    fn update_collab_agent_metadata(&mut self, thread_id: ThreadId, metadata: CollabAgentMetadata) {
+        if metadata.agent_nickname.is_none()
+            && metadata.agent_role.is_none()
+            && metadata.thread_note.is_none()
+        {
+            return;
+        }
         self.collab_agent_metadata
-            .get(&thread_id)
-            .cloned()
-            .unwrap_or_default()
+            .entry(thread_id)
+            .and_modify(|existing| {
+                if metadata.agent_nickname.is_some() {
+                    existing.agent_nickname = metadata.agent_nickname.clone();
+                }
+                if metadata.agent_role.is_some() {
+                    existing.agent_role = metadata.agent_role.clone();
+                }
+                if metadata.thread_note.is_some() {
+                    existing.thread_note = metadata.thread_note.clone();
+                }
+            })
+            .or_insert(metadata);
+    }
+
+    fn collab_agent_metadata(&self, thread_id: ThreadId) -> Option<&CollabAgentMetadata> {
+        self.collab_agent_metadata.get(&thread_id)
     }
 
     fn realtime_conversation_enabled(&self) -> bool {
@@ -3810,8 +3834,9 @@ impl ChatWidget {
         let first_receiver = receiver_thread_ids
             .first()
             .and_then(|thread_id| app_server_collab_thread_id_to_core(thread_id));
-        let first_receiver_metadata =
-            first_receiver.map(|thread_id| self.collab_agent_metadata(thread_id));
+        let first_receiver_state = first_receiver
+            .as_ref()
+            .and_then(|thread_id| agents_states.get(&thread_id.to_string()));
 
         match tool {
             CollabAgentTool::SpawnAgent => {
@@ -3837,17 +3862,27 @@ impl ChatWidget {
                                     }
                                 })
                         });
+                    if let (Some(receiver_thread_id), Some(agent_state)) =
+                        (first_receiver, first_receiver_state)
+                    {
+                        self.update_collab_agent_metadata(
+                            receiver_thread_id,
+                            app_server_collab_metadata(agent_state),
+                        );
+                    }
+                    let cached = first_receiver.and_then(|tid| self.collab_agent_metadata(tid));
                     self.on_collab_event(multi_agents::spawn_end(
                         codex_protocol::protocol::CollabAgentSpawnEndEvent {
                             call_id: id,
                             sender_thread_id,
                             new_thread_id: first_receiver,
-                            new_agent_nickname: first_receiver_metadata
-                                .as_ref()
-                                .and_then(|metadata| metadata.agent_nickname.clone()),
-                            new_agent_role: first_receiver_metadata
-                                .as_ref()
-                                .and_then(|metadata| metadata.agent_role.clone()),
+                            new_agent_nickname: first_receiver_state
+                                .and_then(|s| s.agent_nickname.clone())
+                                .or_else(|| cached.and_then(|m| m.agent_nickname.clone())),
+                            new_agent_role: first_receiver_state
+                                .and_then(|s| s.agent_role.clone())
+                                .or_else(|| cached.and_then(|m| m.agent_role.clone())),
+                            new_thread_note: cached.and_then(|m| m.thread_note.clone()),
                             prompt: prompt.unwrap_or_default(),
                             model: String::new(),
                             reasoning_effort: ReasoningEffortConfig::Medium,
@@ -3867,17 +3902,19 @@ impl ChatWidget {
                 if let Some(receiver_thread_id) = first_receiver
                     && !matches!(status, CollabAgentToolCallStatus::InProgress)
                 {
+                    let cached = self.collab_agent_metadata(receiver_thread_id);
                     self.on_collab_event(multi_agents::interaction_end(
                         codex_protocol::protocol::CollabAgentInteractionEndEvent {
                             call_id: id,
                             sender_thread_id,
                             receiver_thread_id,
-                            receiver_agent_nickname: first_receiver_metadata
-                                .as_ref()
-                                .and_then(|metadata| metadata.agent_nickname.clone()),
-                            receiver_agent_role: first_receiver_metadata
-                                .as_ref()
-                                .and_then(|metadata| metadata.agent_role.clone()),
+                            receiver_agent_nickname: first_receiver_state
+                                .and_then(|s| s.agent_nickname.clone())
+                                .or_else(|| cached.and_then(|m| m.agent_nickname.clone())),
+                            receiver_agent_role: first_receiver_state
+                                .and_then(|s| s.agent_role.clone())
+                                .or_else(|| cached.and_then(|m| m.agent_role.clone())),
+                            receiver_thread_note: cached.and_then(|m| m.thread_note.clone()),
                             prompt: prompt.unwrap_or_default(),
                             status: receiver_thread_ids
                                 .iter()
@@ -3898,11 +3935,11 @@ impl ChatWidget {
                                 call_id: id,
                                 sender_thread_id,
                                 receiver_thread_id,
-                                receiver_agent_nickname: first_receiver_metadata
-                                    .as_ref()
+                                receiver_agent_nickname: first_receiver
+                                    .and_then(|tid| self.collab_agent_metadata(tid))
                                     .and_then(|metadata| metadata.agent_nickname.clone()),
-                                receiver_agent_role: first_receiver_metadata
-                                    .as_ref()
+                                receiver_agent_role: first_receiver
+                                    .and_then(|tid| self.collab_agent_metadata(tid))
                                     .and_then(|metadata| metadata.agent_role.clone()),
                             },
                         ));
@@ -3912,11 +3949,11 @@ impl ChatWidget {
                                 call_id: id,
                                 sender_thread_id,
                                 receiver_thread_id,
-                                receiver_agent_nickname: first_receiver_metadata
-                                    .as_ref()
+                                receiver_agent_nickname: first_receiver
+                                    .and_then(|tid| self.collab_agent_metadata(tid))
                                     .and_then(|metadata| metadata.agent_nickname.clone()),
-                                receiver_agent_role: first_receiver_metadata
-                                    .as_ref()
+                                receiver_agent_role: first_receiver
+                                    .and_then(|tid| self.collab_agent_metadata(tid))
                                     .and_then(|metadata| metadata.agent_role.clone()),
                                 status: receiver_thread_ids
                                     .iter()
@@ -3973,11 +4010,11 @@ impl ChatWidget {
                             call_id: id,
                             sender_thread_id,
                             receiver_thread_id,
-                            receiver_agent_nickname: first_receiver_metadata
-                                .as_ref()
+                            receiver_agent_nickname: self
+                                .collab_agent_metadata(receiver_thread_id)
                                 .and_then(|metadata| metadata.agent_nickname.clone()),
-                            receiver_agent_role: first_receiver_metadata
-                                .as_ref()
+                            receiver_agent_role: self
+                                .collab_agent_metadata(receiver_thread_id)
                                 .and_then(|metadata| metadata.agent_role.clone()),
                             status: receiver_thread_ids
                                 .iter()

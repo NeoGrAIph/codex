@@ -61,15 +61,16 @@ pub(crate) fn parse_agent_id_targets(
 pub(crate) use close_agent::Handler as CloseAgentHandler;
 pub(crate) use resume_agent::Handler as ResumeAgentHandler;
 pub(crate) use send_input::Handler as SendInputHandler;
+pub(crate) use set_thread_note::Handler as SetThreadNoteHandler;
 pub(crate) use spawn::Handler as SpawnAgentHandler;
 pub(crate) use wait::Handler as WaitAgentHandler;
 
 pub mod close_agent;
 mod resume_agent;
 mod send_input;
+mod set_thread_note;
 mod spawn;
-pub(crate) mod wait;
-
 #[cfg(test)]
 #[path = "multi_agents_tests.rs"]
 mod tests;
+pub(crate) mod wait;

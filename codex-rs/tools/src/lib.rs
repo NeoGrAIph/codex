@@ -29,6 +29,7 @@ pub use agent_tool::create_list_agents_tool;
 pub use agent_tool::create_resume_agent_tool;
 pub use agent_tool::create_send_input_tool_v1;
 pub use agent_tool::create_send_message_tool;
+pub use agent_tool::create_set_thread_note_tool;
 pub use agent_tool::create_spawn_agent_tool_v1;
 pub use agent_tool::create_spawn_agent_tool_v2;
 pub use agent_tool::create_wait_agent_tool_v1;

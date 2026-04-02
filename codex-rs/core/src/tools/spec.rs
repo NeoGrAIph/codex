@@ -64,6 +64,7 @@ use codex_tools::create_request_user_input_tool;
 use codex_tools::create_resume_agent_tool;
 use codex_tools::create_send_input_tool_v1;
 use codex_tools::create_send_message_tool;
+use codex_tools::create_set_thread_note_tool;
 use codex_tools::create_shell_command_tool;
 use codex_tools::create_shell_tool;
 use codex_tools::create_spawn_agent_tool_v1;
@@ -428,6 +429,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
     use crate::tools::handlers::multi_agents::CloseAgentHandler;
     use crate::tools::handlers::multi_agents::ResumeAgentHandler;
     use crate::tools::handlers::multi_agents::SendInputHandler;
+    use crate::tools::handlers::multi_agents::SetThreadNoteHandler;
     use crate::tools::handlers::multi_agents::SpawnAgentHandler;
     use crate::tools::handlers::multi_agents::WaitAgentHandler;
     use crate::tools::handlers::multi_agents_v2::AssignTaskHandler as AssignTaskHandlerV2;
@@ -800,6 +802,12 @@ pub(crate) fn build_specs_with_discoverable_tools(
             );
             push_tool_spec(
                 &mut builder,
+                create_set_thread_note_tool(),
+                /*supports_parallel_tool_calls*/ false,
+                config.code_mode_enabled,
+            );
+            push_tool_spec(
+                &mut builder,
                 create_wait_agent_tool_v2(WaitAgentTimeoutOptions {
                     default_timeout_ms: DEFAULT_WAIT_TIMEOUT_MS,
                     min_timeout_ms: MIN_WAIT_TIMEOUT_MS,
@@ -823,6 +831,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
             builder.register_handler("spawn_agent", Arc::new(SpawnAgentHandlerV2));
             builder.register_handler("send_message", Arc::new(SendMessageHandlerV2));
             builder.register_handler("assign_task", Arc::new(AssignTaskHandlerV2));
+            builder.register_handler("set_thread_note", Arc::new(SetThreadNoteHandler));
             builder.register_handler("wait_agent", Arc::new(WaitAgentHandlerV2));
             builder.register_handler("close_agent", Arc::new(CloseAgentHandlerV2));
             builder.register_handler("list_agents", Arc::new(ListAgentsHandlerV2));
@@ -841,6 +850,12 @@ pub(crate) fn build_specs_with_discoverable_tools(
             push_tool_spec(
                 &mut builder,
                 create_send_input_tool_v1(),
+                /*supports_parallel_tool_calls*/ false,
+                config.code_mode_enabled,
+            );
+            push_tool_spec(
+                &mut builder,
+                create_set_thread_note_tool(),
                 /*supports_parallel_tool_calls*/ false,
                 config.code_mode_enabled,
             );
@@ -869,6 +884,7 @@ pub(crate) fn build_specs_with_discoverable_tools(
             );
             builder.register_handler("spawn_agent", Arc::new(SpawnAgentHandler));
             builder.register_handler("send_input", Arc::new(SendInputHandler));
+            builder.register_handler("set_thread_note", Arc::new(SetThreadNoteHandler));
             builder.register_handler("wait_agent", Arc::new(WaitAgentHandler));
             builder.register_handler("close_agent", Arc::new(CloseAgentHandler));
         }

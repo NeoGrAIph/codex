@@ -14,6 +14,15 @@ fn write_index(path: &Path, lines: &[SessionIndexEntry]) -> std::io::Result<()> 
     std::fs::write(path, out)
 }
 
+fn write_thread_note_index(path: &Path, lines: &[ThreadNoteIndexEntry]) -> std::io::Result<()> {
+    let mut out = String::new();
+    for entry in lines {
+        out.push_str(&serde_json::to_string(entry).unwrap());
+        out.push('\n');
+    }
+    std::fs::write(path, out)
+}
+
 #[test]
 fn find_thread_id_by_name_prefers_latest_entry() -> std::io::Result<()> {
     let temp = TempDir::new()?;
@@ -165,5 +174,56 @@ fn scan_index_finds_latest_match_among_mixed_entries() -> std::io::Result<()> {
 
     let found_other_by_id = scan_index_from_end_by_id(&path, &id_other)?;
     assert_eq!(found_other_by_id, Some(expected_other));
+    Ok(())
+}
+
+#[tokio::test]
+async fn find_thread_note_by_id_prefers_latest_entry() -> std::io::Result<()> {
+    let temp = TempDir::new()?;
+    let path = thread_note_index_path(temp.path());
+    let id = ThreadId::new();
+    let lines = vec![
+        ThreadNoteIndexEntry {
+            id,
+            thread_note: Some("Назначение: First | Компетенции: docs".to_string()),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+        ThreadNoteIndexEntry {
+            id,
+            thread_note: Some("Назначение: Second | Компетенции: docs".to_string()),
+            updated_at: "2024-01-02T00:00:00Z".to_string(),
+        },
+    ];
+    write_thread_note_index(&path, &lines)?;
+
+    let found = find_thread_note_by_id(temp.path(), &id).await?;
+    assert_eq!(
+        found,
+        Some("Назначение: Second | Компетенции: docs".to_string())
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn find_thread_note_by_id_returns_none_after_clear() -> std::io::Result<()> {
+    let temp = TempDir::new()?;
+    let path = thread_note_index_path(temp.path());
+    let id = ThreadId::new();
+    let lines = vec![
+        ThreadNoteIndexEntry {
+            id,
+            thread_note: Some("Назначение: Keep | Компетенции: docs".to_string()),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+        ThreadNoteIndexEntry {
+            id,
+            thread_note: Some("   ".to_string()),
+            updated_at: "2024-01-02T00:00:00Z".to_string(),
+        },
+    ];
+    write_thread_note_index(&path, &lines)?;
+
+    let found = find_thread_note_by_id(temp.path(), &id).await?;
+    assert_eq!(found, None);
     Ok(())
 }

@@ -136,6 +136,7 @@ mod tests {
             agent_path: None,
             agent_nickname: None,
             agent_role: None,
+            thread_note: None,
         });
 
         assert!(source_kind_matches(

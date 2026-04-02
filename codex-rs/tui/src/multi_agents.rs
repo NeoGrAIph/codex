@@ -181,6 +181,7 @@ pub(crate) fn spawn_end(
         new_thread_id,
         new_agent_nickname,
         new_agent_role,
+        new_thread_note,
         prompt,
         status: _,
         ..
@@ -200,6 +201,9 @@ pub(crate) fn spawn_end(
     };
 
     let mut details = Vec::new();
+    if let Some(line) = note_line(new_thread_note.as_deref()) {
+        details.push(line);
+    }
     if let Some(line) = prompt_line(&prompt) {
         details.push(line);
     }
@@ -213,6 +217,7 @@ pub(crate) fn interaction_end(ev: CollabAgentInteractionEndEvent) -> PlainHistor
         receiver_thread_id,
         receiver_agent_nickname,
         receiver_agent_role,
+        receiver_thread_note,
         prompt,
         status: _,
     } = ev;
@@ -228,6 +233,9 @@ pub(crate) fn interaction_end(ev: CollabAgentInteractionEndEvent) -> PlainHistor
     );
 
     let mut details = Vec::new();
+    if let Some(line) = note_line(receiver_thread_note.as_deref()) {
+        details.push(line);
+    }
     if let Some(line) = prompt_line(&prompt) {
         details.push(line);
     }
@@ -396,10 +404,11 @@ fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
         .map(str::trim)
         .filter(|nickname| !nickname.is_empty());
     let role = agent.role.map(str::trim).filter(|role| !role.is_empty());
+    let thread_id = agent.thread_id.map(|thread_id| thread_id.to_string());
 
     if let Some(nickname) = nickname {
         spans.push(Span::from(nickname.to_string()).cyan().bold());
-    } else if let Some(thread_id) = agent.thread_id {
+    } else if let Some(thread_id) = thread_id.as_deref() {
         spans.push(Span::from(thread_id.to_string()).cyan());
     } else {
         spans.push(Span::from("agent").cyan());
@@ -408,6 +417,13 @@ fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
     if let Some(role) = role {
         spans.push(Span::from(" ").dim());
         spans.push(Span::from(format!("[{role}]")));
+    }
+
+    if nickname.is_some()
+        && let Some(thread_id) = thread_id
+    {
+        spans.push(Span::from(" ").dim());
+        spans.push(Span::from(thread_id).dim());
     }
 
     spans
@@ -430,6 +446,14 @@ fn spawn_request_spans(spawn_request: Option<&SpawnRequestSummary>) -> Vec<Span<
     };
 
     vec![Span::from(" ").dim(), Span::from(details).magenta()]
+}
+
+fn note_line(note: Option<&str>) -> Option<Line<'static>> {
+    let trimmed = note.map(str::trim).filter(|note| !note.is_empty())?;
+    Some(Line::from(Span::from(format!(
+        "Note: {}",
+        truncate_text(trimmed, COLLAB_PROMPT_PREVIEW_GRAPHEMES)
+    ))))
 }
 
 fn prompt_line(prompt: &str) -> Option<Line<'static>> {
@@ -608,6 +632,10 @@ mod tests {
                 new_thread_id: Some(robie_id),
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),
+                new_thread_note: Some(
+                    "Назначение: Исследователь репозитория | Компетенции: docs/fork/features; AGENTS.md"
+                        .to_string(),
+                ),
                 prompt: "Compute 11! and reply with just the integer result.".to_string(),
                 model: "gpt-5".to_string(),
                 reasoning_effort: ReasoningEffortConfig::High,
@@ -625,6 +653,10 @@ mod tests {
             receiver_thread_id: robie_id,
             receiver_agent_nickname: Some("Robie".to_string()),
             receiver_agent_role: Some("explorer".to_string()),
+            receiver_thread_note: Some(
+                "Назначение: Исследователь репозитория | Компетенции: docs/fork/features; AGENTS.md"
+                    .to_string(),
+            ),
             prompt: "Please continue and return the answer only.".to_string(),
             status: AgentStatus::Running,
         });
@@ -746,6 +778,7 @@ mod tests {
                 new_thread_id: Some(robie_id),
                 new_agent_nickname: Some("Robie".to_string()),
                 new_agent_role: Some("explorer".to_string()),
+                new_thread_note: None,
                 prompt: String::new(),
                 model: "gpt-5".to_string(),
                 reasoning_effort: ReasoningEffortConfig::High,
@@ -765,8 +798,29 @@ mod tests {
         assert_eq!(title.spans[4].content.as_ref(), "[explorer]");
         assert_eq!(title.spans[4].style.fg, None);
         assert!(!title.spans[4].style.add_modifier.contains(Modifier::DIM));
-        assert_eq!(title.spans[6].content.as_ref(), "(gpt-5 high)");
-        assert_eq!(title.spans[6].style.fg, Some(Color::Magenta));
+        assert_eq!(
+            title.spans[6].content.as_ref(),
+            "00000000-0000-0000-0000-000000000002"
+        );
+        assert!(title.spans[6].style.add_modifier.contains(Modifier::DIM));
+        assert_eq!(title.spans[8].content.as_ref(), "(gpt-5 high)");
+        assert_eq!(title.spans[8].style.fg, Some(Color::Magenta));
+    }
+
+    #[test]
+    fn note_line_is_absent_for_empty_note() {
+        assert_eq!(note_line(None), None);
+        assert_eq!(note_line(Some("   ")), None);
+    }
+
+    #[test]
+    fn note_line_uses_full_text_when_width_allows_it() {
+        let line =
+            note_line(Some("Назначение: Исследователь | Компетенции: docs")).expect("note line");
+        assert_eq!(
+            cell_to_text(&collab_event(title_text("Test"), vec![line])),
+            "• Test\n  └ Note: Назначение: Исследователь | Компетенции: docs"
+        );
     }
 
     #[test]

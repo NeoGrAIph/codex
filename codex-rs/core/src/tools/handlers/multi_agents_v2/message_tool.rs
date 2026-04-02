@@ -112,6 +112,12 @@ pub(crate) async fn handle_message_tool(
         .agent_control
         .get_agent_metadata(receiver_thread_id)
         .unwrap_or_default();
+    let receiver_thread_note = session
+        .services
+        .agent_control
+        .get_agent_nickname_role_and_thread_note(receiver_thread_id)
+        .await
+        .and_then(|(_, _, thread_note)| thread_note);
     if args.interrupt {
         session
             .services
@@ -164,6 +170,7 @@ pub(crate) async fn handle_message_tool(
                 receiver_thread_id,
                 receiver_agent_nickname: receiver_agent.agent_nickname,
                 receiver_agent_role: receiver_agent.agent_role,
+                receiver_thread_note,
                 prompt,
                 status,
             }

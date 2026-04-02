@@ -160,6 +160,7 @@ impl AgentControl {
                 depth,
                 agent_path,
                 agent_role,
+                thread_note,
                 ..
             })) => {
                 let (session_source, agent_metadata) = self.prepare_thread_spawn(
@@ -170,6 +171,7 @@ impl AgentControl {
                     agent_path,
                     agent_role,
                     /*preferred_agent_nickname*/ None,
+                    thread_note,
                 )?;
                 (Some(session_source), agent_metadata)
             }
@@ -341,6 +343,7 @@ impl AgentControl {
                             agent_path: None,
                             agent_nickname: None,
                             agent_role: None,
+                            thread_note: None,
                         });
                     match self
                         .resume_single_agent_from_rollout(
@@ -385,8 +388,8 @@ impl AgentControl {
                 parent_thread_id,
                 depth,
                 agent_path,
-                agent_role: _,
-                agent_nickname: _,
+                thread_note,
+                ..
             }) => {
                 let (resumed_agent_nickname, resumed_agent_role) =
                     if let Some(state_db_ctx) = state_db::get_state_db(&config).await {
@@ -405,6 +408,7 @@ impl AgentControl {
                     agent_path,
                     resumed_agent_role,
                     resumed_agent_nickname,
+                    thread_note,
                 )?
             }
             other => (other, AgentMetadata::default()),
@@ -566,6 +570,15 @@ impl AgentControl {
         result
     }
 
+    pub(crate) async fn set_thread_note(
+        &self,
+        agent_id: ThreadId,
+        note: Option<String>,
+    ) -> CodexResult<String> {
+        let state = self.upgrade()?;
+        state.send_op(agent_id, Op::SetThreadNote { note }).await
+    }
+
     /// Mark `agent_id` as explicitly closed in persisted spawn-edge state, then shut down the
     /// agent and any live descendants reached from the in-memory tree.
     pub(crate) async fn close_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
@@ -618,6 +631,27 @@ impl AgentControl {
 
     pub(crate) fn get_agent_metadata(&self, agent_id: ThreadId) -> Option<AgentMetadata> {
         self.state.agent_metadata_for_thread(agent_id)
+    }
+
+    pub(crate) async fn get_agent_nickname_role_and_thread_note(
+        &self,
+        agent_id: ThreadId,
+    ) -> Option<(Option<String>, Option<String>, Option<String>)> {
+        let Ok(state) = self.upgrade() else {
+            return None;
+        };
+        let Ok(thread) = state.get_thread(agent_id).await else {
+            return None;
+        };
+        let config_snapshot = thread.config_snapshot().await;
+        let session_source = config_snapshot.session_source;
+        Some((
+            session_source.get_nickname(),
+            session_source.get_agent_role(),
+            config_snapshot
+                .thread_note
+                .or_else(|| session_source.get_thread_note()),
+        ))
     }
 
     pub(crate) async fn get_agent_config_snapshot(
@@ -860,6 +894,7 @@ impl AgentControl {
         agent_path: Option<AgentPath>,
         agent_role: Option<String>,
         preferred_agent_nickname: Option<String>,
+        thread_note: Option<String>,
     ) -> CodexResult<(SessionSource, AgentMetadata)> {
         if depth == 1 {
             self.state.register_root_thread(parent_thread_id);
@@ -879,6 +914,7 @@ impl AgentControl {
             agent_path: agent_path.clone(),
             agent_nickname: agent_nickname.clone(),
             agent_role: agent_role.clone(),
+            thread_note,
         });
         let agent_metadata = AgentMetadata {
             agent_id: None,

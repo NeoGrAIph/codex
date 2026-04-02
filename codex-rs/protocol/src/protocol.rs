@@ -479,6 +479,11 @@ pub enum Op {
     /// involve the model.
     SetThreadName { name: String },
 
+    /// Set or clear a thread note in persisted rollout metadata.
+    /// This is a local-only operation handled by codex-core; it does not
+    /// involve the model.
+    SetThreadNote { note: Option<String> },
+
     /// Request Codex to undo a turn (turn are stacked so it is the same effect as CMD + Z).
     Undo,
 
@@ -596,6 +601,7 @@ impl Op {
             Self::DropMemories => "drop_memories",
             Self::UpdateMemories => "update_memories",
             Self::SetThreadName { .. } => "set_thread_name",
+            Self::SetThreadNote { .. } => "set_thread_note",
             Self::Undo => "undo",
             Self::ThreadRollback { .. } => "thread_rollback",
             Self::Review { .. } => "review",
@@ -2389,6 +2395,8 @@ pub enum SubAgentSource {
         agent_nickname: Option<String>,
         #[serde(default, alias = "agent_type")]
         agent_role: Option<String>,
+        #[serde(default)]
+        thread_note: Option<String>,
     },
     MemoryConsolidation,
     Other(String),
@@ -2459,6 +2467,15 @@ impl SessionSource {
         }
     }
 
+    pub fn get_thread_note(&self) -> Option<String> {
+        match self {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { thread_note, .. }) => {
+                thread_note.clone()
+            }
+            _ => None,
+        }
+    }
+
     pub fn restriction_product(&self) -> Option<Product> {
         match self {
             SessionSource::Custom(source) => Product::from_session_source_name(source),
@@ -2522,6 +2539,9 @@ pub struct SessionMeta {
     /// Optional canonical agent path assigned to an AgentControl-spawned sub-agent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_path: Option<String>,
+    /// Optional metadata-only note assigned to an AgentControl-spawned sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_note: Option<String>,
     pub model_provider: Option<String>,
     /// base_instructions for the session. This *should* always be present when creating a new session,
     /// but may be missing for older sessions. If not present, fall back to rendering the base_instructions
@@ -2546,6 +2566,7 @@ impl Default for SessionMeta {
             agent_nickname: None,
             agent_role: None,
             agent_path: None,
+            thread_note: None,
             model_provider: None,
             base_instructions: None,
             dynamic_tools: None,
@@ -2614,6 +2635,8 @@ pub struct TurnContextItem {
     pub current_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_note: Option<String>,
     pub approval_policy: AskForApproval,
     pub sandbox_policy: SandboxPolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3436,6 +3459,9 @@ pub struct CollabAgentSpawnEndEvent {
     /// Optional role assigned to the new agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_agent_role: Option<String>,
+    /// Optional thread note assigned to the new agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_thread_note: Option<String>,
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
@@ -3474,6 +3500,9 @@ pub struct CollabAgentInteractionEndEvent {
     /// Optional role assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_role: Option<String>,
+    /// Optional thread note assigned to the receiver agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_thread_note: Option<String>,
     /// Prompt sent from the sender to the receiver. Can be empty to prevent CoT
     /// leaking at the beginning.
     pub prompt: String,
@@ -4574,6 +4603,7 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             current_date: None,
             timezone: None,
+            thread_note: None,
             approval_policy: AskForApproval::Never,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
             network: Some(TurnContextNetworkItem {

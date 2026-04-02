@@ -1837,6 +1837,8 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         agent_state.status
     );
     assert_eq!(agent_state.message, None);
+    assert!(agent_state.agent_nickname.is_some());
+    assert_eq!(agent_state.agent_role, None);
 
     let turn_completed = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {
@@ -2021,6 +2023,8 @@ config_file = "./custom-role.toml"
         agent_state.status
     );
     assert_eq!(agent_state.message, None);
+    assert!(agent_state.agent_nickname.is_some());
+    assert_eq!(agent_state.agent_role, Some("custom".to_string()));
 
     let turn_completed = timeout(DEFAULT_READ_TIMEOUT, async {
         loop {

@@ -179,6 +179,7 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
         "view_image",
         "spawn_agent",
         "send_input",
+        "set_thread_note",
         "resume_agent",
         "wait_agent",
         "close_agent",

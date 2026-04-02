@@ -15,9 +15,9 @@
 //! found. The primary thread itself is never included in the output.
 
 use codex_app_server_protocol::SessionSource;
+use codex_app_server_protocol::SubAgentSource;
 use codex_app_server_protocol::Thread;
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::SubAgentSource;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -101,10 +101,10 @@ mod tests {
     use super::LoadedSubagentThread;
     use super::find_loaded_subagent_threads_for_primary;
     use codex_app_server_protocol::SessionSource;
+    use codex_app_server_protocol::SubAgentSource;
     use codex_app_server_protocol::Thread;
     use codex_app_server_protocol::ThreadStatus;
     use codex_protocol::ThreadId;
-    use codex_protocol::protocol::SubAgentSource;
     use pretty_assertions::assert_eq;
     use std::path::PathBuf;
 
@@ -147,7 +147,6 @@ mod tests {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: primary_thread_id,
                 depth: 1,
-                agent_path: None,
                 agent_nickname: Some("Scout".to_string()),
                 agent_role: Some("explorer".to_string()),
             }),
@@ -160,7 +159,6 @@ mod tests {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: child_thread_id,
                 depth: 2,
-                agent_path: None,
                 agent_nickname: Some("Atlas".to_string()),
                 agent_role: Some("worker".to_string()),
             }),
@@ -173,7 +171,6 @@ mod tests {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: unrelated_parent_id,
                 depth: 1,
-                agent_path: None,
                 agent_nickname: Some("Other".to_string()),
                 agent_role: Some("researcher".to_string()),
             }),

@@ -26,14 +26,13 @@ impl ToolHandler for Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: ResumeAgentArgs = parse_arguments(&arguments)?;
-        let receiver_thread_id = ThreadId::from_string(&args.id).map_err(|err| {
-            FunctionCallError::RespondToModel(format!("invalid agent id {}: {err:?}", args.id))
-        })?;
-        let receiver_agent = session
+        let receiver_thread_id = parse_agent_id_target(&args.id)?;
+        let (receiver_agent_nickname, receiver_agent_role, initial_receiver_thread_note) = session
             .services
             .agent_control
-            .get_agent_metadata(receiver_thread_id)
-            .unwrap_or_default();
+            .get_agent_nickname_role_and_thread_note(receiver_thread_id)
+            .await
+            .unwrap_or((None, None, None));
         let child_depth = next_thread_spawn_depth(&turn.session_source);
         let max_depth = turn.config.agent_max_depth;
         if exceeds_thread_spawn_depth_limit(child_depth, max_depth) {
@@ -49,8 +48,8 @@ impl ToolHandler for Handler {
                     call_id: call_id.clone(),
                     sender_thread_id: session.conversation_id,
                     receiver_thread_id,
-                    receiver_agent_nickname: receiver_agent.agent_nickname.clone(),
-                    receiver_agent_role: receiver_agent.agent_role.clone(),
+                    receiver_agent_nickname: receiver_agent_nickname.clone(),
+                    receiver_agent_role: receiver_agent_role.clone(),
                 }
                 .into(),
             )
@@ -61,35 +60,57 @@ impl ToolHandler for Handler {
             .agent_control
             .get_status(receiver_thread_id)
             .await;
-        let (receiver_agent, error) = if matches!(status, AgentStatus::NotFound) {
-            match try_resume_closed_agent(&session, &turn, receiver_thread_id, child_depth).await {
-                Ok(()) => {
-                    status = session
-                        .services
-                        .agent_control
-                        .get_status(receiver_thread_id)
-                        .await;
-                    (
-                        session
+        let ((receiver_agent_nickname, receiver_agent_role, _ignored_thread_note), error) =
+            if matches!(status, AgentStatus::NotFound) {
+                match try_resume_closed_agent(&session, &turn, receiver_thread_id, child_depth)
+                    .await
+                {
+                    Ok(()) => {
+                        status = session
                             .services
                             .agent_control
-                            .get_agent_metadata(receiver_thread_id)
-                            .unwrap_or(receiver_agent),
-                        None,
-                    )
+                            .get_status(receiver_thread_id)
+                            .await;
+                        (
+                            session
+                                .services
+                                .agent_control
+                                .get_agent_nickname_role_and_thread_note(receiver_thread_id)
+                                .await
+                                .unwrap_or((
+                                    receiver_agent_nickname,
+                                    receiver_agent_role,
+                                    initial_receiver_thread_note,
+                                )),
+                            None,
+                        )
+                    }
+                    Err(err) => {
+                        status = session
+                            .services
+                            .agent_control
+                            .get_status(receiver_thread_id)
+                            .await;
+                        (
+                            (
+                                receiver_agent_nickname,
+                                receiver_agent_role,
+                                initial_receiver_thread_note,
+                            ),
+                            Some(err),
+                        )
+                    }
                 }
-                Err(err) => {
-                    status = session
-                        .services
-                        .agent_control
-                        .get_status(receiver_thread_id)
-                        .await;
-                    (receiver_agent, Some(err))
-                }
-            }
-        } else {
-            (receiver_agent, None)
-        };
+            } else {
+                (
+                    (
+                        receiver_agent_nickname,
+                        receiver_agent_role,
+                        initial_receiver_thread_note,
+                    ),
+                    None,
+                )
+            };
         session
             .send_event(
                 &turn,
@@ -97,8 +118,8 @@ impl ToolHandler for Handler {
                     call_id,
                     sender_thread_id: session.conversation_id,
                     receiver_thread_id,
-                    receiver_agent_nickname: receiver_agent.agent_nickname,
-                    receiver_agent_role: receiver_agent.agent_role,
+                    receiver_agent_nickname,
+                    receiver_agent_role,
                     status: status.clone(),
                 }
                 .into(),
@@ -162,6 +183,7 @@ async fn try_resume_closed_agent(
                 child_depth,
                 /*agent_role*/ None,
                 /*task_name*/ None,
+                /*thread_note*/ None,
             )?,
         )
         .await

@@ -492,6 +492,46 @@ fn close_agent_output_schema() -> Value {
     })
 }
 
+fn set_thread_note_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "thread_note": {
+                "type": ["string", "null"],
+                "description": "Normalized metadata-only note for the current agent, or null when cleared."
+            }
+        },
+        "required": ["thread_note"],
+        "additionalProperties": false
+    })
+}
+
+pub fn create_set_thread_note_tool() -> ToolSpec {
+    let properties = BTreeMap::from([(
+        "note".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Optional metadata-only note for the current agent. Pass an empty or whitespace-only string to clear it."
+                    .to_string(),
+            ),
+        },
+    )]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "set_thread_note".to_string(),
+        description: "Set or clear a metadata-only note for the current agent. The note persists across restart/resume and appears in collaboration transcripts, but it is not injected into model instructions."
+            .to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::Object {
+            properties,
+            required: None,
+            additional_properties: Some(false.into()),
+        },
+        output_schema: Some(set_thread_note_output_schema()),
+    })
+}
+
 fn create_collab_input_items_schema() -> JsonSchema {
     let properties = BTreeMap::from([
         (
@@ -585,6 +625,15 @@ fn spawn_agent_common_properties(agent_type_description: &str) -> BTreeMap<Strin
             JsonSchema::String {
                 description: Some(
                     "Optional reasoning effort override for the new agent. Replaces the inherited reasoning effort."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "thread_note".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Optional metadata-only note for the new agent. Persisted for restart/resume and shown in transcripts, but not injected into model instructions."
                         .to_string(),
                 ),
             },

@@ -8,6 +8,7 @@ use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::UserMessageEvent;
 use pretty_assertions::assert_eq;
@@ -60,6 +61,65 @@ fn write_session_file(root: &Path, ts: &str, uuid: Uuid) -> std::io::Result<Path
     });
     writeln!(file, "{user_event}")?;
     Ok(path)
+}
+
+#[tokio::test]
+async fn recorder_persists_thread_note_in_session_meta_for_spawned_threads() -> std::io::Result<()>
+{
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let thread_id = ThreadId::new();
+    let recorder = RolloutRecorder::new(
+        &config,
+        RolloutRecorderParams::new(
+            thread_id,
+            None,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: ThreadId::new(),
+                depth: 1,
+                agent_path: None,
+                agent_nickname: Some("Robie".to_string()),
+                agent_role: Some("explorer".to_string()),
+                thread_note: Some("Назначение: Проверка rollout | Компетенции: resume".to_string()),
+            }),
+            BaseInstructions::default(),
+            Vec::new(),
+            EventPersistenceMode::Limited,
+        ),
+        None,
+        None,
+    )
+    .await?;
+
+    recorder
+        .record_items(&[RolloutItem::EventMsg(EventMsg::UserMessage(
+            UserMessageEvent {
+                message: "first-user-message".to_string(),
+                images: None,
+                local_images: Vec::new(),
+                text_elements: Vec::new(),
+            },
+        ))])
+        .await?;
+    recorder.persist().await?;
+
+    let rollout_path = recorder.rollout_path().to_path_buf();
+    let first_line = std::fs::read_to_string(&rollout_path)?
+        .lines()
+        .next()
+        .expect("session meta line")
+        .to_string();
+    let meta_line: RolloutLine =
+        serde_json::from_str(&first_line).expect("deserialize session meta");
+    let RolloutItem::SessionMeta(session_meta_line) = meta_line.item else {
+        panic!("expected session meta");
+    };
+
+    assert_eq!(
+        session_meta_line.meta.thread_note,
+        Some("Назначение: Проверка rollout | Компетенции: resume".to_string())
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -455,6 +515,7 @@ async fn resume_candidate_matches_cwd_reads_latest_turn_context() -> std::io::Re
             cwd: latest_cwd.clone(),
             current_date: None,
             timezone: None,
+            thread_note: None,
             approval_policy: AskForApproval::Never,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             network: None,

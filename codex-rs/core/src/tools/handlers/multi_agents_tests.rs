@@ -241,6 +241,7 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
     struct SpawnAgentResult {
         agent_id: String,
         nickname: Option<String>,
+        thread_note: Option<String>,
     }
 
     let (mut session, mut turn) = make_session_and_context().await;
@@ -268,7 +269,8 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
         "spawn_agent",
         function_payload(json!({
             "message": "inspect this repo",
-            "agent_type": "explorer"
+            "agent_type": "explorer",
+            "thread_note": "Repository researcher"
         })),
     );
     let output = SpawnAgentHandler
@@ -285,6 +287,10 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
             .as_deref()
             .is_some_and(|nickname| !nickname.is_empty())
     );
+    assert_eq!(
+        result.thread_note,
+        Some("Назначение: Repository researcher | Компетенции:".to_string())
+    );
     let snapshot = manager
         .get_thread(agent_id)
         .await
@@ -293,6 +299,14 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
         .await;
     assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
     assert_eq!(snapshot.model_provider_id, "ollama");
+    assert_eq!(
+        snapshot.thread_note,
+        Some("Назначение: Repository researcher | Компетенции:".to_string())
+    );
+    assert_eq!(
+        snapshot.session_source.get_thread_note(),
+        Some("Назначение: Repository researcher | Компетенции:".to_string())
+    );
 }
 
 #[tokio::test]
@@ -511,6 +525,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
                 agent_path: Some(child_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -524,6 +539,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         agent_path: Some(child_path.clone()),
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
     });
 
     SendMessageHandlerV2
@@ -676,6 +692,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
                 agent_path: Some(researcher_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -697,6 +714,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
                 agent_path: Some(worker_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -709,6 +727,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
         agent_path: Some(researcher_path),
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
     });
 
     let output = ListAgentsHandlerV2
@@ -1302,6 +1321,7 @@ async fn spawn_agent_rejects_when_depth_limit_exceeded() {
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
     });
 
     let invocation = invocation(
@@ -1342,6 +1362,7 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
     });
 
     let invocation = invocation(
@@ -1706,6 +1727,7 @@ async fn resume_agent_rejects_when_depth_limit_exceeded() {
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
     });
 
     let invocation = invocation(

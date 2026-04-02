@@ -41,8 +41,10 @@ pub use policy::EventPersistenceMode;
 pub use recorder::RolloutRecorder;
 pub use recorder::RolloutRecorderParams;
 pub use session_index::append_thread_name;
+pub use session_index::append_thread_note;
 pub use session_index::find_thread_name_by_id;
 pub use session_index::find_thread_names_by_ids;
+pub use session_index::find_thread_note_by_id;
 pub use session_index::find_thread_path_by_name_str;
 pub use state_db::StateDbHandle;
 

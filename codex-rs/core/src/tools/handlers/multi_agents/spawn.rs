@@ -6,6 +6,7 @@ use crate::agent::role::apply_role_to_config;
 
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
+use codex_protocol::thread_note::normalize_thread_note;
 
 pub(crate) struct Handler;
 
@@ -87,6 +88,7 @@ impl ToolHandler for Handler {
                     child_depth,
                     role_name,
                     /*task_name*/ None,
+                    normalize_thread_note(args.thread_note.as_deref()),
                 )?),
                 SpawnAgentOptions {
                     fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
@@ -94,7 +96,7 @@ impl ToolHandler for Handler {
             )
             .await
             .map_err(collab_spawn_error);
-        let (new_thread_id, new_agent_metadata, status) = match &result {
+        let (new_thread_id, _new_agent_metadata, status) = match &result {
             Ok(spawned_agent) => (
                 Some(spawned_agent.thread_id),
                 Some(spawned_agent.metadata.clone()),
@@ -112,18 +114,22 @@ impl ToolHandler for Handler {
             }
             None => None,
         };
-        let (_new_agent_path, new_agent_nickname, new_agent_role) =
-            match (&agent_snapshot, new_agent_metadata) {
+        let (new_agent_nickname, new_agent_role, new_thread_note) =
+            match (&agent_snapshot, new_thread_id) {
                 (Some(snapshot), _) => (
-                    snapshot.session_source.get_agent_path().map(String::from),
                     snapshot.session_source.get_nickname(),
                     snapshot.session_source.get_agent_role(),
+                    snapshot
+                        .thread_note
+                        .clone()
+                        .or_else(|| snapshot.session_source.get_thread_note()),
                 ),
-                (None, Some(metadata)) => (
-                    metadata.agent_path.map(String::from),
-                    metadata.agent_nickname,
-                    metadata.agent_role,
-                ),
+                (None, Some(thread_id)) => session
+                    .services
+                    .agent_control
+                    .get_agent_nickname_role_and_thread_note(thread_id)
+                    .await
+                    .unwrap_or((None, None, None)),
                 (None, None) => (None, None, None),
             };
         let effective_model = agent_snapshot
@@ -144,6 +150,7 @@ impl ToolHandler for Handler {
                     new_thread_id,
                     new_agent_nickname,
                     new_agent_role,
+                    new_thread_note: new_thread_note.clone(),
                     prompt,
                     model: effective_model,
                     reasoning_effort: effective_reasoning_effort,
@@ -163,6 +170,7 @@ impl ToolHandler for Handler {
         Ok(SpawnAgentResult {
             agent_id: new_thread_id.to_string(),
             nickname,
+            thread_note: new_thread_note,
         })
     }
 }
@@ -172,6 +180,7 @@ struct SpawnAgentArgs {
     message: Option<String>,
     items: Option<Vec<UserInput>>,
     agent_type: Option<String>,
+    thread_note: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
     #[serde(default)]
@@ -182,6 +191,7 @@ struct SpawnAgentArgs {
 pub(crate) struct SpawnAgentResult {
     agent_id: String,
     nickname: Option<String>,
+    thread_note: Option<String>,
 }
 
 impl ToolOutput for SpawnAgentResult {

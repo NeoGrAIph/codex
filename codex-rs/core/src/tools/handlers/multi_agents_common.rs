@@ -26,8 +26,8 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
-pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = 10_000;
-pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
+pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = 10 * 1000;
+pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 600 * 1000;
 pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = 3600 * 1000;
 
 pub(crate) fn function_arguments(payload: ToolPayload) -> Result<String, FunctionCallError> {
@@ -139,6 +139,7 @@ pub(crate) fn thread_spawn_source(
     depth: i32,
     agent_role: Option<&str>,
     task_name: Option<String>,
+    thread_note: Option<String>,
 ) -> Result<SessionSource, FunctionCallError> {
     let agent_path = task_name
         .as_deref()
@@ -156,6 +157,7 @@ pub(crate) fn thread_spawn_source(
         agent_path,
         agent_nickname: None,
         agent_role: agent_role.map(str::to_string),
+        thread_note,
     }))
 }
 

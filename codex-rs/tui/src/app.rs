@@ -8274,6 +8274,7 @@ guardian_approval = true
             cwd: PathBuf::from("/tmp/agent"),
             current_date: None,
             timezone: None,
+            thread_note: None,
             approval_policy: primary_session.approval_policy,
             sandbox_policy: primary_session.sandbox_policy.clone(),
             network: None,

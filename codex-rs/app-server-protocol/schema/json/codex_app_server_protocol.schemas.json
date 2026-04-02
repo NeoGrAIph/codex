@@ -4925,9 +4925,6 @@
         "title": "AgentMessageDeltaNotification",
         "type": "object"
       },
-      "AgentPath": {
-        "type": "string"
-      },
       "AnalyticsConfig": {
         "additionalProperties": true,
         "properties": {
@@ -5691,6 +5688,18 @@
       },
       "CollabAgentState": {
         "properties": {
+          "agentNickname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "agentRole": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "message": {
             "type": [
               "string",
@@ -5699,6 +5708,12 @@
           },
           "status": {
             "$ref": "#/definitions/v2/CollabAgentStatus"
+          },
+          "threadNote": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -11827,17 +11842,6 @@
                       "string",
                       "null"
                     ]
-                  },
-                  "agent_path": {
-                    "anyOf": [
-                      {
-                        "$ref": "#/definitions/v2/AgentPath"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ],
-                    "default": null
                   },
                   "agent_role": {
                     "default": null,

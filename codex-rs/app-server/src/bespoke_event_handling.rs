@@ -159,6 +159,19 @@ struct CommandExecutionCompletionItem {
     command_actions: Vec<V2ParsedCommand>,
 }
 
+fn collab_agent_state_with_metadata(
+    status: codex_protocol::protocol::AgentStatus,
+    agent_nickname: Option<String>,
+    agent_role: Option<String>,
+    thread_note: Option<String>,
+) -> V2CollabAgentStatus {
+    let mut state = V2CollabAgentStatus::from(status);
+    state.agent_nickname = agent_nickname;
+    state.agent_role = agent_role;
+    state.thread_note = thread_note;
+    state
+}
+
 async fn resolve_server_request_on_thread_listener(
     thread_state: &Arc<Mutex<ThreadState>>,
     request_id: RequestId,
@@ -1040,7 +1053,12 @@ pub(crate) async fn apply_bespoke_event_handling(
             let (receiver_thread_ids, agents_states) = match end_event.new_thread_id {
                 Some(id) => {
                     let receiver_id = id.to_string();
-                    let received_status = V2CollabAgentStatus::from(end_event.status.clone());
+                    let received_status = collab_agent_state_with_metadata(
+                        end_event.status.clone(),
+                        end_event.new_agent_nickname.clone(),
+                        end_event.new_agent_role.clone(),
+                        end_event.new_thread_note.clone(),
+                    );
                     (
                         vec![receiver_id.clone()],
                         [(receiver_id, received_status)].into_iter().collect(),
@@ -1097,7 +1115,12 @@ pub(crate) async fn apply_bespoke_event_handling(
                 _ => V2CollabToolCallStatus::Completed,
             };
             let receiver_id = end_event.receiver_thread_id.to_string();
-            let received_status = V2CollabAgentStatus::from(end_event.status);
+            let received_status = collab_agent_state_with_metadata(
+                end_event.status,
+                end_event.receiver_agent_nickname,
+                end_event.receiver_agent_role,
+                end_event.receiver_thread_note,
+            );
             let item = ThreadItem::CollabAgentToolCall {
                 id: end_event.call_id,
                 tool: CollabAgentTool::SendInput,
@@ -1158,9 +1181,19 @@ pub(crate) async fn apply_bespoke_event_handling(
             };
             let receiver_thread_ids = end_event.statuses.keys().map(ToString::to_string).collect();
             let agents_states = end_event
-                .statuses
+                .agent_statuses
                 .iter()
-                .map(|(id, status)| (id.to_string(), V2CollabAgentStatus::from(status.clone())))
+                .map(|entry| {
+                    (
+                        entry.thread_id.to_string(),
+                        collab_agent_state_with_metadata(
+                            entry.status.clone(),
+                            entry.agent_nickname.clone(),
+                            entry.agent_role.clone(),
+                            None,
+                        ),
+                    )
+                })
                 .collect();
             let item = ThreadItem::CollabAgentToolCall {
                 id: end_event.call_id,
@@ -1221,7 +1254,12 @@ pub(crate) async fn apply_bespoke_event_handling(
             let receiver_id = end_event.receiver_thread_id.to_string();
             let agents_states = [(
                 receiver_id.clone(),
-                V2CollabAgentStatus::from(end_event.status),
+                collab_agent_state_with_metadata(
+                    end_event.status,
+                    end_event.receiver_agent_nickname,
+                    end_event.receiver_agent_role,
+                    None,
+                ),
             )]
             .into_iter()
             .collect();
@@ -2760,7 +2798,12 @@ fn collab_resume_end_item(end_event: codex_protocol::protocol::CollabResumeEndEv
     let receiver_id = end_event.receiver_thread_id.to_string();
     let agents_states = [(
         receiver_id.clone(),
-        V2CollabAgentStatus::from(end_event.status),
+        collab_agent_state_with_metadata(
+            end_event.status,
+            end_event.receiver_agent_nickname,
+            end_event.receiver_agent_role,
+            None,
+        ),
     )]
     .into_iter()
     .collect();
