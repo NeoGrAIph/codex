@@ -80,6 +80,9 @@ Icon?
 .yarn/
 yarn.lock
 
+# Fork-local generated lockfile noise
+codex-rs/Cargo.lock
+
 # release
 package.json-e
 session.ts-e

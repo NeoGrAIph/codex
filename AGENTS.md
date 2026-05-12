@@ -54,6 +54,80 @@ In the codex-rs folder where the rust code lives:
     trivial; prefer new modules/files and keep `chatwidget.rs` focused on orchestration.
 - When running Rust commands (e.g. `just fix` or `cargo test`) be patient with the command and never try to kill them using the PID. Rust lock can make the execution slow, this is expected.
 
+## Fork Feature Delivery Contract
+
+- Treat each fork feature as a documented contract, not as an implicit code-only customization.
+- Use `docs/fork/CONTRIBUTING.md` as the practical authoring guide for fork docs; `AGENTS.md`
+  remains the policy source of truth.
+- Every new fork feature or material fork behavior change must ship with `docs/fork/features/<code-name>.md`.
+- For non-trivial fork features, add `docs/fork/projects/<code-name>/` as the implementation dossier.
+- Every fork implementation aligned to a release baseline must also maintain `docs/fork/research/<release>/` as an active research package.
+- If API, wire shape, config semantics, TUI behavior, or operational behavior changes, update the relevant user/developer docs in the same change set.
+
+Minimum requirements for `docs/fork/features/<code-name>.md`:
+
+- Feature passport: code name, status, goal, scope in/out.
+- User contract: exact behavior, transitions, empty/error states, and critical strings where wording matters.
+- Integration and compatibility notes: what remains upstream behavior, what is fork-specific, and what intentionally diverges.
+- Verification matrix: required commands/tests and the surfaces they validate.
+- Doc changelog: concise dated entries when contract or implementation expectations change.
+
+Minimum requirements for `docs/fork/projects/<code-name>/`:
+
+- `README.md`: entry point, current status, canonical links, and a compact map of the implementation surfaces.
+- `design.md`: canonical state, projections, data flow, invariants, and intentional implementation tradeoffs.
+- `verification.md`: scenario-focused test matrix, validation commands, and known coverage gaps.
+
+Minimum requirements for `docs/fork/research/<release>/`:
+
+- baseline release/tag and commit reference;
+- gap analysis between upstream baseline and fork behavior;
+- notes for risky integration points and conflict-prone source-of-truth files;
+- release-specific verification notes for the changed contract.
+
+## Fork Release Branching
+
+- When starting work against a new upstream release, create the branch pair from the release tag or release commit itself, not from the current fork working branch.
+- Resolve the upstream release commit from the canonical release tag format `rust-vX.Y.Z` and use the dereferenced commit object (`^{}` for annotated tags) as the branch point.
+- Create a local baseline branch named `fork/<major-minor>-upstream` that points exactly at that upstream release commit and keep it unchanged as the local source-of-truth baseline for the release.
+- Create the working branch named `fork/<major-minor>` from the same upstream release commit and configure its git upstream to the local `fork/<major-minor>-upstream` branch.
+- The canonical local setup is:
+  - `git branch fork/<major-minor>-upstream <release-commit>`
+  - `git switch -C fork/<major-minor> <release-commit>`
+  - `git branch --set-upstream-to fork/<major-minor>-upstream fork/<major-minor>`
+- Verify the relationship before doing fork work:
+  - `git rev-parse --abbrev-ref --symbolic-full-name @{u}` must print `fork/<major-minor>-upstream`.
+  - `git status --short --branch` must show `fork/<major-minor>...fork/<major-minor>-upstream`.
+- Do not configure the working fork branch to track `origin/*` or `upstream/*` directly for release-baseline comparisons; the local `fork/<major-minor>-upstream` branch is the canonical baseline.
+- Treat `fork/<major-minor>..fork/<major-minor>-upstream` as the default comparison range for local fork work on that release.
+- Example for release `0.118.0`: create `fork/118-upstream` and `fork/118` from `rust-v0.118.0^{}`, then set the upstream of `fork/118` to `fork/118-upstream`.
+
+## Fork Feature Integration Rules
+
+- Use an `Upstream-first` approach by default: prefer the target release's architecture, control flow, and source-of-truth patterns as the baseline.
+- Prefer additive and localized fork changes when that keeps maintenance and reasoning simpler.
+- If a fork feature must modify an existing upstream-owned path directly, document the tradeoff in the feature doc instead of treating the divergence as self-evident.
+- Preserve existing upstream behavior by default. If existing behavior must change, document that change explicitly as part of the fork contract.
+- Do not introduce silent fallback behavior, hidden branching, or compatibility shims for fork logic without documenting why they exist and how they are validated.
+- When choosing between a literal backport and an upstream-shaped adaptation, prefer the upstream-shaped implementation unless it would break a documented fork contract.
+
+## Compatibility And Regression Gates
+
+- Every fork feature change must include evidence for the new behavior and for the most important existing path that could regress because of the change.
+- If protocol, schema, state, or config contracts change, regenerate the canonical artifacts in the same change set and keep generated diffs minimal.
+- If a regenerated artifact differs only by formatting, ordering noise, or trailing whitespace without a real contract change, revert it and keep only meaningful generated deltas.
+- If fork work changes app-server protocol or behavior, document the affected client surfaces, stable vs experimental classification, and the compatibility matrix between separately distributed client versions and app-server/schema versions.
+- If fork work regenerates `insta` snapshots, accept them through the normal `cargo insta review` / `cargo insta accept` flow. Do not manually rename `.snap.new` files into `.snap`, and do not keep review-only metadata such as `assertion_line` in final accepted snapshots.
+- Do not treat "tests passed" as sufficient on its own; ensure the feature docs and affected public docs reflect the implemented contract.
+- Before finalizing, confirm that the fork change still has one clear source of truth, one baseline release context, and one documented explanation for any intentional upstream divergence.
+
+## Porting Decision Record
+
+- Before implementing or porting a fork feature, record the upstream baseline and the expected fork gap in `docs/fork/research/<release>/`.
+- Before changing source-of-truth files, decide whether the target behavior is a literal port or an upstream-shaped adaptation, and capture that choice in the feature/research docs.
+- After implementation, verify contract surfaces explicitly: protocol/wire behavior, runtime behavior, UI/API text, generated artifacts, and persistence/config semantics when applicable.
+- If the final implementation differs materially from the historical fork commit because of upstream adaptation, document the reason so future ports do not re-open the same decision.
+
 Run `just fmt` (in `codex-rs` directory) automatically after you have finished making Rust code changes; do not ask for approval to run it. Additionally, run the tests:
 
 1. Run the test for the specific project that was changed. For example, if changes were made in `codex-rs/tui`, run `cargo test -p codex-tui`.
@@ -175,9 +249,17 @@ If you don’t have the tool:
 
 These guidelines apply to app-server protocol work in `codex-rs`, especially:
 
-- `app-server-protocol/src/protocol/common.rs`
-- `app-server-protocol/src/protocol/v2.rs`
+- `app-server-protocol/src/protocol/common.rs` for JSON-RPC method/notification wiring and experimental gating.
+- `app-server-protocol/src/protocol/v2/` for v2 payload types.
 - `app-server/README.md`
+
+### Client Compatibility Contract
+
+- Treat the stable `codex app-server` wire/API surface as a public contract for Codex app clients.
+- Preserve compatibility for existing stable clients by default: keep wire names, payload types, field optionality, method semantics, notifications, and legacy compatibility projections stable unless a documented fork contract explicitly requires otherwise.
+- Do not make breaking stable app-server changes without a fork-governance decision, a documented deprecation or compatibility path, and a client compatibility matrix.
+- Prefer additive app-server changes. Put risky, fork-specific, or unstable capabilities behind `experimentalApi` instead of changing stable behavior.
+- Production clients must not enable `initialize.params.capabilities.experimentalApi` by default; opt in only for an owned integration with tests and a rollback path.
 
 ### Core Rules
 
@@ -186,7 +268,7 @@ These guidelines apply to app-server protocol work in `codex-rs`, especially:
   `*Params` for request payloads, `*Response` for responses, and `*Notification` for notifications.
 - Expose RPC methods as `<resource>/<method>` and keep `<resource>` singular (for example, `thread/read`, `app/list`).
 - Always expose fields as camelCase on the wire with `#[serde(rename_all = "camelCase")]` unless a tagged union or explicit compatibility requirement needs a targeted rename.
-- Exception: config RPC payloads are expected to use snake_case to mirror config.toml keys (see the config read/write/list APIs in `app-server-protocol/src/protocol/v2.rs`).
+- Exception: config RPC payloads are expected to use snake_case to mirror config.toml keys (see the config read/write/list APIs in `app-server-protocol/src/protocol/v2/`).
 - Always set `#[ts(export_to = "v2/")]` on v2 request/response/notification types so generated TypeScript lands in the correct namespace.
 - Never use `#[serde(skip_serializing_if = "Option::is_none")]` for v2 API payload fields.
   Exception: client->server requests that intentionally have no params may use:
@@ -198,6 +280,8 @@ These guidelines apply to app-server protocol work in `codex-rs`, especially:
 - Timestamps should be integer Unix seconds (`i64`) and named `*_at` (for example, `created_at`, `updated_at`, `resets_at`).
 - For experimental API surface area:
   use `#[experimental("method/or/field")]`, derive `ExperimentalApi` when field-level gating is needed, and use `inspect_params: true` in `common.rs` when only some fields of a method are experimental.
+- Experimental methods, fields, and enum variants must be rejected or omitted for clients that did not opt into `initialize.params.capabilities.experimentalApi = true`.
+- For server-initiated requests or notifications, annotate experimental payload fields the same way and ensure app-server does not send those fields to non-opted-in clients.
 
 ### Client->server request payloads (`*Params`)
 
@@ -215,5 +299,6 @@ These guidelines apply to app-server protocol work in `codex-rs`, especially:
   `just write-app-server-schema`
   (and `just write-app-server-schema --experimental` when experimental API fixtures are affected).
 - Validate with `cargo test -p codex-app-server-protocol`.
+- For app-server runtime behavior changes, add or run focused app-server suite tests that cover stable clients without `experimentalApi`; also cover opted-in experimental clients when the change affects experimental surface.
 - Avoid boilerplate tests that only assert experimental field markers for individual
   request fields in `common.rs`; rely on schema generation/tests and behavioral coverage instead.
