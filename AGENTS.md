@@ -60,9 +60,17 @@ In the codex-rs folder where the rust code lives:
 - Use `docs/fork/CONTRIBUTING.md` as the practical authoring guide for fork docs; `AGENTS.md`
   remains the policy source of truth.
 - Every new fork feature or material fork behavior change must ship with `docs/fork/features/<code-name>.md`.
-- For non-trivial fork features, add `docs/fork/projects/<code-name>/` as the implementation dossier.
+- Every new fork feature or material fork behavior change must ship with
+  `docs/fork/projects/<code-name>/` as the implementation dossier.
 - Every fork implementation aligned to a release baseline must also maintain `docs/fork/research/<release>/` as an active research package.
 - If API, wire shape, config semantics, TUI behavior, or operational behavior changes, update the relevant user/developer docs in the same change set.
+- Do not add database columns or migrations for fork features unless the feature contract proves that
+  session/thread JSON metadata, rollout/session files, or another existing backward-compatible
+  persisted structure cannot represent the state safely.
+- Keep old sessions and persisted data readable. Missing new fields in older persisted data must have
+  documented behavior.
+- Do not include unrelated diffs, generated noise, build hashes, lockfile changes, or docs for
+  unrelated features. Keep `Cargo.lock` untouched unless dependency changes explicitly require it.
 
 Minimum requirements for `docs/fork/features/<code-name>.md`:
 
@@ -84,6 +92,36 @@ Minimum requirements for `docs/fork/research/<release>/`:
 - gap analysis between upstream baseline and fork behavior;
 - notes for risky integration points and conflict-prone source-of-truth files;
 - release-specific verification notes for the changed contract.
+
+## Quality-First Fork Feature Workflow
+
+Use this workflow for every fork feature or material fork behavior change:
+
+1. Research the current upstream baseline and integration points before changing source files.
+2. Define the contract: goal, scope in/out, canonical source of truth, affected subsystems,
+   compatibility expectations, permissions/security implications, persistence behavior, failure
+   modes, and no-fallback rules.
+3. Build an integration map covering parsing/schema, config loading, runtime state,
+   permissions/sandbox, environment selection, persistence, resume/restart, events/API/UI
+   projections, tests, and docs.
+4. Create or update the verification matrix before finalizing the implementation.
+5. Implement in small coherent slices and keep each changed line traceable to the feature contract.
+6. Run focused tests/checks for the feature and the affected integration points.
+7. Use sub-agents for independent review. Prefer reusing an existing free agent
+   with the appropriate or adjacent role/context before spawning a new one.
+8. Run an architecture/contract audit before completion. Also run a permissions/security/runtime
+   audit when the feature touches cwd, execution, sandbox, config, persistence, or resume behavior.
+9. Fix all High and Medium audit findings before completing the feature. A High or Medium finding may
+   remain only with explicit owner approval, and the feature is blocked until that approval and the
+   deferred risk are documented in the feature dossier.
+10. Commit only the implemented, audited, documented, and verified feature before starting the next
+    feature.
+
+Completion requires evidence that new behavior is tested, important upstream behavior that could
+regress is covered or explicitly verified, security boundaries include positive and negative
+assertions, standard access policies still work without widened permissions, runtime/config/
+persistence/resume state remains consistent, docs match the implemented contract, `git diff --check`
+passes, and the relevant project checks from this file pass.
 
 ## Fork Release Branching
 
@@ -108,7 +146,9 @@ Minimum requirements for `docs/fork/research/<release>/`:
 - Prefer additive and localized fork changes when that keeps maintenance and reasoning simpler.
 - If a fork feature must modify an existing upstream-owned path directly, document the tradeoff in the feature doc instead of treating the divergence as self-evident.
 - Preserve existing upstream behavior by default. If existing behavior must change, document that change explicitly as part of the fork contract.
-- Do not introduce silent fallback behavior, hidden branching, or compatibility shims for fork logic without documenting why they exist and how they are validated.
+- Do not introduce silent fallback behavior for fork logic. Any fallback must be explicit,
+  controlled, observable to the caller or operator, documented in the feature contract, and covered
+  by verification.
 - When choosing between a literal backport and an upstream-shaped adaptation, prefer the upstream-shaped implementation unless it would break a documented fork contract.
 
 ## Compatibility And Regression Gates
