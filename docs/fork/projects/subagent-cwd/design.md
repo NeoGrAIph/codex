@@ -31,15 +31,19 @@ the observation surfaces for effective cwd.
    - load user/project cwd-scoped layers from the child cwd;
    - preserve session layers intentionally;
    - preserve runtime-owned model/provider/reasoning, base instructions, developer instructions,
-     compact prompt, approval policy, shell environment policy, and sandbox executable;
-   - preserve runtime model/session state, but use child cwd config/role permission state instead
-     of copying the parent concrete `turn.permission_profile()`.
+     compact prompt, approval policy, shell environment policy, sandbox executable, and current
+     legacy-compatible permission intent;
+   - rebase current permission intent from parent cwd to child cwd instead of copying the parent
+     concrete `turn.permission_profile()` as a raw ACL.
    - do not carry parent shell snapshot or cwd-bound exec policy as concrete state when child cwd
      differs; rebuild them for the child cwd or omit them so session startup computes child-owned
      state.
 6. Apply requested model/reasoning overrides.
 7. Apply role config after child cwd rebuild.
-8. Apply runtime policy overrides that do not reset `config.cwd` to parent `turn.cwd`.
+8. Apply runtime policy overrides that do not reset `config.cwd` to parent `turn.cwd`; for explicit
+   cwd, convert the parent turn permission profile to a legacy sandbox policy at parent cwd and
+   rebuild it at child cwd. If that projection fails, return a controlled error instead of falling
+   back to parent cwd or child config permissions.
 9. Apply spawn depth/thread overrides.
 10. Spawn:
     - omitted cwd -> keep current `Some(turn.environments.to_selections())`;
@@ -56,6 +60,8 @@ the observation surfaces for effective cwd.
 - Child cwd may be outside parent workspace.
 - Child cwd is not auto-trusted.
 - Explicit child cwd does not copy parent concrete runtime ACL.
+- Current workspace-write grants write access to child cwd and not parent cwd.
+- Current read-only remains read-only even when child config would otherwise allow workspace-write.
 - Parent environment cwd is not inherited for explicit cwd.
 - Parent shell snapshot and cwd-bound exec policy are not inherited for explicit cwd.
 - Stored cwd resume failure is a hard error, not a fallback to caller cwd.
@@ -71,7 +77,9 @@ the observation surfaces for effective cwd.
 - Add a shared resolver/validator in the multi-agent spawn path, not in app-server request
   processors.
 - Split or replace `apply_spawn_agent_runtime_overrides()` for explicit cwd so it cannot assign
-  `config.cwd = turn.cwd.clone()`.
+  `config.cwd = turn.cwd.clone()` and cannot rely solely on child config permissions.
+- Rebase legacy-compatible current permissions with `to_legacy_sandbox_policy(parent_cwd)` followed
+  by `from_legacy_sandbox_policy_for_cwd(child_cwd)`. Do not raw-copy concrete parent roots.
 - Audit `AgentControl` shell snapshot and exec policy inheritance. If child cwd differs from the
   parent turn cwd, do not pass parent cwd-derived snapshot/policy into the child thread.
 - Add a child-cwd config rebuild helper in `Config` or adjacent config code. Do not call
@@ -96,6 +104,8 @@ the observation surfaces for effective cwd.
 - `cwd` points to a file: controlled model-facing error before any child thread is created.
 - `cwd` cannot be stat-ed: controlled model-facing error before any child thread is created.
 - child config rebuild fails: controlled model-facing error, no fallback to parent cwd.
+- current permission profile cannot be projected for explicit cwd: controlled model-facing error,
+  no fallback to parent cwd or child config permissions.
 - stored child cwd cannot be restored during resume: controlled error with no fallback to caller cwd.
 - shell snapshot or exec policy cannot be rebuilt for child cwd: controlled error if required by
   the selected runtime path; otherwise omit inherited state and let session startup recompute it.

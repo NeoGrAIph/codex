@@ -54,6 +54,10 @@ App-server v2 находится в `codex-rs/app-server-protocol/src/protocol/v
 
 - Input contract gap: `spawn_agent` не принимает `cwd`; v2 с `deny_unknown_fields` будет reject unknown `cwd`, а v1 проигнорирует unknown на deserialize path при несовпадении со schema expectations.
 - Runtime source-of-truth gap: current child config всегда получает `turn.cwd` через `apply_spawn_agent_runtime_overrides()`.
+- Permission intent gap: explicit child cwd rebuild can drop the parent turn's current
+  legacy-compatible permission intent. `Default`/workspace-write selected at runtime must be
+  rebased to child cwd; relying only on child config can degrade to read-only for an otherwise
+  valid child agent.
 - Config loading gap: shallow mutation `config.cwd` не перезагружает cwd-scoped project config, trust/project policy, plugins/MCP/hooks/skills/AGENTS-derived layers и relative-path-derived settings.
 - Resolver gap: существующий config loader relative cwd резолвит от process cwd, а контракт требует parent `turn.cwd`.
 - Validation gap: `AbsolutePathBuf` не проверяет on-disk directory, значит nonexistent/file cwd должны fail fast отдельной проверкой до spawn.
@@ -84,6 +88,10 @@ App-server v2 находится в `codex-rs/app-server-protocol/src/protocol/v
   - apply role config after child cwd rebuild, so `role.config_file` and project scoped role effects are evaluated against the child config state
   - apply explicit spawn overrides last
 - Изменить runtime overrides так, чтобы explicit child cwd не перезаписывался обратно в parent `turn.cwd`. Практичный вариант: split helper на "runtime policy overrides" и "cwd override", либо передавать resolved cwd как параметр.
+- Для explicit child cwd не raw-copy parent `turn.permission_profile()`. Минимальный безопасный
+  вариант для current permissions: project parent profile into legacy `SandboxPolicy` at parent cwd,
+  then rebuild `PermissionProfile::from_legacy_sandbox_policy_for_cwd(...)` at child cwd. Это
+  сохраняет workspace-write/read-only intent и не делает parent cwd writable.
 - Аккуратно обработать environments:
   - omitted `cwd` должен сохранить текущее inherited environment behavior: `Some(turn.environments.to_selections())`
   - explicit `cwd` не должен напрямую наследовать parent environment selections

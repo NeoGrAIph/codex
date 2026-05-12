@@ -21,6 +21,15 @@ pub(super) fn snapshot_has_pending_interactive_request(snapshot: &ThreadEventSna
     })
 }
 
+pub(super) fn snapshot_has_guardian_warning(snapshot: &ThreadEventSnapshot) -> bool {
+    snapshot.events.iter().any(|event| {
+        matches!(
+            event,
+            ThreadBufferedEvent::Notification(ServerNotification::GuardianWarning(_))
+        )
+    })
+}
+
 pub(super) fn event_is_notice(event: &ThreadBufferedEvent) -> bool {
     matches!(
         event,

@@ -46,8 +46,8 @@ session root while preserving upstream behavior when omitted.
 - Effective `cwd` is not returned in model-facing spawn output.
 - Hidden metadata mode keeps `cwd` available as an input field.
 - Explicit `cwd` rebuilds child config before role config is applied.
-- Explicit `cwd` preserves runtime policy selections, but recomputes cwd-derived permission state
-  for the child cwd.
+- Explicit `cwd` preserves runtime policy selections and rebases the current legacy-compatible
+  permission intent to the child cwd instead of copying parent concrete ACLs.
 - Explicit `cwd` uses `environments: None` so environment selections are child-rooted.
 - Explicit `cwd` does not reuse parent cwd-bound shell snapshot or exec policy as concrete child
   state.

@@ -15,13 +15,16 @@
 | Failure | File path `cwd` | Controlled error before child thread creation |
 | Failure | Inaccessible/stat-failing `cwd` | Controlled error before child thread creation |
 | Failure | Child config rebuild fails | Controlled error with no fallback to parent cwd |
+| Failure | Current permission profile cannot project to legacy sandbox policy | Controlled error with no fallback to parent cwd or child config permissions |
 | Forking | Legacy explicit cwd with `fork_context: true` | `cwd cannot be combined with fork_context in this release.` |
 | Forking | MultiAgentV2 explicit cwd with omitted `fork_turns` | Controlled error because omitted defaults to `all` |
 | Forking | MultiAgentV2 explicit cwd with `fork_turns: "all"` or positive integer | Controlled fork conflict error |
 | Forking | MultiAgentV2 explicit cwd with `fork_turns: "none"` | Accepted when cwd is valid |
 | Runtime | Child first turn | `Config.cwd`, `TurnContext.cwd`, and effective session cwd equal resolved child cwd |
-| Runtime | Permission profile | Filesystem policy comes from child cwd config/role state; child cwd is not auto-trusted |
-| Runtime | Parent ACL | Explicit cwd does not copy parent concrete runtime permission profile |
+| Runtime | Permission profile | Current legacy-compatible permission intent is rebased to child cwd; child cwd is not auto-trusted |
+| Runtime | Workspace-write | Current workspace-write allows child cwd writes and not parent cwd writes |
+| Runtime | Read-only | Current read-only remains read-only even if child config allows workspace-write |
+| Runtime | Parent ACL | Explicit cwd does not copy parent concrete runtime permission profile as raw ACL |
 | Runtime | Shell snapshot | Child with explicit cwd does not inherit parent cwd-bound shell snapshot |
 | Runtime | Exec policy | Child with explicit cwd does not inherit parent cwd-bound exec policy as concrete state |
 | Config | Child project config | Loaded from child cwd, not parent cwd |
@@ -63,11 +66,12 @@ Do not run or update TUI snapshots for v1 unless a later change adds user-visibl
 - The model-facing `spawn_agent` result does not echo effective cwd in v1 to avoid absolute path
   disclosure.
 - Current focused implementation coverage validates fork conflicts, file-path rejection, relative
-  cwd runtime propagation, environment cwd, parent permission-profile non-inheritance, parent
-  exec-policy manager non-inheritance, child workspace-write policy shape, parent cwd
-  non-writeability, successful resume from stored child cwd, and resume fail-fast for missing stored
-  cwd. Additional outside-workspace, inaccessible-path, role-config-from-child-cwd, and shell
-  snapshot non-inheritance scenarios remain follow-up coverage items.
+  cwd runtime propagation, environment cwd, current workspace-write rebase to child cwd, current
+  read-only preservation, parent permission-profile raw ACL non-inheritance, parent exec-policy
+  manager non-inheritance, child workspace-write policy shape, parent cwd non-writeability,
+  successful resume from stored child cwd, and resume fail-fast for missing stored cwd. Additional
+  outside-workspace, inaccessible-path, role-config-from-child-cwd, shell snapshot
+  non-inheritance, and explicit grandchild-cwd resume scenarios remain follow-up coverage items.
 
 ## Regression Focus
 

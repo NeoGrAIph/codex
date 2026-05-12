@@ -2009,7 +2009,7 @@ async fn multi_agent_v2_spawn_agent_ignores_configured_max_depth() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_spawn_uses_explicit_relative_cwd_without_parent_permissions() {
+async fn multi_agent_v2_spawn_uses_explicit_relative_cwd_with_current_permissions() {
     #[derive(Debug, Deserialize)]
     struct SpawnAgentResult {
         task_name: String,
@@ -2021,18 +2021,13 @@ async fn multi_agent_v2_spawn_uses_explicit_relative_cwd_without_parent_permissi
     turn.cwd = parent_cwd.abs();
     let child_cwd = turn.cwd.join("child-cwd");
     std::fs::create_dir_all(child_cwd.as_path()).expect("child cwd should be created");
-    std::fs::create_dir_all(turn.config.codex_home.as_path()).expect("codex home should exist");
-    std::fs::write(
-        turn.config.codex_home.as_path().join("config.toml"),
-        r#"sandbox_mode = "workspace-write"
-
-[sandbox_workspace_write]
-exclude_tmpdir_env_var = true
-exclude_slash_tmp = true
-"#,
-    )
-    .expect("child cwd config should be written");
-    turn.permission_profile = PermissionProfile::Disabled;
+    let current_permission_profile = PermissionProfile::workspace_write_with(
+        &[],
+        NetworkSandboxPolicy::Restricted,
+        /*exclude_tmpdir_env_var*/ true,
+        /*exclude_slash_tmp*/ true,
+    );
+    turn.permission_profile = current_permission_profile.clone();
     turn.developer_instructions = Some("live developer instructions".to_string());
     turn.compact_prompt = Some("live compact prompt".to_string());
 
@@ -2105,10 +2100,14 @@ exclude_slash_tmp = true
     );
     let snapshot = child_thread.config_snapshot().await;
     assert_eq!(snapshot.cwd, child_cwd);
-    assert_ne!(
-        snapshot.permission_profile,
-        PermissionProfile::Disabled,
-        "explicit cwd must not copy the parent's concrete runtime permission profile"
+    assert_eq!(
+        snapshot
+            .permission_profile
+            .to_legacy_sandbox_policy(child_cwd.as_path())
+            .expect("rebased workspace profile should project to legacy policy"),
+        current_permission_profile
+            .to_legacy_sandbox_policy(child_cwd.as_path())
+            .expect("workspace profile should project to legacy policy")
     );
     let child_turn = child_thread.codex.session.new_default_turn().await;
     assert_eq!(child_turn.cwd, child_cwd);
@@ -2140,13 +2139,92 @@ exclude_slash_tmp = true
         child_turn
             .file_system_sandbox_policy()
             .can_write_path_with_cwd(child_cwd.join("child.txt").as_path(), child_cwd.as_path()),
-        "workspace-write role should grant write access to the child cwd"
+        "current workspace-write should grant write access to the child cwd"
     );
     assert!(
         !child_turn
             .file_system_sandbox_policy()
             .can_write_path_with_cwd(parent_cwd.join("parent.txt").as_path(), child_cwd.as_path()),
         "explicit child cwd must not make the parent cwd writable"
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_explicit_relative_cwd_preserves_current_read_only_permissions() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        task_name: String,
+        nickname: Option<String>,
+    }
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let parent_cwd = tempfile::tempdir().expect("parent cwd");
+    turn.cwd = parent_cwd.abs();
+    let child_cwd = turn.cwd.join("child-cwd");
+    std::fs::create_dir_all(child_cwd.as_path()).expect("child cwd should be created");
+    std::fs::create_dir_all(turn.config.codex_home.as_path()).expect("codex home should exist");
+    std::fs::write(
+        turn.config.codex_home.as_path().join("config.toml"),
+        r#"sandbox_mode = "workspace-write"
+"#,
+    )
+    .expect("child cwd config should be written");
+    turn.permission_profile = PermissionProfile::read_only();
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.conversation_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    turn.config = Arc::new(config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let output = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "task_name": "child",
+                "cwd": "child-cwd",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should accept explicit cwd with fork_turns none");
+    let (content, success) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    assert_eq!(result.task_name, "/root/child");
+    assert!(result.nickname.is_some());
+    assert_eq!(success, Some(true));
+
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.conversation_id, &turn.session_source, "child")
+        .await
+        .expect("relative path should resolve");
+    let child_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    let child_turn = child_thread.codex.session.new_default_turn().await;
+    assert_eq!(child_turn.cwd, child_cwd);
+    assert!(
+        !child_turn
+            .file_system_sandbox_policy()
+            .can_write_path_with_cwd(child_cwd.join("child.txt").as_path(), child_cwd.as_path()),
+        "explicit cwd must not broaden current read-only permissions"
     );
 }
 

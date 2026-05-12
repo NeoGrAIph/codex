@@ -1160,12 +1160,20 @@ impl App {
         snapshot: &mut ThreadEventSnapshot,
     ) {
         let AppServerStartedThread { session, turns } = started;
+        let preserve_ordered_events = replay_filter::snapshot_has_guardian_warning(snapshot);
         if let Some(channel) = self.thread_event_channels.get(&thread_id) {
             let mut store = channel.store.lock().await;
-            store.set_session(session.clone(), turns.clone());
-            store.rebase_buffer_after_session_refresh();
+            if preserve_ordered_events {
+                store.session = Some(session.clone());
+            } else {
+                store.set_session(session.clone(), turns.clone());
+                store.rebase_buffer_after_session_refresh();
+            }
         }
         snapshot.session = Some(session);
+        if preserve_ordered_events {
+            return;
+        }
         snapshot.turns = turns;
         snapshot
             .events

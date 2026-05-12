@@ -49,8 +49,13 @@ Model-facing output remains unchanged:
 - No v1 app-server schema change.
 - Existing `Thread.cwd` and session metadata expose effective cwd to app-server clients.
 - Explicit cwd rebuilds child config before role config is applied.
-- Explicit cwd preserves runtime model/session selections, but permission state is calculated from
-  the child cwd config/role pipeline. Parent concrete runtime permission profiles are not copied.
+- Explicit cwd preserves runtime model/session selections.
+- Legacy-compatible current permission intent is rebased to the child cwd. For example, current
+  workspace-write grants write access to the child cwd, not the parent cwd; current read-only
+  remains read-only even if child config would otherwise allow workspace-write.
+- Current permission profiles that cannot be safely projected through the legacy sandbox policy
+  fail with a controlled error and do not fall back to parent cwd or child config permissions.
+- Parent concrete runtime permission profiles are not copied as raw ACLs.
 - Explicit cwd must not inherit parent shell snapshots or cwd-bound exec policy as concrete state.
   Shell snapshot and exec policy must either be rebuilt for the child cwd or intentionally omitted
   so the child session computes its own state.
@@ -71,6 +76,8 @@ Model-facing output remains unchanged:
 | Resolution | omitted, relative to parent `turn.cwd`, absolute, `..`, outside-workspace |
 | Failure | empty, nonexistent, file path, inaccessible path, config rebuild failure |
 | Runtime | config cwd, turn cwd, sandbox/profile cwd, environment cwd |
+| Runtime | current workspace-write rebases to child cwd and does not write parent cwd |
+| Runtime | current read-only is preserved even when child config allows workspace-write |
 | Runtime | shell snapshot and cwd-bound exec policy are not inherited from parent cwd |
 | Config | child project config and role config load from child cwd |
 | Forking | explicit cwd with forked history returns controlled error |
@@ -79,6 +86,8 @@ Model-facing output remains unchanged:
 
 ## Doc Changelog
 
+- 2026-05-12: Clarified current permission intent rebasing for explicit cwd; no DB schema or OS
+  permission changes are required; non-projectable current permission profiles fail fast.
 - 2026-05-12: Clarified explicit cwd permission inheritance and resume fail-fast behavior.
 - 2026-05-12: Implemented v1 core behavior with focused multi-agent coverage.
 - 2026-05-12: Added shell snapshot and exec policy handling to the runtime contract.

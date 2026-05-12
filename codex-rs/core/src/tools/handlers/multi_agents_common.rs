@@ -14,6 +14,7 @@ use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
@@ -395,10 +396,37 @@ pub(crate) fn apply_spawn_agent_runtime_overrides_for_cwd(
                 })?;
             config.permissions.shell_environment_policy = turn.shell_environment_policy.clone();
             config.codex_linux_sandbox_exe = turn.codex_linux_sandbox_exe.clone();
+            let permission_profile = rebase_spawn_agent_permission_profile(turn, cwd.as_path())?;
             config.cwd = cwd;
+            config
+                .permissions
+                .set_permission_profile(permission_profile)
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!(
+                        "permission_profile is invalid: {err}"
+                    ))
+                })?;
             Ok(())
         }
     }
+}
+
+fn rebase_spawn_agent_permission_profile(
+    turn: &TurnContext,
+    cwd: &Path,
+) -> Result<PermissionProfile, FunctionCallError> {
+    let sandbox_policy = turn
+        .permission_profile()
+        .to_legacy_sandbox_policy(turn.cwd.as_path())
+        .map_err(|err| {
+            FunctionCallError::RespondToModel(format!(
+                "permission_profile cannot be applied to explicit cwd: {err}"
+            ))
+        })?;
+    Ok(PermissionProfile::from_legacy_sandbox_policy_for_cwd(
+        &sandbox_policy,
+        cwd,
+    ))
 }
 
 pub(crate) fn apply_spawn_agent_overrides(config: &mut Config, child_depth: i32) {

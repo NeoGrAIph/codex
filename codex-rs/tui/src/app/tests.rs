@@ -35,6 +35,7 @@ use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::FileChangeRequestApprovalParams;
 use codex_app_server_protocol::FileUpdateChange;
+use codex_app_server_protocol::GuardianWarningNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::McpServerElicitationRequest;
@@ -4955,6 +4956,114 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
     let store_snapshot = store.snapshot();
     assert_eq!(store_snapshot.session, Some(resumed_session));
     assert_eq!(store_snapshot.turns, snapshot.turns);
+}
+
+#[tokio::test]
+async fn refreshed_snapshot_session_preserves_ordered_guardian_warning_events() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    let initial_turns = vec![test_turn(
+        "turn-buffered",
+        TurnStatus::InProgress,
+        vec![ThreadItem::UserMessage {
+            id: "user-buffered".to_string(),
+            content: vec![AppServerUserInput::Text {
+                text: "buffered prompt".to_string(),
+                text_elements: Vec::new(),
+            }],
+        }],
+    )];
+    let initial_session = ThreadSessionState {
+        model: String::new(),
+        rollout_path: None,
+        ..test_thread_session(thread_id, test_path_buf("/tmp/original"))
+    };
+    let mut store = ThreadEventStore::new_with_session(
+        /*capacity*/ 4,
+        initial_session.clone(),
+        initial_turns.clone(),
+    );
+    store.push_notification(ServerNotification::GuardianWarning(
+        GuardianWarningNotification {
+            thread_id: thread_id.to_string(),
+            message: "Auto-review returned a low-risk allow decision.".to_string(),
+        },
+    ));
+    app.thread_event_channels.insert(
+        thread_id,
+        ThreadEventChannel {
+            sender: mpsc::channel(1).0,
+            receiver: None,
+            store: Arc::new(Mutex::new(store)),
+        },
+    );
+
+    let resumed_turns = vec![test_turn(
+        "turn-resumed",
+        TurnStatus::Completed,
+        vec![ThreadItem::UserMessage {
+            id: "user-resumed".to_string(),
+            content: vec![AppServerUserInput::Text {
+                text: "resumed prompt".to_string(),
+                text_elements: Vec::new(),
+            }],
+        }],
+    )];
+    let resumed_session = ThreadSessionState {
+        model: "gpt-5.5".to_string(),
+        rollout_path: Some(PathBuf::from("/tmp/resumed.jsonl")),
+        ..initial_session.clone()
+    };
+    let mut snapshot = {
+        let channel = app
+            .thread_event_channels
+            .get(&thread_id)
+            .expect("thread channel");
+        let store = channel.store.lock().await;
+        store.snapshot()
+    };
+
+    app.apply_refreshed_snapshot_thread(
+        thread_id,
+        AppServerStartedThread {
+            session: resumed_session.clone(),
+            turns: resumed_turns,
+        },
+        &mut snapshot,
+    )
+    .await;
+
+    assert_eq!(snapshot.session, Some(resumed_session.clone()));
+    assert_eq!(snapshot.turns, initial_turns);
+    assert!(
+        matches!(
+            snapshot.events.as_slice(),
+            [ThreadBufferedEvent::Notification(
+                ServerNotification::GuardianWarning(_)
+            )]
+        ),
+        "expected ordered guardian warning event to remain in the replay buffer"
+    );
+
+    let store = app
+        .thread_event_channels
+        .get(&thread_id)
+        .expect("thread channel")
+        .store
+        .lock()
+        .await;
+    let store_snapshot = store.snapshot();
+    assert_eq!(store_snapshot.session, Some(resumed_session));
+    assert_eq!(store_snapshot.turns, snapshot.turns);
+    assert!(
+        matches!(
+            store_snapshot.events.as_slice(),
+            [ThreadBufferedEvent::Notification(
+                ServerNotification::GuardianWarning(_)
+            )]
+        ),
+        "expected store buffer to keep the original guardian warning event"
+    );
 }
 
 #[tokio::test]
