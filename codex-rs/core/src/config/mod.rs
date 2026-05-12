@@ -1143,6 +1143,15 @@ impl Config {
         &self,
         refreshed_config: &Config,
     ) -> std::io::Result<Self> {
+        self.rebuild_preserving_session_layers_for_cwd(refreshed_config, self.cwd.clone())
+            .await
+    }
+
+    pub(crate) async fn rebuild_preserving_session_layers_for_cwd(
+        &self,
+        refreshed_config: &Config,
+        cwd: AbsolutePathBuf,
+    ) -> std::io::Result<Self> {
         let mut layers = refreshed_config
             .config_layer_stack
             .get_layers(
@@ -1186,13 +1195,24 @@ impl Config {
             LOCAL_FS.as_ref(),
             cfg,
             ConfigOverrides {
-                cwd: Some(self.cwd.to_path_buf()),
+                cwd: Some(cwd.to_path_buf()),
                 ..Default::default()
             },
             refreshed_config.codex_home.clone(),
             config_layer_stack,
         )
         .await
+    }
+
+    pub(crate) async fn load_for_cwd(
+        codex_home: PathBuf,
+        cwd: &AbsolutePathBuf,
+    ) -> std::io::Result<Self> {
+        ConfigBuilder::default()
+            .codex_home(codex_home)
+            .fallback_cwd(Some(cwd.to_path_buf()))
+            .build()
+            .await
     }
 
     /// This is the preferred way to create an instance of [Config].

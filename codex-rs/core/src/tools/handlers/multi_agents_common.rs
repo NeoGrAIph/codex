@@ -23,9 +23,13 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use std::future::Future;
+use std::path::Path;
+use std::pin::Pin;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
@@ -211,6 +215,46 @@ pub(crate) fn build_agent_spawn_config(
     Ok(config)
 }
 
+pub(crate) fn build_agent_spawn_config_for_cwd<'a>(
+    base_instructions: &'a BaseInstructions,
+    turn: &'a TurnContext,
+    cwd: SpawnAgentCwd,
+) -> Pin<Box<dyn Future<Output = Result<Config, FunctionCallError>> + Send + 'a>> {
+    Box::pin(async move {
+        match cwd {
+            SpawnAgentCwd::Inherited => build_agent_spawn_config(base_instructions, turn),
+            SpawnAgentCwd::Explicit(cwd) => {
+                let refreshed_config =
+                    Config::load_for_cwd(turn.config.codex_home.to_path_buf(), &cwd)
+                        .await
+                        .map_err(|err| {
+                            FunctionCallError::RespondToModel(format!(
+                                "cwd config rebuild failed for `{}`: {err}",
+                                cwd.display()
+                            ))
+                        })?;
+                let mut config = turn
+                    .config
+                    .rebuild_preserving_session_layers_for_cwd(&refreshed_config, cwd.clone())
+                    .await
+                    .map_err(|err| {
+                        FunctionCallError::RespondToModel(format!(
+                            "cwd config rebuild failed for `{}`: {err}",
+                            cwd.display()
+                        ))
+                    })?;
+                apply_spawn_agent_runtime_overrides_for_cwd(
+                    &mut config,
+                    turn,
+                    SpawnAgentCwd::Explicit(cwd),
+                )?;
+                config.base_instructions = Some(base_instructions.text.clone());
+                Ok(config)
+            }
+        }
+    })
+}
+
 pub(crate) fn build_agent_resume_config(
     turn: &TurnContext,
     child_depth: i32,
@@ -225,6 +269,13 @@ pub(crate) fn build_agent_resume_config(
 fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallError> {
     let base_config = turn.config.clone();
     let mut config = (*base_config).clone();
+    apply_spawn_agent_runtime_state(&mut config, turn);
+    apply_spawn_agent_runtime_overrides(&mut config, turn)?;
+
+    Ok(config)
+}
+
+fn apply_spawn_agent_runtime_state(config: &mut Config, turn: &TurnContext) {
     config.model = Some(turn.model_info.slug.clone());
     config.model_provider = turn.provider.info().clone();
     config.model_reasoning_effort = turn
@@ -233,9 +284,6 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
     config.model_reasoning_summary = Some(turn.reasoning_summary);
     config.developer_instructions = turn.developer_instructions.clone();
     config.compact_prompt = turn.compact_prompt.clone();
-    apply_spawn_agent_runtime_overrides(&mut config, turn)?;
-
-    Ok(config)
 }
 
 pub(crate) fn reject_full_fork_spawn_overrides(
@@ -249,6 +297,57 @@ pub(crate) fn reject_full_fork_spawn_overrides(
         ));
     }
     Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SpawnAgentCwd {
+    Inherited,
+    Explicit(AbsolutePathBuf),
+}
+
+impl SpawnAgentCwd {
+    pub(crate) fn is_explicit(&self) -> bool {
+        matches!(self, Self::Explicit(_))
+    }
+}
+
+pub(crate) fn resolve_spawn_agent_cwd(
+    parent_cwd: &AbsolutePathBuf,
+    cwd: Option<&Path>,
+) -> Result<SpawnAgentCwd, FunctionCallError> {
+    let Some(cwd) = cwd else {
+        return Ok(SpawnAgentCwd::Inherited);
+    };
+    if cwd.as_os_str().is_empty() {
+        return Err(FunctionCallError::RespondToModel(
+            "cwd is invalid: empty path".to_string(),
+        ));
+    }
+    let resolved = if cwd.is_absolute() {
+        AbsolutePathBuf::from_absolute_path(cwd)
+    } else {
+        Ok(parent_cwd.join(cwd))
+    }
+    .map_err(|err| {
+        FunctionCallError::RespondToModel(format!("cwd is invalid: {}: {err}", cwd.display()))
+    })?;
+    match std::fs::metadata(resolved.as_path()) {
+        Ok(metadata) if metadata.is_dir() => Ok(SpawnAgentCwd::Explicit(resolved)),
+        Ok(_) => Err(FunctionCallError::RespondToModel(format!(
+            "cwd is not a directory: {}",
+            resolved.display()
+        ))),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            Err(FunctionCallError::RespondToModel(format!(
+                "cwd does not exist: {}",
+                resolved.display()
+            )))
+        }
+        Err(err) => Err(FunctionCallError::RespondToModel(format!(
+            "cwd could not be accessed: {}: {err}",
+            resolved.display()
+        ))),
+    }
 }
 
 /// Copies runtime-only turn state onto a child config before it is handed to `AgentControl`.
@@ -276,6 +375,30 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
             FunctionCallError::RespondToModel(format!("permission_profile is invalid: {err}"))
         })?;
     Ok(())
+}
+
+pub(crate) fn apply_spawn_agent_runtime_overrides_for_cwd(
+    config: &mut Config,
+    turn: &TurnContext,
+    cwd: SpawnAgentCwd,
+) -> Result<(), FunctionCallError> {
+    match cwd {
+        SpawnAgentCwd::Inherited => apply_spawn_agent_runtime_overrides(config, turn),
+        SpawnAgentCwd::Explicit(cwd) => {
+            apply_spawn_agent_runtime_state(config, turn);
+            config
+                .permissions
+                .approval_policy
+                .set(turn.approval_policy.value())
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!("approval_policy is invalid: {err}"))
+                })?;
+            config.permissions.shell_environment_policy = turn.shell_environment_policy.clone();
+            config.codex_linux_sandbox_exe = turn.codex_linux_sandbox_exe.clone();
+            config.cwd = cwd;
+            Ok(())
+        }
+    }
 }
 
 pub(crate) fn apply_spawn_agent_overrides(config: &mut Config, child_depth: i32) {

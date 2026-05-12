@@ -233,6 +233,88 @@ async fn spawn_agent_rejects_when_message_and_items_are_both_set() {
 }
 
 #[tokio::test]
+async fn spawn_agent_rejects_cwd_with_legacy_fork_context() {
+    let (session, turn) = make_session_and_context().await;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "hello",
+            "cwd": ".",
+            "fork_context": true
+        })),
+    );
+    let err = SpawnAgentHandler::default()
+        .handle(invocation)
+        .await
+        .expect_err("cwd with fork_context should be rejected");
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "cwd cannot be combined with fork_context in this release.".to_string()
+        )
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_rejects_cwd_with_default_fork_turns() {
+    let (session, turn) = make_session_and_context().await;
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "hello",
+            "task_name": "child",
+            "cwd": "."
+        })),
+    );
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation)
+        .await
+        .expect_err("cwd with default fork_turns should be rejected");
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "cwd cannot be combined with forked history in this release; set fork_turns to \"none\" when using cwd."
+                .to_string()
+        )
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_rejects_file_cwd() {
+    let (session, mut turn) = make_session_and_context().await;
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    turn.cwd = temp_dir.abs();
+    let file_cwd = turn.cwd.join("not-a-directory");
+    std::fs::write(file_cwd.as_path(), "not a directory").expect("file cwd should be created");
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "hello",
+            "task_name": "child",
+            "cwd": "not-a-directory",
+            "fork_turns": "none"
+        })),
+    );
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation)
+        .await
+        .expect_err("file cwd should be rejected");
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("expected model-facing error");
+    };
+    assert!(
+        message.starts_with("cwd is not a directory:"),
+        "unexpected error: {message}"
+    );
+}
+
+#[tokio::test]
 async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
     #[derive(Debug, Deserialize)]
     struct SpawnAgentResult {
@@ -1927,6 +2009,148 @@ async fn multi_agent_v2_spawn_agent_ignores_configured_max_depth() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_spawn_uses_explicit_relative_cwd_without_parent_permissions() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        task_name: String,
+        nickname: Option<String>,
+    }
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let parent_cwd = tempfile::tempdir().expect("parent cwd");
+    turn.cwd = parent_cwd.abs();
+    let child_cwd = turn.cwd.join("child-cwd");
+    std::fs::create_dir_all(child_cwd.as_path()).expect("child cwd should be created");
+    std::fs::create_dir_all(turn.config.codex_home.as_path()).expect("codex home should exist");
+    std::fs::write(
+        turn.config.codex_home.as_path().join("config.toml"),
+        r#"sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+exclude_tmpdir_env_var = true
+exclude_slash_tmp = true
+"#,
+    )
+    .expect("child cwd config should be written");
+    turn.permission_profile = PermissionProfile::Disabled;
+    turn.developer_instructions = Some("live developer instructions".to_string());
+    turn.compact_prompt = Some("live compact prompt".to_string());
+
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.conversation_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    turn.config = Arc::new(config);
+
+    let session = Arc::new(session);
+    let parent_cwd = turn.cwd.clone();
+    let expected_developer_instructions = turn.developer_instructions.clone();
+    let expected_compact_prompt = turn.compact_prompt.clone();
+    let expected_model = turn.model_info.slug.clone();
+    let expected_model_provider = turn.provider.info().clone();
+    let expected_reasoning_effort = turn
+        .reasoning_effort
+        .or(turn.model_info.default_reasoning_level);
+    let expected_reasoning_summary = turn.reasoning_summary;
+    let turn = Arc::new(turn);
+    let output = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello",
+                "task_name": "child",
+                "cwd": "child-cwd",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should accept explicit cwd with fork_turns none");
+    let (content, success) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    assert_eq!(result.task_name, "/root/child");
+    assert!(result.nickname.is_some());
+    assert_eq!(success, Some(true));
+
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.conversation_id, &turn.session_source, "child")
+        .await
+        .expect("relative path should resolve");
+    let child_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    let parent_thread = manager
+        .get_thread(session.conversation_id)
+        .await
+        .expect("parent thread should exist");
+    assert!(
+        !Arc::ptr_eq(
+            &parent_thread.codex.session.services.exec_policy,
+            &child_thread.codex.session.services.exec_policy
+        ),
+        "explicit cwd must not reuse the parent's cwd-bound exec policy manager"
+    );
+    let snapshot = child_thread.config_snapshot().await;
+    assert_eq!(snapshot.cwd, child_cwd);
+    assert_ne!(
+        snapshot.permission_profile,
+        PermissionProfile::Disabled,
+        "explicit cwd must not copy the parent's concrete runtime permission profile"
+    );
+    let child_turn = child_thread.codex.session.new_default_turn().await;
+    assert_eq!(child_turn.cwd, child_cwd);
+    assert_eq!(child_turn.config.cwd, child_cwd);
+    assert_eq!(child_turn.config.model, Some(expected_model));
+    assert_eq!(child_turn.config.model_provider, expected_model_provider);
+    assert_eq!(
+        child_turn.config.model_reasoning_effort,
+        expected_reasoning_effort
+    );
+    assert_eq!(
+        child_turn.config.model_reasoning_summary,
+        Some(expected_reasoning_summary)
+    );
+    assert_eq!(
+        child_turn.config.developer_instructions,
+        expected_developer_instructions
+    );
+    assert_eq!(child_turn.config.compact_prompt, expected_compact_prompt);
+    assert_eq!(
+        child_turn
+            .environments
+            .primary()
+            .expect("default environment should exist")
+            .cwd,
+        child_cwd
+    );
+    assert!(
+        child_turn
+            .file_system_sandbox_policy()
+            .can_write_path_with_cwd(child_cwd.join("child.txt").as_path(), child_cwd.as_path()),
+        "workspace-write role should grant write access to the child cwd"
+    );
+    assert!(
+        !child_turn
+            .file_system_sandbox_policy()
+            .can_write_path_with_cwd(parent_cwd.join("parent.txt").as_path(), child_cwd.as_path()),
+        "explicit child cwd must not make the parent cwd writable"
+    );
+}
+
+#[tokio::test]
 async fn send_input_rejects_empty_message() {
     let (session, turn) = make_session_and_context().await;
     let invocation = invocation(
@@ -2142,6 +2366,186 @@ async fn resume_agent_reports_missing_agent() {
         err,
         FunctionCallError::RespondToModel(format!("agent with id {agent_id} not found"))
     );
+}
+
+#[tokio::test]
+async fn resume_agent_fails_when_stored_child_cwd_cannot_be_rebuilt() {
+    let (_session, turn) = make_session_and_context().await;
+    let parent_cwd = tempfile::tempdir().expect("parent cwd");
+    let child_cwd = parent_cwd.path().join("child-cwd");
+    std::fs::create_dir_all(&child_cwd).expect("child cwd should be created");
+    let mut config = turn.config.as_ref().clone();
+    config.cwd = parent_cwd.abs();
+    config.agent_max_depth = 2;
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    let state_db = init_state_db(&config).await;
+    let manager = ThreadManager::new(
+        &config,
+        AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        /*analytics_events_client*/ None,
+        thread_store_from_config(&config, state_db.clone()),
+        state_db,
+        "22222222-2222-4222-8222-222222222222".to_string(),
+    );
+    let parent = manager
+        .start_thread(config.clone())
+        .await
+        .expect("parent thread should start");
+    let parent_session = parent.thread.codex.session.clone();
+
+    let child_spawn_output = SpawnAgentHandler::default()
+        .handle(invocation(
+            parent_session.clone(),
+            parent_session.new_default_turn().await,
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello child",
+                "cwd": child_cwd.to_string_lossy().to_string()
+            })),
+        ))
+        .await
+        .expect("child spawn should succeed");
+    let (child_content, child_success) = expect_text_output(child_spawn_output);
+    let child_result: serde_json::Value =
+        serde_json::from_str(&child_content).expect("child spawn result should be json");
+    let child_thread_id = parse_agent_id(
+        child_result
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str)
+            .expect("child spawn result should include agent_id"),
+    );
+    assert_eq!(child_success, Some(true));
+
+    CloseAgentHandler
+        .handle(invocation(
+            parent_session.clone(),
+            parent_session.new_default_turn().await,
+            "close_agent",
+            function_payload(json!({"target": child_thread_id.to_string()})),
+        ))
+        .await
+        .expect("close_agent should close child");
+    std::fs::remove_dir_all(&child_cwd).expect("child cwd should be removed");
+
+    let err = ResumeAgentHandler
+        .handle(invocation(
+            parent_session.clone(),
+            parent_session.new_default_turn().await,
+            "resume_agent",
+            function_payload(json!({"id": child_thread_id.to_string()})),
+        ))
+        .await
+        .expect_err("resume should fail without falling back to parent cwd");
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("expected model-facing error");
+    };
+    assert!(
+        message.contains("stored cwd") && message.contains("could not be accessed"),
+        "unexpected error: {message}"
+    );
+    assert_eq!(
+        manager.agent_control().get_status(child_thread_id).await,
+        AgentStatus::NotFound
+    );
+}
+
+#[tokio::test]
+async fn resume_agent_restores_stored_child_cwd() {
+    let (_session, turn) = make_session_and_context().await;
+    let parent_cwd = tempfile::tempdir().expect("parent cwd");
+    let parent_cwd = parent_cwd.abs();
+    let child_cwd = parent_cwd.join("child-cwd");
+    std::fs::create_dir_all(child_cwd.as_path()).expect("child cwd should be created");
+    let mut config = turn.config.as_ref().clone();
+    config.cwd = parent_cwd;
+    config.agent_max_depth = 2;
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    let state_db = init_state_db(&config).await;
+    let manager = ThreadManager::new(
+        &config,
+        AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        /*analytics_events_client*/ None,
+        thread_store_from_config(&config, state_db.clone()),
+        state_db,
+        "33333333-3333-4333-8333-333333333333".to_string(),
+    );
+    let parent = manager
+        .start_thread(config.clone())
+        .await
+        .expect("parent thread should start");
+    let parent_session = parent.thread.codex.session.clone();
+
+    let child_spawn_output = SpawnAgentHandler::default()
+        .handle(invocation(
+            parent_session.clone(),
+            parent_session.new_default_turn().await,
+            "spawn_agent",
+            function_payload(json!({
+                "message": "hello child",
+                "cwd": child_cwd.to_string_lossy().to_string()
+            })),
+        ))
+        .await
+        .expect("child spawn should succeed");
+    let (child_content, child_success) = expect_text_output(child_spawn_output);
+    let child_result: serde_json::Value =
+        serde_json::from_str(&child_content).expect("child spawn result should be json");
+    let child_thread_id = parse_agent_id(
+        child_result
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str)
+            .expect("child spawn result should include agent_id"),
+    );
+    assert_eq!(child_success, Some(true));
+
+    CloseAgentHandler
+        .handle(invocation(
+            parent_session.clone(),
+            parent_session.new_default_turn().await,
+            "close_agent",
+            function_payload(json!({"target": child_thread_id.to_string()})),
+        ))
+        .await
+        .expect("close_agent should close child");
+    assert_eq!(
+        manager.agent_control().get_status(child_thread_id).await,
+        AgentStatus::NotFound
+    );
+
+    let output = ResumeAgentHandler
+        .handle(invocation(
+            parent_session,
+            parent.thread.codex.session.new_default_turn().await,
+            "resume_agent",
+            function_payload(json!({"id": child_thread_id.to_string()})),
+        ))
+        .await
+        .expect("resume should restore stored child cwd");
+    let (content, success) = expect_text_output(output);
+    let result: resume_agent::ResumeAgentResult =
+        serde_json::from_str(&content).expect("resume_agent result should be json");
+    assert_ne!(result.status, AgentStatus::NotFound);
+    assert_eq!(success, Some(true));
+
+    let child_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should be restored");
+    let snapshot = child_thread.config_snapshot().await;
+    assert_eq!(snapshot.cwd, child_cwd);
+    let child_turn = child_thread.codex.session.new_default_turn().await;
+    assert_eq!(child_turn.cwd, child_cwd);
+    assert_eq!(child_turn.config.cwd, child_cwd);
 }
 
 #[tokio::test]

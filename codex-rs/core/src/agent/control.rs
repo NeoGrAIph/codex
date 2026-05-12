@@ -33,6 +33,7 @@ use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use codex_thread_store::ReadThreadParams;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -202,7 +203,7 @@ impl AgentControl {
         let state = self.upgrade()?;
         let mut reservation = self.state.reserve_spawn_slot(config.agent_max_threads)?;
         let inherited_shell_snapshot = self
-            .inherited_shell_snapshot_for_source(&state, session_source.as_ref())
+            .inherited_shell_snapshot_for_source(&state, session_source.as_ref(), &config)
             .await;
         let inherited_exec_policy = self
             .inherited_exec_policy_for_source(&state, session_source.as_ref(), &config)
@@ -569,12 +570,6 @@ impl AgentControl {
             other => (other, AgentMetadata::default()),
         };
         let notification_source = session_source.clone();
-        let inherited_shell_snapshot = self
-            .inherited_shell_snapshot_for_source(&state, Some(&session_source))
-            .await;
-        let inherited_exec_policy = self
-            .inherited_exec_policy_for_source(&state, Some(&session_source), &config)
-            .await;
         let stored_thread = state
             .read_stored_thread(ReadThreadParams {
                 thread_id,
@@ -586,6 +581,67 @@ impl AgentControl {
             .history
             .ok_or_else(|| CodexErr::ThreadNotFound(thread_id))?
             .items;
+        let stored_cwd = if stored_thread.cwd.as_os_str().is_empty() {
+            InitialHistory::Resumed(ResumedHistory {
+                conversation_id: thread_id,
+                history: history.clone(),
+                rollout_path: stored_thread.rollout_path.clone(),
+            })
+            .session_cwd()
+        } else {
+            Some(stored_thread.cwd.clone())
+        };
+        if let Some(stored_cwd) = stored_cwd {
+            match AbsolutePathBuf::from_absolute_path(&stored_cwd) {
+                Ok(stored_cwd) if stored_cwd != config.cwd => {
+                    match std::fs::metadata(stored_cwd.as_path()) {
+                        Ok(metadata) if metadata.is_dir() => {}
+                        Ok(_) => {
+                            return Err(CodexErr::InvalidRequest(format!(
+                                "stored cwd for {thread_id} is not a directory: {}",
+                                stored_cwd.display()
+                            )));
+                        }
+                        Err(err) => {
+                            return Err(CodexErr::InvalidRequest(format!(
+                                "stored cwd for {thread_id} could not be accessed: {}: {err}",
+                                stored_cwd.display()
+                            )));
+                        }
+                    }
+                    config = match crate::config::Config::load_for_cwd(
+                        config.codex_home.to_path_buf(),
+                        &stored_cwd,
+                    )
+                    .await
+                    {
+                        Ok(refreshed) => {
+                            config
+                                .rebuild_preserving_session_layers_for_cwd(&refreshed, stored_cwd)
+                                .await
+                        }
+                        Err(err) => Err(err),
+                    }
+                    .map_err(|err| {
+                        CodexErr::InvalidRequest(format!(
+                            "failed to rebuild descendant resume config for {thread_id}: {err}"
+                        ))
+                    })?;
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    return Err(CodexErr::InvalidRequest(format!(
+                        "failed to normalize stored cwd for {thread_id}: {stored_cwd:?}: {err}"
+                    )));
+                }
+            }
+        }
+        let inherited_shell_snapshot = self
+            .inherited_shell_snapshot_for_source(&state, Some(&session_source), &config)
+            .await;
+        let inherited_exec_policy = self
+            .inherited_exec_policy_for_source(&state, Some(&session_source), &config)
+            .await;
 
         let resumed_thread = state
             .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
@@ -1065,6 +1121,7 @@ impl AgentControl {
         &self,
         state: &Arc<ThreadManagerState>,
         session_source: Option<&SessionSource>,
+        child_config: &crate::config::Config,
     ) -> Option<Arc<ShellSnapshot>> {
         let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id, ..
@@ -1074,6 +1131,10 @@ impl AgentControl {
         };
 
         let parent_thread = state.get_thread(*parent_thread_id).await.ok()?;
+        let parent_config = parent_thread.codex.session.get_config().await;
+        if parent_config.cwd != child_config.cwd {
+            return None;
+        }
         parent_thread.codex.session.user_shell().shell_snapshot()
     }
 
@@ -1092,6 +1153,9 @@ impl AgentControl {
 
         let parent_thread = state.get_thread(*parent_thread_id).await.ok()?;
         let parent_config = parent_thread.codex.session.get_config().await;
+        if parent_config.cwd != child_config.cwd {
+            return None;
+        }
         if !crate::exec_policy::child_uses_parent_exec_policy(&parent_config, child_config) {
             return None;
         }
