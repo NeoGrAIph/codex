@@ -16,6 +16,8 @@
 - `spawn_agent.cwd` is an optional string path in both legacy v1 `spawn_agent` and
   MultiAgentV2 `spawn_agent`.
 - Omitted `cwd` preserves upstream behavior: child agents inherit parent `turn.cwd`.
+- Omit `cwd` by default. Set it only when the child agent must start in a different repository,
+  worktree, or session root than the parent.
 - Relative `cwd` resolves against parent `turn.cwd`.
 - Absolute `cwd` is used directly.
 - The resolved path may be outside the parent workspace.
@@ -43,6 +45,17 @@ Model-facing output remains unchanged:
 - Legacy v1: `{ "agent_id": "...", "nickname": ... }`
 - MultiAgentV2 with metadata: `{ "task_name": "...", "nickname": ... }`
 - MultiAgentV2 hidden metadata: `{ "task_name": "..." }`
+
+Canonical different-worktree spawn example:
+
+```json
+{
+  "message": "coordinate this task",
+  "task_name": "orchestrator_task",
+  "cwd": "/home/neograiph/tasks",
+  "fork_turns": "none"
+}
+```
 
 ## Integration And Compatibility
 

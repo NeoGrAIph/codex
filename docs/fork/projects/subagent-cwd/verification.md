@@ -33,7 +33,8 @@
 | Environment selection | Omitted cwd | Existing inherited `turn.environments.to_selections()` behavior is unchanged |
 | Persistence | New child thread | `SessionConfiguredEvent.cwd`, `SessionMeta.cwd`, and `ThreadPersistenceMetadata.cwd` store child cwd |
 | Resume | Child resume after restart | Child restores stored cwd |
-| Resume | Missing stored cwd | Resume fails fast and does not start child from caller cwd |
+| Resume | Older rollout without stored cwd | Resume keeps the legacy rollout/session cwd fallback |
+| Resume | Stored cwd cannot be accessed | Resume fails fast and does not start child from caller cwd |
 | Resume | Grandchild resume after restart | Each descendant restores its own stored cwd |
 | Compatibility | App-server clients | Existing `Thread.cwd` surfaces expose child cwd; no schema changes are required |
 
@@ -69,7 +70,8 @@ Do not run or update TUI snapshots for v1 unless a later change adds user-visibl
   cwd runtime propagation, environment cwd, current workspace-write rebase to child cwd, current
   read-only preservation, parent permission-profile raw ACL non-inheritance, parent exec-policy
   manager non-inheritance, child workspace-write policy shape, parent cwd non-writeability,
-  successful resume from stored child cwd, and resume fail-fast for missing stored cwd. Additional
+  successful resume from stored child cwd, legacy fallback for older rollouts without stored cwd,
+  and resume fail-fast for inaccessible stored cwd. Additional
   outside-workspace, inaccessible-path, role-config-from-child-cwd, shell snapshot
   non-inheritance, and explicit grandchild-cwd resume scenarios remain follow-up coverage items.
 

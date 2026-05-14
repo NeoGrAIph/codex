@@ -56,6 +56,8 @@ the observation surfaces for effective cwd.
 ## Invariants
 
 - Omitted `cwd` preserves current upstream behavior.
+- Explicit `cwd` is an intentional placement override for another repository, worktree, or session
+  root; ordinary same-repository spawns should omit it.
 - Explicit cwd failure never falls back to parent cwd.
 - Child cwd may be outside parent workspace.
 - Child cwd is not auto-trusted.

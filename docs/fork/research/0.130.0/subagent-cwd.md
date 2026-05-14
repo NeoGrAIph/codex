@@ -22,23 +22,29 @@
 - Resolved cwd - это child session root, а не command-only override.
 - `thread/start`, `thread/resume` и `thread/fork` вне scope.
 
-## Текущее состояние 0.130
+## Текущее состояние fork/130
 
-`fork/130` не реализует explicit child cwd.
+`fork/130` реализует explicit child cwd для legacy v1 и MultiAgentV2 `spawn_agent`.
 
 Проверенные integration points:
 
-- `codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs::SpawnAgentArgs` не имеет `cwd` и использует `#[serde(deny_unknown_fields)]`.
-- Legacy v1 `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs::SpawnAgentArgs` тоже не имеет `cwd`; serde unknown fields не запрещены на struct level, но runtime tool schema сейчас не объявляет `cwd`.
-- Tool schemas в `codex-rs/core/src/tools/handlers/multi_agents_spec.rs` не экспонируют `cwd` ни во input, ни в output.
-- `codex-rs/core/src/tools/handlers/multi_agents_common.rs::build_agent_spawn_config()` идет через `build_agent_shared_config()` и клонирует parent `turn.config`.
-- `apply_spawn_agent_runtime_overrides()` явно задает `config.cwd = turn.cwd.clone()`, что делает inherited cwd текущим upstream behavior.
-- Оба handler-а (`multi_agents/spawn.rs` и `multi_agents_v2/spawn.rs`) вызывают `apply_role_to_config()` перед повторным `apply_spawn_agent_runtime_overrides()`, поэтому role reload не может сохранить alternative child cwd без изменения ordering/override contract.
-- Оба handler-а передают `SpawnAgentOptions { environments: Some(turn.environments.to_selections()), ... }`; при explicit child cwd это напрямую переносит parent environment cwd.
-- `codex-rs/core/src/thread_manager.rs` строит default environments из `config.cwd` только когда environments не переданы. В `ThreadManagerState::spawn_new_thread_with_source()` и `fork_thread_with_source()` `None` вызывает `default_thread_environment_selections(...)`.
-- `codex-rs/core/src/environment_selection.rs::default_thread_environment_selections()` ставит `TurnEnvironmentSelection.cwd` равным переданному cwd, поэтому это правильный source of truth для default local/remote environment selection.
-- `codex-rs/core/src/config/mod.rs::ConfigBuilder` умеет cwd-scoped config loading через `ConfigOverrides.cwd`/`fallback_cwd`, но relative cwd там резолвится относительно process current dir. Для `spawn_agent.cwd` relative path должен быть заранее resolved относительно parent `turn.cwd`.
-- `codex-rs/utils/absolute-path/src/lib.rs::AbsolutePathBuf` гарантирует absolute normalized path, но не гарантирует существование path на filesystem. Нужна отдельная validation, что resolved cwd существует и является directory.
+- `codex-rs/core/src/tools/handlers/multi_agents/spawn.rs::SpawnAgentArgs` и
+  `codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs::SpawnAgentArgs` принимают
+  `cwd: Option<PathBuf>`.
+- Tool schemas в `codex-rs/core/src/tools/handlers/multi_agents_spec.rs` экспонируют optional
+  input `cwd`; model-facing output schema не меняется и не возвращает effective cwd.
+- `codex-rs/core/src/tools/handlers/multi_agents_common.rs` содержит общий resolver и child config
+  builder для explicit cwd. Omitted cwd сохраняет parent `turn.cwd`; explicit cwd валидируется как
+  существующая directory.
+- Relative `cwd` резолвится относительно parent `turn.cwd`; absolute `cwd` используется напрямую.
+- Explicit cwd rebuilds child config for the child root before role/template lookup and then
+  reapplies runtime state without resetting the child cwd to the parent cwd.
+- Explicit cwd passes `SpawnAgentOptions { environments: None, ... }`, so `ThreadManagerState`
+  builds child-rooted default environment selections.
+- Legacy `fork_context: true` rejects explicit cwd. MultiAgentV2 rejects explicit cwd unless
+  `fork_turns: "none"` is supplied.
+- Resume restores stored child cwd. Older rollouts without stored cwd keep the legacy
+  rollout/session cwd fallback; an existing stored cwd that cannot be accessed fails fast.
 
 Существующие surfaces уже экспонируют thread cwd:
 
@@ -52,18 +58,24 @@ App-server v2 находится в `codex-rs/app-server-protocol/src/protocol/v
 
 ## Gap analysis
 
-- Input contract gap: `spawn_agent` не принимает `cwd`; v2 с `deny_unknown_fields` будет reject unknown `cwd`, а v1 проигнорирует unknown на deserialize path при несовпадении со schema expectations.
-- Runtime source-of-truth gap: current child config всегда получает `turn.cwd` через `apply_spawn_agent_runtime_overrides()`.
-- Permission intent gap: explicit child cwd rebuild can drop the parent turn's current
-  legacy-compatible permission intent. `Default`/workspace-write selected at runtime must be
-  rebased to child cwd; relying only on child config can degrade to read-only for an otherwise
-  valid child agent.
-- Config loading gap: shallow mutation `config.cwd` не перезагружает cwd-scoped project config, trust/project policy, plugins/MCP/hooks/skills/AGENTS-derived layers и relative-path-derived settings.
-- Resolver gap: существующий config loader relative cwd резолвит от process cwd, а контракт требует parent `turn.cwd`.
-- Validation gap: `AbsolutePathBuf` не проверяет on-disk directory, значит nonexistent/file cwd должны fail fast отдельной проверкой до spawn.
-- Environment gap: inherited `turn.environments.to_selections()` может сохранить parent cwd даже при child `config.cwd`.
-- Resume gap: `codex-rs/core/src/agent/control.rs::resume_agent_from_rollout()` сейчас прокидывает `config.clone()` потомкам; без rebuild из stored child cwd descendants могут resume с cwd root/parent thread.
-- App-server gap: app-server already exposes effective thread cwd, но `ThreadItem::CollabAgentToolCall` и collab spawn events не несут cwd snapshot. Это не blocker для первой реализации, если compatibility contract не требует cwd прямо в tool-call history item.
+Закрыто в реализации:
+
+- Input contract: v1/v2 `spawn_agent` принимают optional `cwd`.
+- Runtime source of truth: explicit child config/turn/session cwd остаются child-rooted.
+- Permission intent: legacy-compatible current permission intent rebases to child cwd instead of
+  raw-copying parent ACLs.
+- Config loading: child config is rebuilt from the explicit child cwd before role/template lookup.
+- Resolver/validation: relative paths use parent `turn.cwd`, and invalid/non-directory paths fail
+  before child thread creation.
+- Environment selection: explicit cwd avoids inherited parent environment selections.
+- Resume: stored child cwd is restored; invalid stored cwd fails fast.
+
+Остающиеся documented boundaries:
+
+- Explicit cwd with forked history remains unsupported in v1.
+- `ThreadItem::CollabAgentToolCall` and collab spawn events do not carry cwd snapshots.
+- Remote environment re-rooting is not implemented in v1; explicit cwd uses default environment
+  selection construction.
 
 ## Направление нативной реализации
 
