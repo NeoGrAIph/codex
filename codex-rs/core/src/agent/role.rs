@@ -29,6 +29,12 @@ use toml::Value as TomlValue;
 pub const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RoleApplication {
+    pub(crate) owns_model: bool,
+    pub(crate) owns_reasoning_effort: bool,
+}
+
 /// Applies a named role layer to `config` while preserving caller-owned model selection.
 ///
 /// The role layer is inserted at session-flag precedence so it can override persisted config, but
@@ -40,7 +46,7 @@ const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not availabl
 pub(crate) async fn apply_role_to_config(
     config: &mut Config,
     role_name: Option<&str>,
-) -> Result<(), String> {
+) -> Result<RoleApplication, String> {
     let role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
 
     let role = resolve_role_config(config, role_name)
@@ -59,18 +65,23 @@ async fn apply_role_to_config_inner(
     config: &mut Config,
     role_name: &str,
     role: &AgentRoleConfig,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<RoleApplication> {
     let is_built_in = !config.agent_roles.contains_key(role_name);
     let Some(config_file) = role.config_file.as_ref() else {
-        return Ok(());
+        return Ok(RoleApplication::default());
     };
     let role_layer_toml = load_role_layer_toml(config, config_file, is_built_in, role_name).await?;
     if role_layer_toml
         .as_table()
         .is_some_and(toml::map::Map::is_empty)
     {
-        return Ok(());
+        return Ok(RoleApplication::default());
     }
+    let application = RoleApplication {
+        owns_model: role_layer_toml.get("model").is_some()
+            || role_layer_toml.get("profile").is_some(),
+        owns_reasoning_effort: role_layer_toml.get("model_reasoning_effort").is_some(),
+    };
     let (preserve_current_profile, preserve_current_provider) =
         preservation_policy(config, &role_layer_toml);
 
@@ -81,7 +92,7 @@ async fn apply_role_to_config_inner(
         preserve_current_provider,
     )
     .await?;
-    Ok(())
+    Ok(application)
 }
 
 async fn load_role_layer_toml(
@@ -273,29 +284,57 @@ mod reload {
 }
 
 pub(crate) mod spawn_tool_spec {
+    use crate::agent::role_templates::LoadedRoleTemplates;
+
     use super::*;
 
     /// Builds the spawn-agent tool description text from built-in and configured roles.
     pub(crate) fn build(user_defined_agent_roles: &BTreeMap<String, AgentRoleConfig>) -> String {
         let built_in_roles = built_in::configs();
-        build_from_configs(built_in_roles, user_defined_agent_roles)
+        build_from_configs_and_templates(built_in_roles, user_defined_agent_roles, None)
     }
 
-    // This function is not inlined for testing purpose.
-    fn build_from_configs(
+    pub(crate) fn build_with_templates(
+        user_defined_agent_roles: &BTreeMap<String, AgentRoleConfig>,
+        role_templates: &LoadedRoleTemplates,
+    ) -> String {
+        let built_in_roles = built_in::configs();
+        build_from_configs_and_templates(
+            built_in_roles,
+            user_defined_agent_roles,
+            Some(role_templates),
+        )
+    }
+
+    fn build_from_configs_and_templates(
         built_in_roles: &BTreeMap<String, AgentRoleConfig>,
         user_defined_roles: &BTreeMap<String, AgentRoleConfig>,
+        role_templates: Option<&LoadedRoleTemplates>,
     ) -> String {
         let mut seen = BTreeSet::new();
         let mut formatted_roles = Vec::new();
         for (name, declaration) in user_defined_roles {
             if seen.insert(name.as_str()) {
-                formatted_roles.push(format_role(name, declaration));
+                formatted_roles.push(format_role_with_template(name, declaration, role_templates));
             }
         }
         for (name, declaration) in built_in_roles {
             if seen.insert(name.as_str()) {
-                formatted_roles.push(format_role(name, declaration));
+                formatted_roles.push(format_role_with_template(name, declaration, role_templates));
+            }
+        }
+        if let Some(role_templates) = role_templates {
+            for role_name in role_templates.role_names() {
+                if seen.insert(role_name.as_str()) {
+                    let Ok(Some(metadata)) = role_templates.role_metadata(role_name) else {
+                        continue;
+                    };
+                    formatted_roles.push(format!(
+                        "{role_name}: {{\n{}{}\n}}",
+                        metadata.description,
+                        format_template_metadata(&metadata),
+                    ));
+                }
             }
         }
 
@@ -305,7 +344,19 @@ pub(crate) mod spawn_tool_spec {
         )
     }
 
-    fn format_role(name: &str, declaration: &AgentRoleConfig) -> String {
+    fn format_role_with_template(
+        name: &str,
+        declaration: &AgentRoleConfig,
+        role_templates: Option<&LoadedRoleTemplates>,
+    ) -> String {
+        let template_metadata = role_templates
+            .and_then(|role_templates| role_templates.role_metadata(name).ok().flatten())
+            .map(|metadata| format_template_metadata(&metadata))
+            .unwrap_or_default();
+        format_role_inner(name, declaration, &template_metadata)
+    }
+
+    fn format_role_inner(name: &str, declaration: &AgentRoleConfig, extra_note: &str) -> String {
         if let Some(description) = &declaration.description {
             let locked_settings_note = declaration
                 .config_file
@@ -342,10 +393,29 @@ pub(crate) mod spawn_tool_spec {
                     }
                 })
                 .unwrap_or_default();
-            format!("{name}: {{\n{description}{locked_settings_note}\n}}")
-        } else {
+            format!("{name}: {{\n{description}{locked_settings_note}{extra_note}\n}}")
+        } else if extra_note.is_empty() {
             format!("{name}: no description")
+        } else {
+            format!("{name}: {{\n{}\n}}", extra_note.trim_start_matches('\n'))
         }
+    }
+
+    fn format_template_metadata(
+        metadata: &crate::agent::role_templates::RoleDiscoveryMetadata,
+    ) -> String {
+        let personas = metadata
+            .agent_personas
+            .iter()
+            .map(|persona| format!("{} ({})", persona.name, persona.description))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let read_only = if metadata.read_only {
+            "\n- This markdown template runs read-only."
+        } else {
+            ""
+        };
+        format!("\n- Personas: {personas}{read_only}")
     }
 }
 

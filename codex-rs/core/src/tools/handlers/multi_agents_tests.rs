@@ -131,6 +131,31 @@ model_reasoning_effort = "minimal"
     role_name
 }
 
+fn install_markdown_role_template(turn: &TurnContext, role_name: &str) {
+    let template_dir = turn.config.codex_home.as_path().join(".agents");
+    std::fs::create_dir_all(&template_dir).expect("template dir should be created");
+    std::fs::write(
+        template_dir.join(format!("{role_name}.md")),
+        r#"---
+description: Template-only test role
+agent_names:
+  - name: default
+    description: Default persona
+  - name: critic
+    description: Critical persona
+model: gpt-5.4
+reasoning_effort: high
+---
+<!-- agent_nickname: default -->
+Default template-only role instructions.
+
+<!-- agent_nickname: critic -->
+Critical template-only role instructions.
+"#,
+    )
+    .expect("template should be written");
+}
+
 fn expect_text_output<T>(output: T) -> (String, Option<bool>)
 where
     T: ToolOutput,
@@ -375,6 +400,309 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
 }
 
 #[tokio::test]
+async fn spawn_agent_applies_markdown_role_template_persona_and_policy() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+        nickname: Option<String>,
+    }
+
+    let (mut session, turn) = make_session_and_context().await;
+    let template_dir = turn.config.codex_home.as_path().join(".agents");
+    std::fs::create_dir_all(&template_dir).expect("template dir should be created");
+    std::fs::write(
+        template_dir.join("default.md"),
+        r#"---
+description: Default markdown template
+agent_names:
+  - name: default
+    description: Default persona
+  - name: audit
+    description: Audit persona
+model: gpt-5.4
+reasoning_effort: high
+allow_list:
+  - shell*
+deny_list:
+  - exec_command
+---
+<!-- agent_nickname: default -->
+Default persona instructions.
+
+<!-- agent_nickname: audit -->
+Audit persona instructions.
+"#,
+    )
+    .expect("template should be written");
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+
+    let output = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "agent_type": "default",
+                "agent_persona": "audit"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    assert!(result.nickname.is_some());
+    let snapshot = manager
+        .get_thread(parse_agent_id(&result.agent_id))
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, "gpt-5.4");
+    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::High));
+    assert_eq!(
+        snapshot.session_source.get_agent_persona(),
+        Some("audit".to_string())
+    );
+    assert_eq!(
+        snapshot.agent_tool_policy,
+        Some(codex_tools::AgentToolPolicyConfig {
+            allow_list: Some(vec!["shell*".to_string()]),
+            deny_list: Some(vec!["exec_command".to_string()]),
+            inherited: None,
+        })
+    );
+}
+
+#[tokio::test]
+async fn spawn_agent_applies_template_only_agent_type_and_records_role() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+        nickname: Option<String>,
+    }
+
+    let (mut session, turn) = make_session_and_context().await;
+    install_markdown_role_template(&turn, "prompt-engineer");
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+
+    let output = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this prompt",
+                "agent_type": "prompt-engineer",
+                "agent_persona": "critic"
+            })),
+        ))
+        .await
+        .expect("template-only agent_type should spawn");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    assert!(result.nickname.is_some());
+    let snapshot = manager
+        .get_thread(parse_agent_id(&result.agent_id))
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, "gpt-5.4");
+    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::High));
+    assert_eq!(
+        snapshot.session_source.get_agent_role(),
+        Some("prompt-engineer".to_string())
+    );
+    assert_eq!(
+        snapshot.session_source.get_agent_persona(),
+        Some("critic".to_string())
+    );
+}
+
+#[tokio::test]
+async fn spawn_agent_template_only_agent_type_omitted_persona_uses_default() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+    }
+
+    let (mut session, turn) = make_session_and_context().await;
+    install_markdown_role_template(&turn, "orchestrator");
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+
+    let output = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "coordinate this task",
+                "agent_type": "orchestrator"
+            })),
+        ))
+        .await
+        .expect("template-only agent_type should spawn with default persona");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let snapshot = manager
+        .get_thread(parse_agent_id(&result.agent_id))
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(
+        snapshot.session_source.get_agent_role(),
+        Some("orchestrator".to_string())
+    );
+    assert_eq!(
+        snapshot.session_source.get_agent_persona(),
+        Some("default".to_string())
+    );
+}
+
+#[tokio::test]
+async fn spawn_agent_explicit_model_beats_markdown_template_default() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+    }
+
+    let (mut session, turn) = make_session_and_context().await;
+    install_markdown_role_template(&turn, "prompt-engineer");
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+
+    let output = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this prompt",
+                "agent_type": "prompt-engineer",
+                "model": "gpt-5.4-mini"
+            })),
+        ))
+        .await
+        .expect("explicit model should override template default");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let snapshot = manager
+        .get_thread(parse_agent_id(&result.agent_id))
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, "gpt-5.4-mini");
+}
+
+#[tokio::test]
+async fn spawn_agent_rejects_unknown_template_only_agent_type() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+
+    let err = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "agent_type": "missing-template-role"
+            })),
+        ))
+        .await
+        .expect_err("unknown agent_type should fail");
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("unknown agent_type 'missing-template-role'".to_string())
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_applies_template_only_agent_type_and_records_role() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    install_markdown_role_template(&turn, "prompt-engineer");
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.conversation_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    turn.config = Arc::new(config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let spawn_output = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this prompt",
+                "task_name": "prompt_engineering",
+                "agent_type": "prompt-engineer",
+                "agent_persona": "critic",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect("template-only agent_type should spawn");
+    let (content, _) = expect_text_output(spawn_output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    assert_eq!(result["task_name"], "/root/prompt_engineering");
+
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(
+            session.conversation_id,
+            &turn.session_source,
+            "prompt_engineering",
+        )
+        .await
+        .expect("relative path should resolve");
+    let snapshot = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, "gpt-5.4");
+    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::High));
+    assert_eq!(
+        snapshot.session_source.get_agent_role(),
+        Some("prompt-engineer".to_string())
+    );
+    assert_eq!(
+        snapshot.session_source.get_agent_persona(),
+        Some("critic".to_string())
+    );
+}
+
+#[tokio::test]
 async fn spawn_agent_fork_context_rejects_agent_type_override() {
     let (mut session, mut turn) = make_session_and_context().await;
     let role_name = install_role_with_model_override(&mut turn).await;
@@ -402,7 +730,7 @@ async fn spawn_agent_fork_context_rejects_agent_type_override() {
     assert_eq!(
         err,
         FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
+            "Full-history forked agents inherit the parent agent type, persona, model, and reasoning effort; omit agent_type, agent_persona, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
         )
     );
 }
@@ -436,7 +764,7 @@ async fn spawn_agent_fork_context_rejects_child_model_overrides() {
     assert_eq!(
         err,
             FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
+            "Full-history forked agents inherit the parent agent type, persona, model, and reasoning effort; omit agent_type, agent_persona, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
         )
     );
 }
@@ -480,7 +808,7 @@ async fn multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override() {
     assert_eq!(
         err,
         FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
+            "Full-history forked agents inherit the parent agent type, persona, model, and reasoning effort; omit agent_type, agent_persona, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
         )
     );
 }
@@ -520,7 +848,7 @@ async fn multi_agent_v2_spawn_defaults_to_full_fork_and_rejects_child_model_over
     assert_eq!(
         err,
             FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
+            "Full-history forked agents inherit the parent agent type, persona, model, and reasoning effort; omit agent_type, agent_persona, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
         )
     );
 }
@@ -951,6 +1279,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
                 agent_path: Some(child_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -964,6 +1293,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         agent_path: Some(child_path.clone()),
         agent_nickname: None,
         agent_role: None,
+        agent_persona: None,
     });
 
     SendMessageHandlerV2
@@ -1027,6 +1357,7 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
                 agent_path: Some(child_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -1040,6 +1371,7 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
         agent_path: Some(child_path),
         agent_nickname: None,
         agent_role: None,
+        agent_persona: None,
     });
 
     let Err(err) = FollowupTaskHandlerV2
@@ -1200,6 +1532,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
                 agent_path: Some(researcher_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -1221,6 +1554,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
                 agent_path: Some(worker_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -1233,6 +1567,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
         agent_path: Some(researcher_path),
         agent_nickname: None,
         agent_role: None,
+        agent_persona: None,
     });
 
     let output = ListAgentsHandlerV2
@@ -1889,6 +2224,7 @@ async fn spawn_agent_rejects_when_depth_limit_exceeded() {
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
+        agent_persona: None,
     });
 
     let invocation = invocation(
@@ -1929,6 +2265,7 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
+        agent_persona: None,
     });
 
     let invocation = invocation(
@@ -1984,6 +2321,7 @@ async fn multi_agent_v2_spawn_agent_ignores_configured_max_depth() {
         agent_path: Some(parent_path),
         agent_nickname: None,
         agent_role: None,
+        agent_persona: None,
     });
 
     let invocation = invocation(
@@ -2757,6 +3095,7 @@ async fn resume_agent_rejects_when_depth_limit_exceeded() {
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
+        agent_persona: None,
     });
 
     let invocation = invocation(

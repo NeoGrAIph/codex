@@ -214,6 +214,7 @@ impl AgentControl {
                 depth,
                 agent_path,
                 agent_role,
+                agent_persona,
                 ..
             })) => {
                 let (session_source, agent_metadata) = self.prepare_thread_spawn(
@@ -223,6 +224,7 @@ impl AgentControl {
                     depth,
                     agent_path,
                     agent_role,
+                    agent_persona,
                     /*preferred_agent_nickname*/ None,
                 )?;
                 (Some(session_source), agent_metadata)
@@ -499,6 +501,7 @@ impl AgentControl {
                             agent_path: None,
                             agent_nickname: None,
                             agent_role: None,
+                            agent_persona: None,
                         });
                     match self
                         .resume_single_agent_from_rollout(
@@ -547,6 +550,7 @@ impl AgentControl {
                 agent_path,
                 agent_role: _,
                 agent_nickname: _,
+                agent_persona,
             }) => {
                 let (resumed_agent_nickname, resumed_agent_role) =
                     if let Some(state_db_ctx) = state_db_ctx.as_ref() {
@@ -564,6 +568,7 @@ impl AgentControl {
                     depth,
                     agent_path,
                     resumed_agent_role,
+                    agent_persona,
                     resumed_agent_nickname,
                 )?
             }
@@ -1080,6 +1085,7 @@ impl AgentControl {
         depth: i32,
         agent_path: Option<AgentPath>,
         agent_role: Option<String>,
+        agent_persona: Option<String>,
         preferred_agent_nickname: Option<String>,
     ) -> CodexResult<(SessionSource, AgentMetadata)> {
         if depth == 1 {
@@ -1100,6 +1106,7 @@ impl AgentControl {
             agent_path: agent_path.clone(),
             agent_nickname: agent_nickname.clone(),
             agent_role: agent_role.clone(),
+            agent_persona,
         });
         let agent_metadata = AgentMetadata {
             agent_id: None,

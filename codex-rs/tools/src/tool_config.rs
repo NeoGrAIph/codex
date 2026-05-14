@@ -93,6 +93,13 @@ impl UnifiedExecShellMode {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentToolPolicyConfig {
+    pub allow_list: Option<Vec<String>>,
+    pub deny_list: Option<Vec<String>>,
+    pub inherited: Option<Box<AgentToolPolicyConfig>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolsConfig {
     pub available_models: Vec<ModelPreset>,
@@ -127,6 +134,8 @@ pub struct ToolsConfig {
     pub agent_jobs_tools: bool,
     pub agent_jobs_worker_tools: bool,
     pub agent_type_description: String,
+    pub session_source: SessionSource,
+    pub agent_tool_policy: Option<AgentToolPolicyConfig>,
 }
 
 pub struct ToolsConfigParams<'a> {
@@ -265,7 +274,17 @@ impl ToolsConfig {
             agent_jobs_tools: include_agent_jobs,
             agent_jobs_worker_tools,
             agent_type_description: String::new(),
+            session_source: session_source.clone(),
+            agent_tool_policy: None,
         }
+    }
+
+    pub fn with_agent_tool_policy(
+        mut self,
+        agent_tool_policy: Option<AgentToolPolicyConfig>,
+    ) -> Self {
+        self.agent_tool_policy = agent_tool_policy;
+        self
     }
 
     pub fn with_agent_type_description(mut self, agent_type_description: String) -> Self {

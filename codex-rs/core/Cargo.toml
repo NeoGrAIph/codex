@@ -97,6 +97,7 @@ rmcp = { workspace = true, default-features = false, features = [
 ] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 sha1 = { workspace = true }
 shlex = { workspace = true }
 similar = { workspace = true }
@@ -116,6 +117,7 @@ toml_edit = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 url = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v4", "v5"] }
+wildmatch = { workspace = true }
 which = { workspace = true }
 whoami = { workspace = true }
 

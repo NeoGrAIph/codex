@@ -1,15 +1,20 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use crate::function_tool::FunctionCallError;
 use crate::session::tests::make_session_and_context;
+use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolPayload;
+use crate::turn_diff_tracker::TurnDiffTracker;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::ResponseItem;
+use codex_tools::AgentToolPolicyConfig;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use tokio_util::sync::CancellationToken;
 
 use super::ToolCall;
 use super::ToolRouter;
@@ -196,6 +201,139 @@ async fn model_visible_specs_filter_deferred_dynamic_tools() -> anyhow::Result<(
     );
 
     Ok(())
+}
+
+#[tokio::test]
+async fn model_visible_specs_honor_agent_tool_policy() -> anyhow::Result<()> {
+    let (_, mut turn) = make_session_and_context().await;
+    turn.tools_config.agent_tool_policy = Some(AgentToolPolicyConfig {
+        allow_list: Some(vec!["visible_dynamic_tool".to_string()]),
+        deny_list: None,
+        inherited: None,
+    });
+    let hidden_tool = "hidden_dynamic_tool";
+    let visible_tool = "visible_dynamic_tool";
+    let dynamic_tools = vec![
+        DynamicToolSpec {
+            namespace: None,
+            name: hidden_tool.to_string(),
+            description: "Hidden by policy.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }),
+            defer_loading: false,
+        },
+        DynamicToolSpec {
+            namespace: None,
+            name: visible_tool.to_string(),
+            description: "Visible by policy.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false,
+            }),
+            defer_loading: false,
+        },
+    ];
+
+    let router = ToolRouter::from_config(
+        &turn.tools_config,
+        ToolRouterParams {
+            deferred_mcp_tools: None,
+            mcp_tools: None,
+            unavailable_called_tools: Vec::new(),
+            parallel_mcp_server_names: HashSet::new(),
+            discoverable_tools: None,
+            dynamic_tools: &dynamic_tools,
+        },
+    );
+
+    assert_eq!(
+        function_names(&router.specs())
+            .into_iter()
+            .filter(|name| name.ends_with("_dynamic_tool"))
+            .collect::<Vec<_>>(),
+        vec![hidden_tool.to_string(), visible_tool.to_string()]
+    );
+    assert_eq!(
+        function_names(&router.model_visible_specs())
+            .into_iter()
+            .filter(|name| name.ends_with("_dynamic_tool"))
+            .collect::<Vec<_>>(),
+        vec![visible_tool.to_string()]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn dispatch_blocks_tools_denied_by_agent_tool_policy() -> anyhow::Result<()> {
+    let (session, mut turn) = make_session_and_context().await;
+    turn.tools_config.agent_tool_policy = Some(AgentToolPolicyConfig {
+        allow_list: Some(vec!["safe_tool".to_string()]),
+        deny_list: None,
+        inherited: None,
+    });
+    let router = ToolRouter::from_config(
+        &turn.tools_config,
+        ToolRouterParams {
+            deferred_mcp_tools: None,
+            mcp_tools: None,
+            unavailable_called_tools: Vec::new(),
+            parallel_mcp_server_names: HashSet::new(),
+            discoverable_tools: None,
+            dynamic_tools: turn.dynamic_tools.as_slice(),
+        },
+    );
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+
+    let result = router
+        .dispatch_tool_call_with_code_mode_result(
+            session,
+            turn,
+            CancellationToken::new(),
+            tracker,
+            ToolCall {
+                tool_name: ToolName::plain("shell"),
+                call_id: "call-blocked".to_string(),
+                payload: ToolPayload::Function {
+                    arguments: "{}".to_string(),
+                },
+            },
+            ToolCallSource::Direct,
+        )
+        .await;
+    let Err(err) = result else {
+        panic!("policy should block dispatch before registry lookup");
+    };
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "Tool `shell` is not allowed for this agent persona.".to_string()
+        )
+    );
+
+    Ok(())
+}
+
+fn function_names(specs: &[ToolSpec]) -> Vec<String> {
+    specs
+        .iter()
+        .filter_map(|spec| match spec {
+            ToolSpec::Function(tool) => Some(tool.name.clone()),
+            ToolSpec::Freeform(_)
+            | ToolSpec::ToolSearch { .. }
+            | ToolSpec::LocalShell {}
+            | ToolSpec::ImageGeneration { .. }
+            | ToolSpec::WebSearch { .. }
+            | ToolSpec::Namespace(_) => None,
+        })
+        .collect()
 }
 
 fn namespace_function_names(specs: &[ToolSpec], namespace_name: &str) -> Vec<String> {

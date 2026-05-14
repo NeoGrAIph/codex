@@ -1,5 +1,6 @@
 use super::*;
 use crate::SkillsManager;
+use crate::agent::role_templates::LoadedRoleTemplates;
 use crate::config::CONFIG_TOML_FILE;
 use crate::config::ConfigBuilder;
 use crate::skills_load_input_from_config;
@@ -36,6 +37,22 @@ async fn write_role_config(home: &TempDir, name: &str, contents: &str) -> PathBu
         .await
         .expect("write role config");
     role_path
+}
+
+async fn load_templates_from_home(home: &TempDir) -> LoadedRoleTemplates {
+    let config = ConfigBuilder::default()
+        .codex_home(home.path().to_path_buf())
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .build()
+        .await
+        .expect("load test config");
+    LoadedRoleTemplates::load_for_config(&config)
+}
+
+fn write_role_template(home: &TempDir, name: &str, contents: &str) {
+    let template_dir = home.path().join(".agents");
+    fs::create_dir_all(&template_dir).expect("create template dir");
+    fs::write(template_dir.join(format!("{name}.md")), contents).expect("write role template");
 }
 
 fn session_flags_layer_count(config: &Config) -> usize {
@@ -764,6 +781,70 @@ fn spawn_tool_spec_marks_role_locked_reasoning_effort_only() {
     assert!(spec.contains(
             "Review carefully.\n- This role's reasoning effort is set to `medium` and cannot be changed."
         ));
+}
+
+#[tokio::test]
+async fn spawn_tool_spec_build_with_templates_lists_template_only_roles_in_available_roles() {
+    let home = TempDir::new().expect("create temp dir");
+    write_role_template(
+        &home,
+        "orchestrator",
+        r#"---
+description: Coordinates multi-step work.
+read_only: true
+agent_names:
+  - name: default
+    description: Default orchestrator persona.
+  - name: strict
+    description: Strict orchestrator persona.
+---
+<!-- agent_nickname: default -->
+Default orchestrator instructions.
+
+<!-- agent_nickname: strict -->
+Strict orchestrator instructions.
+"#,
+    );
+    let role_templates = load_templates_from_home(&home).await;
+
+    let spec = spawn_tool_spec::build_with_templates(&BTreeMap::new(), &role_templates);
+
+    assert!(!spec.contains("Markdown role templates may also provide"));
+    assert!(spec.contains("Available roles:\n"));
+    assert!(spec.contains(
+        "orchestrator: {\nCoordinates multi-step work.\n- Personas: default (Default orchestrator persona.), strict (Strict orchestrator persona.)\n- This markdown template runs read-only.\n}"
+    ));
+    let worker_index = spec.find("worker: {").expect("find built-in worker role");
+    let template_index = spec
+        .find("orchestrator: {")
+        .expect("find template-only role");
+    assert!(worker_index < template_index);
+}
+
+#[tokio::test]
+async fn spawn_tool_spec_build_with_templates_augments_native_role_once() {
+    let home = TempDir::new().expect("create temp dir");
+    write_role_template(
+        &home,
+        "explorer",
+        r#"---
+description: Template explorer description should not replace native description.
+agent_names:
+  - name: default
+    description: Default explorer persona.
+---
+<!-- agent_nickname: default -->
+Default explorer instructions.
+"#,
+    );
+    let role_templates = load_templates_from_home(&home).await;
+
+    let spec = spawn_tool_spec::build_with_templates(&BTreeMap::new(), &role_templates);
+
+    assert_eq!(spec.matches("explorer: {").count(), 1);
+    assert!(spec.contains("Explorers are fast and authoritative."));
+    assert!(spec.contains("- Personas: default (Default explorer persona.)"));
+    assert!(!spec.contains("Template explorer description should not replace native description."));
 }
 
 #[test]

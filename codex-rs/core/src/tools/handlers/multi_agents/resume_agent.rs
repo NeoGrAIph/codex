@@ -182,8 +182,7 @@ async fn try_resume_closed_agent(
             session.conversation_id,
             &turn.session_source,
             child_depth,
-            /*agent_role*/ None,
-            /*task_name*/ None,
+            ThreadSpawnSourceOptions::default(),
         )?,
     ))
     .await

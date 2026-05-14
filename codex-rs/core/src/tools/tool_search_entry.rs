@@ -1,6 +1,7 @@
 use codex_mcp::ToolInfo;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_tools::LoadableToolSpec;
+use codex_tools::ToolName;
 use codex_tools::ToolSearchResultSource;
 use codex_tools::ToolsConfig;
 use codex_tools::dynamic_tool_to_loadable_tool_spec;
@@ -62,12 +63,30 @@ pub(crate) fn build_tool_search_entries_for_config(
     } else {
         None
     };
+    let access_policy =
+        crate::tools::policy::ToolAccessPolicy::from_config(&config.agent_tool_policy);
+    let mcp_tools = match (mcp_tools, &access_policy) {
+        (Some(mcp_tools), Some(policy)) => Some(
+            mcp_tools
+                .iter()
+                .filter(|tool| policy.allows(&tool.canonical_tool_name()))
+                .cloned()
+                .collect::<Vec<_>>(),
+        ),
+        (Some(mcp_tools), None) => Some(mcp_tools.to_vec()),
+        (None, _) => None,
+    };
     let dynamic_tools = dynamic_tools
         .iter()
         .filter(|tool| config.namespace_tools || tool.namespace.is_none())
+        .filter(|tool| {
+            access_policy.as_ref().is_none_or(|policy| {
+                policy.allows(&ToolName::new(tool.namespace.clone(), tool.name.as_str()))
+            })
+        })
         .cloned()
         .collect::<Vec<_>>();
-    build_tool_search_entries(mcp_tools, &dynamic_tools)
+    build_tool_search_entries(mcp_tools.as_deref(), &dynamic_tools)
 }
 
 fn mcp_tool_search_entry(info: &ToolInfo) -> Result<ToolSearchEntry, serde_json::Error> {

@@ -4,7 +4,7 @@ use crate::agent::control::SpawnAgentOptions;
 use crate::agent::control::render_input_preview;
 use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
-use crate::agent::role::apply_role_to_config;
+use crate::agent::role::RoleApplication;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::turn_timing::now_unix_timestamp_ms;
@@ -105,30 +105,67 @@ impl ToolHandler for Handler {
                     .await?
                 }
             };
-            if matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory)) {
+            let native_role_application = if matches!(
+                fork_mode,
+                Some(SpawnAgentForkMode::FullHistory)
+            ) {
                 reject_full_fork_spawn_overrides(
                     role_name,
+                    args.agent_persona.as_deref(),
                     args.model.as_deref(),
                     args.reasoning_effort,
                 )?;
+                if args.cwd.is_some() {
+                    return Err(FunctionCallError::RespondToModel(
+                        "Full-history forked agents inherit the parent cwd; omit cwd, or spawn without a full-history fork.".to_string(),
+                    ));
+                }
+                RoleApplication::default()
             } else {
-                apply_requested_spawn_agent_model_overrides(
-                    &session,
-                    turn.as_ref(),
-                    &mut config,
-                    args.model.as_deref(),
-                    args.reasoning_effort,
-                )
-                .await?;
-                apply_role_to_config(&mut config, role_name)
-                    .await
-                    .map_err(FunctionCallError::RespondToModel)?;
-            }
+                apply_spawn_agent_native_role_or_template_only(&mut config, role_name).await?
+            };
             apply_spawn_agent_runtime_overrides_for_cwd(
                 &mut config,
                 turn.as_ref(),
                 spawn_cwd.clone(),
             )?;
+            let role_template = if matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory)) {
+                None
+            } else {
+                resolve_spawn_agent_role_template(
+                    &config,
+                    role_name,
+                    args.agent_persona.as_deref(),
+                )?
+            };
+            if let Some(settings) = &role_template {
+                apply_spawn_agent_role_template(
+                    &mut config,
+                    turn.as_ref(),
+                    settings,
+                    native_role_application,
+                )?;
+            }
+            if !matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory)) {
+                let requested_model = if native_role_application.owns_model {
+                    None
+                } else {
+                    args.model.as_deref()
+                };
+                let requested_reasoning_effort = if native_role_application.owns_reasoning_effort {
+                    None
+                } else {
+                    args.reasoning_effort
+                };
+                apply_requested_spawn_agent_model_overrides(
+                    &session,
+                    turn.as_ref(),
+                    &mut config,
+                    requested_model,
+                    requested_reasoning_effort,
+                )
+                .await?;
+            }
             apply_spawn_agent_overrides(&mut config, child_depth);
             let environments = if spawn_cwd.is_explicit() {
                 None
@@ -140,8 +177,13 @@ impl ToolHandler for Handler {
                 session.conversation_id,
                 &turn.session_source,
                 child_depth,
-                role_name,
-                Some(args.task_name.clone()),
+                ThreadSpawnSourceOptions {
+                    agent_role: role_name,
+                    agent_persona: role_template
+                        .as_ref()
+                        .map(|settings| settings.agent_persona.clone()),
+                    task_name: Some(args.task_name.clone()),
+                },
             )?;
             let result = Box::pin(
                 session.services.agent_control.spawn_agent_with_metadata(
@@ -267,6 +309,7 @@ struct SpawnAgentArgs {
     message: String,
     task_name: String,
     agent_type: Option<String>,
+    agent_persona: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
     cwd: Option<PathBuf>,

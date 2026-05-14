@@ -147,6 +147,7 @@ impl SessionConfiguration {
             reasoning_effort: self.collaboration_mode.reasoning_effort(),
             personality: self.personality,
             session_source: self.session_source.clone(),
+            agent_tool_policy: self.original_config_do_not_use.agent_tool_policy.clone(),
             thread_source: self.thread_source,
         }
     }

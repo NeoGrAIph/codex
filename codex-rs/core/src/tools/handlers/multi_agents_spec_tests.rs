@@ -75,6 +75,22 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     assert!(properties.contains_key("message"));
     assert!(properties.contains_key("cwd"));
     assert!(properties.contains_key("fork_turns"));
+    assert_eq!(
+        properties
+            .get("agent_persona")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(
+            "Optional persona name within the selected markdown agent role template. Select the role with `agent_type` (for example, `agent_type: \"orchestrator\"`) and use this field only for the persona name (for example, `default`). Omit to use the default persona."
+        )
+    );
+    assert_eq!(
+        properties
+            .get("cwd")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(
+            "Optional working directory for the new agent. Omit to inherit the parent cwd; set only when the agent must start in a different repository or worktree. Relative paths resolve against the parent thread cwd."
+        )
+    );
     assert!(!properties.contains_key("items"));
     assert!(!properties.contains_key("fork_context"));
     assert_eq!(
@@ -122,6 +138,22 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
 
     assert!(properties.contains_key("fork_context"));
     assert!(properties.contains_key("cwd"));
+    assert_eq!(
+        properties
+            .get("agent_persona")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(
+            "Optional persona name within the selected markdown agent role template. Select the role with `agent_type` (for example, `agent_type: \"orchestrator\"`) and use this field only for the persona name (for example, `default`). Omit to use the default persona."
+        )
+    );
+    assert_eq!(
+        properties
+            .get("cwd")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(
+            "Optional working directory for the new agent. Omit to inherit the parent cwd; set only when the agent must start in a different repository or worktree. Relative paths resolve against the parent thread cwd."
+        )
+    );
     assert!(!properties.contains_key("fork_turns"));
     assert_eq!(
         properties

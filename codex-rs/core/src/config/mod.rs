@@ -622,6 +622,9 @@ pub struct Config {
     /// User-defined role declarations keyed by role name.
     pub agent_roles: BTreeMap<String, AgentRoleConfig>,
 
+    /// Runtime-only tool access policy selected by an agent role template.
+    pub agent_tool_policy: Option<codex_tools::AgentToolPolicyConfig>,
+
     /// Memories subsystem settings.
     pub memories: MemoriesConfig,
 
@@ -3062,6 +3065,7 @@ impl Config {
             agent_max_threads,
             agent_max_depth,
             agent_roles,
+            agent_tool_policy: None,
             memories: cfg.memories.unwrap_or_default().into(),
             agent_job_max_runtime_seconds,
             agent_interrupt_message_enabled,

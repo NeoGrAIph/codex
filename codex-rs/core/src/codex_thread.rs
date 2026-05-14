@@ -62,6 +62,7 @@ pub struct ThreadConfigSnapshot {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub personality: Option<Personality>,
     pub session_source: SessionSource,
+    pub agent_tool_policy: Option<codex_tools::AgentToolPolicyConfig>,
     pub thread_source: Option<ThreadSource>,
 }
 

@@ -2213,6 +2213,7 @@ mod tests {
                     thread_source: None,
                     agent_nickname: None,
                     agent_role: None,
+                    agent_persona: None,
                     git_info: None,
                     name: None,
                     turns: Vec::new(),
@@ -2257,6 +2258,7 @@ mod tests {
                         "threadSource": null,
                         "agentNickname": null,
                         "agentRole": null,
+                        "agentPersona": null,
                         "gitInfo": null,
                         "name": null,
                         "turns": []

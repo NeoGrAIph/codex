@@ -1,4 +1,10 @@
 use crate::agent::AgentStatus;
+use crate::agent::role::DEFAULT_ROLE_NAME;
+use crate::agent::role::RoleApplication;
+use crate::agent::role::apply_role_to_config;
+use crate::agent::role::resolve_role_config;
+use crate::agent::role_templates::LoadedRoleTemplates;
+use crate::agent::role_templates::RoleTemplateSettings;
 use crate::config::Config;
 use crate::config::DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 use crate::config::MAX_MULTI_AGENT_V2_WAIT_TIMEOUT_MS;
@@ -140,14 +146,21 @@ pub(crate) fn collab_agent_error(agent_id: ThreadId, err: CodexErr) -> FunctionC
     }
 }
 
+#[derive(Default)]
+pub(crate) struct ThreadSpawnSourceOptions<'a> {
+    pub(crate) agent_role: Option<&'a str>,
+    pub(crate) agent_persona: Option<String>,
+    pub(crate) task_name: Option<String>,
+}
+
 pub(crate) fn thread_spawn_source(
     parent_thread_id: ThreadId,
     parent_session_source: &SessionSource,
     depth: i32,
-    agent_role: Option<&str>,
-    task_name: Option<String>,
+    options: ThreadSpawnSourceOptions<'_>,
 ) -> Result<SessionSource, FunctionCallError> {
-    let agent_path = task_name
+    let agent_path = options
+        .task_name
         .as_deref()
         .map(|task_name| {
             parent_session_source
@@ -162,7 +175,8 @@ pub(crate) fn thread_spawn_source(
         depth,
         agent_path,
         agent_nickname: None,
-        agent_role: agent_role.map(str::to_string),
+        agent_role: options.agent_role.map(str::to_string),
+        agent_persona: options.agent_persona,
     }))
 }
 
@@ -244,6 +258,7 @@ pub(crate) fn build_agent_spawn_config_for_cwd<'a>(
                             cwd.display()
                         ))
                     })?;
+                apply_spawn_agent_runtime_state(&mut config, turn);
                 apply_spawn_agent_runtime_overrides_for_cwd(
                     &mut config,
                     turn,
@@ -289,13 +304,100 @@ fn apply_spawn_agent_runtime_state(config: &mut Config, turn: &TurnContext) {
 
 pub(crate) fn reject_full_fork_spawn_overrides(
     agent_type: Option<&str>,
+    agent_persona: Option<&str>,
     model: Option<&str>,
     reasoning_effort: Option<ReasoningEffort>,
 ) -> Result<(), FunctionCallError> {
-    if agent_type.is_some() || model.is_some() || reasoning_effort.is_some() {
+    if agent_type.is_some()
+        || agent_persona.is_some()
+        || model.is_some()
+        || reasoning_effort.is_some()
+    {
         return Err(FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
+            "Full-history forked agents inherit the parent agent type, persona, model, and reasoning effort; omit agent_type, agent_persona, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
         ));
+    }
+    Ok(())
+}
+
+pub(crate) fn resolve_spawn_agent_role_template(
+    config: &Config,
+    role_name: Option<&str>,
+    agent_persona: Option<&str>,
+) -> Result<Option<RoleTemplateSettings>, FunctionCallError> {
+    let role_name = role_name.unwrap_or(crate::agent::role::DEFAULT_ROLE_NAME);
+    LoadedRoleTemplates::load_for_config(config)
+        .resolve_settings(role_name, agent_persona)
+        .map_err(FunctionCallError::RespondToModel)
+}
+
+pub(crate) async fn apply_spawn_agent_native_role_or_template_only(
+    config: &mut Config,
+    role_name: Option<&str>,
+) -> Result<RoleApplication, FunctionCallError> {
+    let resolved_role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
+    if resolve_role_config(config, resolved_role_name).is_some() {
+        return apply_role_to_config(config, role_name)
+            .await
+            .map_err(FunctionCallError::RespondToModel);
+    }
+
+    let templates = LoadedRoleTemplates::load_for_config(config);
+    match templates.resolve_settings(resolved_role_name, /*agent_persona*/ None) {
+        Ok(Some(_)) => Ok(RoleApplication::default()),
+        Ok(None) => Err(FunctionCallError::RespondToModel(format!(
+            "unknown agent_type '{resolved_role_name}'"
+        ))),
+        Err(err) => Err(FunctionCallError::RespondToModel(err)),
+    }
+}
+
+pub(crate) fn apply_spawn_agent_role_template(
+    config: &mut Config,
+    turn: &TurnContext,
+    settings: &RoleTemplateSettings,
+    native_role_application: RoleApplication,
+) -> Result<(), FunctionCallError> {
+    if let Some(base_instructions) = &settings.base_instructions {
+        config.base_instructions = Some(base_instructions.clone());
+    }
+    config.developer_instructions = Some(match config.developer_instructions.take() {
+        Some(existing) if !existing.trim().is_empty() => {
+            format!("{}\n\n{}", existing.trim_end(), settings.instructions)
+        }
+        _ => settings.instructions.clone(),
+    });
+
+    if !native_role_application.owns_model
+        && config.model.as_deref() == Some(turn.model_info.slug.as_str())
+        && let Some(model) = &settings.model
+    {
+        config.model = Some(model.clone());
+    }
+    let inherited_reasoning_effort = turn
+        .reasoning_effort
+        .or(turn.model_info.default_reasoning_level);
+    if !native_role_application.owns_reasoning_effort
+        && config.model_reasoning_effort == inherited_reasoning_effort
+        && let Some(reasoning_effort) = settings.reasoning_effort
+    {
+        config.model_reasoning_effort = Some(reasoning_effort);
+    }
+    if settings.read_only {
+        config
+            .permissions
+            .set_permission_profile(PermissionProfile::read_only())
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("permission_profile is invalid: {err}"))
+            })?;
+    }
+    if settings.allow_list.is_some() || settings.deny_list.is_some() {
+        let inherited = config.agent_tool_policy.take().map(Box::new);
+        config.agent_tool_policy = Some(codex_tools::AgentToolPolicyConfig {
+            allow_list: settings.allow_list.clone(),
+            deny_list: settings.deny_list.clone(),
+            inherited,
+        });
     }
     Ok(())
 }
@@ -386,7 +488,6 @@ pub(crate) fn apply_spawn_agent_runtime_overrides_for_cwd(
     match cwd {
         SpawnAgentCwd::Inherited => apply_spawn_agent_runtime_overrides(config, turn),
         SpawnAgentCwd::Explicit(cwd) => {
-            apply_spawn_agent_runtime_state(config, turn);
             config
                 .permissions
                 .approval_policy

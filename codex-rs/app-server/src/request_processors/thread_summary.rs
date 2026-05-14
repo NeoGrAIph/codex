@@ -155,6 +155,7 @@ pub(super) fn with_thread_spawn_agent_metadata(
                 agent_path,
                 agent_nickname: existing_agent_nickname,
                 agent_role: existing_agent_role,
+                agent_persona,
             },
         ) => codex_protocol::protocol::SessionSource::SubAgent(
             codex_protocol::protocol::SubAgentSource::ThreadSpawn {
@@ -163,6 +164,7 @@ pub(super) fn with_thread_spawn_agent_metadata(
                 agent_path,
                 agent_nickname: agent_nickname.or(existing_agent_nickname),
                 agent_role: agent_role.or(existing_agent_role),
+                agent_persona,
             },
         ),
         _ => source,
@@ -287,6 +289,7 @@ pub(crate) fn summary_to_thread(
         cli_version,
         agent_nickname: source.get_nickname(),
         agent_role: source.get_agent_role(),
+        agent_persona: source.get_agent_persona(),
         source: source.into(),
         thread_source: None,
         git_info,

@@ -2573,6 +2573,8 @@ pub enum SubAgentSource {
         agent_nickname: Option<String>,
         #[serde(default, alias = "agent_type")]
         agent_role: Option<String>,
+        #[serde(default)]
+        agent_persona: Option<String>,
     },
     MemoryConsolidation,
     Other(String),
@@ -2635,6 +2637,15 @@ impl SessionSource {
         match self {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. }) => {
                 agent_role.clone()
+            }
+            _ => None,
+        }
+    }
+
+    pub fn get_agent_persona(&self) -> Option<String> {
+        match self {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_persona, .. }) => {
+                agent_persona.clone()
             }
             _ => None,
         }

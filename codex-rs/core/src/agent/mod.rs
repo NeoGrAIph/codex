@@ -3,6 +3,7 @@ pub(crate) mod control;
 pub(crate) mod mailbox;
 mod registry;
 pub(crate) mod role;
+pub(crate) mod role_templates;
 pub(crate) mod status;
 
 pub(crate) use codex_protocol::protocol::AgentStatus;

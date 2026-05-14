@@ -91,6 +91,7 @@ fn sample_thread(thread_id: &str) -> Thread {
         thread_source: None,
         agent_nickname: None,
         agent_role: None,
+        agent_persona: None,
         git_info: None,
         name: None,
         turns: Vec::new(),

@@ -70,6 +70,10 @@ agentNickname: string | null,
  */
 agentRole: string | null,
 /**
+ * Optional persona (agent_persona) assigned to an AgentControl-spawned sub-agent.
+ */
+agentPersona: string | null,
+/**
  * Optional Git metadata captured when the thread was created.
  */
 gitInfo: GitInfo | null,

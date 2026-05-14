@@ -267,6 +267,7 @@ fn build_ws_client_metadata_includes_window_lineage_and_turn_metadata() {
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
+        agent_persona: None,
     }));
 
     client.advance_window_generation();

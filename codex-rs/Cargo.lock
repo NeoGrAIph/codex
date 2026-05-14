@@ -2539,6 +2539,7 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "serde_yaml",
  "serial_test",
  "sha1",
  "shlex",
@@ -2561,6 +2562,7 @@ dependencies = [
  "walkdir",
  "which 8.0.0",
  "whoami",
+ "wildmatch",
  "wiremock",
  "zstd 0.13.3",
 ]

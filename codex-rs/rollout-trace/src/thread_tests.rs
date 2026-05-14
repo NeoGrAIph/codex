@@ -79,6 +79,7 @@ fn spawned_thread_start_appends_to_root_bundle() -> anyhow::Result<()> {
             ),
             agent_nickname: Some("Kepler".to_string()),
             agent_role: Some("worker".to_string()),
+            agent_persona: None,
         }),
         cwd: PathBuf::from("/workspace"),
         rollout_path: Some(PathBuf::from("/tmp/child-rollout.jsonl")),

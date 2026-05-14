@@ -208,6 +208,7 @@ impl TurnContext {
             permission_profile: &self.permission_profile,
             windows_sandbox_level: self.windows_sandbox_level,
         })
+        .with_agent_tool_policy(config.agent_tool_policy.clone())
         .with_namespace_tools_capability(provider_capabilities.namespace_tools)
         .with_image_generation_capability(provider_capabilities.image_generation)
         .with_web_search_capability(provider_capabilities.web_search)
@@ -231,9 +232,12 @@ impl TurnContext {
                 .enabled(Feature::MultiAgentV2)
                 .then_some(config.multi_agent_v2.min_wait_timeout_ms),
         )
-        .with_agent_type_description(crate::agent::role::spawn_tool_spec::build(
-            &config.agent_roles,
-        ));
+        .with_agent_type_description(
+            crate::agent::role::spawn_tool_spec::build_with_templates(
+                &config.agent_roles,
+                &crate::agent::role_templates::LoadedRoleTemplates::load_for_config(&config),
+            ),
+        );
 
         Self {
             sub_id: self.sub_id.clone(),
@@ -484,6 +488,7 @@ impl Session {
             permission_profile: &session_configuration.permission_profile(),
             windows_sandbox_level: session_configuration.windows_sandbox_level,
         })
+        .with_agent_tool_policy(per_turn_config.agent_tool_policy.clone())
         .with_namespace_tools_capability(provider_capabilities.namespace_tools)
         .with_image_generation_capability(provider_capabilities.image_generation)
         .with_web_search_capability(provider_capabilities.web_search)
@@ -517,9 +522,14 @@ impl Session {
                 .enabled(Feature::MultiAgentV2)
                 .then_some(per_turn_config.multi_agent_v2.min_wait_timeout_ms),
         )
-        .with_agent_type_description(crate::agent::role::spawn_tool_spec::build(
-            &per_turn_config.agent_roles,
-        ));
+        .with_agent_type_description(
+            crate::agent::role::spawn_tool_spec::build_with_templates(
+                &per_turn_config.agent_roles,
+                &crate::agent::role_templates::LoadedRoleTemplates::load_for_config(
+                    &per_turn_config,
+                ),
+            ),
+        );
 
         let per_turn_config = Arc::new(per_turn_config);
         let turn_metadata_state = Arc::new(TurnMetadataState::new(

@@ -692,6 +692,7 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -786,6 +787,7 @@ async fn spawn_agent_fork_flushes_parent_rollout_before_loading_history() {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -896,6 +898,7 @@ async fn spawn_agent_fork_last_n_turns_keeps_only_recent_turns() {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -1185,6 +1188,7 @@ async fn spawn_child_completion_notifies_parent_history() {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -1221,6 +1225,7 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
                 agent_path: Some(worker_path.clone()),
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -1237,6 +1242,7 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
                 agent_path: Some(tester_path.clone()),
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -1335,6 +1341,7 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
             agent_path: Some(tester_path.clone()),
             agent_nickname: None,
             agent_role: Some("explorer".to_string()),
+            agent_persona: None,
         })),
         tester_path.to_string(),
         Some(tester_path.clone()),
@@ -1421,6 +1428,7 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
             agent_path: None,
             agent_nickname: None,
             agent_role: Some("explorer".to_string()),
+            agent_persona: None,
         })),
         child_thread_id.to_string(),
         /*child_agent_path*/ None,
@@ -1464,6 +1472,7 @@ async fn spawn_thread_subagent_gets_random_nickname_in_session_source() {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -1516,6 +1525,7 @@ async fn spawn_thread_subagent_uses_role_specific_nickname_candidates() {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("researcher".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -1574,6 +1584,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
                 agent_path: Some(agent_path.clone()),
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -1643,6 +1654,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
                 agent_path: Some(agent_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
             }),
         )
         .await
@@ -1747,6 +1759,7 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
                 agent_path: Some(worker_path.clone()),
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -1766,6 +1779,7 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
                 ),
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -1781,6 +1795,7 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -1796,6 +1811,7 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -1811,6 +1827,7 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
                 agent_path: Some(reviewer_path),
                 agent_nickname: None,
                 agent_role: Some("reviewer".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -1871,6 +1888,7 @@ async fn shutdown_agent_tree_closes_live_descendants() {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -1886,6 +1904,7 @@ async fn shutdown_agent_tree_closes_live_descendants() {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -1956,6 +1975,7 @@ async fn shutdown_agent_tree_closes_descendants_when_started_at_child() {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -1971,6 +1991,7 @@ async fn shutdown_agent_tree_closes_descendants_when_started_at_child() {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -2047,6 +2068,7 @@ async fn resume_agent_from_rollout_does_not_reopen_closed_descendants() {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -2062,6 +2084,7 @@ async fn resume_agent_from_rollout_does_not_reopen_closed_descendants() {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -2142,6 +2165,7 @@ async fn resume_closed_child_reopens_open_descendants() {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -2157,6 +2181,7 @@ async fn resume_closed_child_reopens_open_descendants() {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -2197,6 +2222,7 @@ async fn resume_closed_child_reopens_open_descendants() {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
             }),
         )
         .await
@@ -2239,6 +2265,7 @@ async fn resume_agent_from_rollout_reopens_open_descendants_after_manager_shutdo
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -2254,6 +2281,7 @@ async fn resume_agent_from_rollout_reopens_open_descendants_after_manager_shutdo
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -2330,6 +2358,7 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -2345,6 +2374,7 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -2383,6 +2413,7 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
             agent_path: None,
             agent_nickname: None,
             agent_role: Some("worker".to_string()),
+            agent_persona: None,
         }))
         .expect("stale session source should serialize");
     state_db
@@ -2461,6 +2492,7 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
             })),
         )
         .await
@@ -2476,6 +2508,7 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
+                agent_persona: None,
             })),
         )
         .await

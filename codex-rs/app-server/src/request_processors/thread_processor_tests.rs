@@ -654,6 +654,7 @@ mod thread_processor_behavior_tests {
             reasoning_effort: None,
             personality: None,
             session_source: SessionSource::Cli,
+            agent_tool_policy: None,
             thread_source: None,
         };
 
@@ -920,7 +921,7 @@ mod thread_processor_behavior_tests {
     }
 
     #[tokio::test]
-    async fn read_summary_from_rollout_preserves_agent_nickname() -> Result<()> {
+    async fn read_summary_from_rollout_preserves_agent_metadata() -> Result<()> {
         use codex_protocol::protocol::RolloutItem;
         use codex_protocol::protocol::RolloutLine;
         use codex_protocol::protocol::SessionMetaLine;
@@ -942,6 +943,7 @@ mod thread_processor_behavior_tests {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: Some("audit".to_string()),
             }),
             thread_source: Some(codex_protocol::protocol::ThreadSource::Subagent),
             agent_nickname: Some("atlas".to_string()),
@@ -965,6 +967,7 @@ mod thread_processor_behavior_tests {
 
         assert_eq!(thread.agent_nickname, Some("atlas".to_string()));
         assert_eq!(thread.agent_role, Some("explorer".to_string()));
+        assert_eq!(thread.agent_persona, Some("audit".to_string()));
         assert_eq!(thread.thread_source, None);
         Ok(())
     }
@@ -1071,7 +1074,7 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn summary_from_state_db_metadata_preserves_agent_nickname() -> Result<()> {
+    fn summary_from_state_db_metadata_preserves_agent_metadata() -> Result<()> {
         let conversation_id = ThreadId::from_string("bfd12a78-5900-467b-9bc5-d3d35df08191")?;
         let source =
             serde_json::to_string(&SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -1080,6 +1083,7 @@ mod thread_processor_behavior_tests {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: Some("audit".to_string()),
             }))?;
 
         let summary = summary_from_state_db_metadata(
@@ -1105,6 +1109,7 @@ mod thread_processor_behavior_tests {
 
         assert_eq!(thread.agent_nickname, Some("atlas".to_string()));
         assert_eq!(thread.agent_role, Some("explorer".to_string()));
+        assert_eq!(thread.agent_persona, Some("audit".to_string()));
         Ok(())
     }
 

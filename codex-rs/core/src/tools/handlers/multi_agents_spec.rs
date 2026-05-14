@@ -526,9 +526,16 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
             JsonSchema::string(Some(agent_type_description.to_string())),
         ),
         (
+            "agent_persona".to_string(),
+            JsonSchema::string(Some(
+                "Optional persona name within the selected markdown agent role template. Select the role with `agent_type` (for example, `agent_type: \"orchestrator\"`) and use this field only for the persona name (for example, `default`). Omit to use the default persona."
+                    .to_string(),
+            )),
+        ),
+        (
             "cwd".to_string(),
             JsonSchema::string(Some(
-                "Optional working directory for the new agent. Relative paths resolve against the parent thread cwd. Omit to inherit the parent cwd."
+                "Optional working directory for the new agent. Omit to inherit the parent cwd; set only when the agent must start in a different repository or worktree. Relative paths resolve against the parent thread cwd."
                     .to_string(),
             )),
         ),
@@ -566,9 +573,16 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
             JsonSchema::string(Some(agent_type_description.to_string())),
         ),
         (
+            "agent_persona".to_string(),
+            JsonSchema::string(Some(
+                "Optional persona name within the selected markdown agent role template. Select the role with `agent_type` (for example, `agent_type: \"orchestrator\"`) and use this field only for the persona name (for example, `default`). Omit to use the default persona."
+                    .to_string(),
+            )),
+        ),
+        (
             "cwd".to_string(),
             JsonSchema::string(Some(
-                "Optional working directory for the new agent. Relative paths resolve against the parent thread cwd. Omit to inherit the parent cwd."
+                "Optional working directory for the new agent. Omit to inherit the parent cwd; set only when the agent must start in a different repository or worktree. Relative paths resolve against the parent thread cwd."
                     .to_string(),
             )),
         ),
@@ -597,6 +611,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
 
 fn hide_spawn_agent_metadata_options(properties: &mut BTreeMap<String, JsonSchema>) {
     properties.remove("agent_type");
+    properties.remove("agent_persona");
     properties.remove("model");
     properties.remove("reasoning_effort");
 }

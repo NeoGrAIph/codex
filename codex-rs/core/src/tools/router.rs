@@ -5,6 +5,7 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
+use crate::tools::policy::ToolAccessPolicy;
 use crate::tools::registry::AnyToolResult;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::registry::ToolRegistry;
@@ -40,6 +41,7 @@ pub struct ToolRouter {
     specs: Vec<ConfiguredToolSpec>,
     model_visible_specs: Vec<ToolSpec>,
     parallel_mcp_server_names: HashSet<String>,
+    access_policy: Option<ToolAccessPolicy>,
 }
 
 pub(crate) struct ToolRouterParams<'a> {
@@ -70,6 +72,7 @@ impl ToolRouter {
             dynamic_tools,
         );
         let (specs, registry) = builder.build();
+        let access_policy = ToolAccessPolicy::from_config(&config.agent_tool_policy);
         let deferred_dynamic_tools = dynamic_tools
             .iter()
             .filter(|tool| tool.defer_loading)
@@ -84,10 +87,15 @@ impl ToolRouter {
                     return None;
                 }
 
-                filter_deferred_dynamic_tool_spec(
+                let spec = filter_deferred_dynamic_tool_spec(
                     configured_tool.spec.clone(),
                     &deferred_dynamic_tools,
-                )
+                )?;
+                if let Some(access_policy) = &access_policy {
+                    access_policy.filter_spec(spec)
+                } else {
+                    Some(spec)
+                }
             })
             .collect();
 
@@ -96,6 +104,7 @@ impl ToolRouter {
             specs,
             model_visible_specs,
             parallel_mcp_server_names,
+            access_policy,
         }
     }
 
@@ -280,6 +289,13 @@ impl ToolRouter {
             call_id,
             payload,
         } = call;
+        if let Some(access_policy) = &self.access_policy
+            && !access_policy.allows(&tool_name)
+        {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "Tool `{tool_name}` is not allowed for this agent persona."
+            )));
+        }
 
         let invocation = ToolInvocation {
             session,

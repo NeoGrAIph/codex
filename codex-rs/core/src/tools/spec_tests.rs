@@ -17,6 +17,7 @@ use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::SessionSource;
 use codex_tools::AdditionalProperties;
+use codex_tools::AgentToolPolicyConfig;
 use codex_tools::ConfiguredToolSpec;
 use codex_tools::DiscoverableTool;
 use codex_tools::JsonSchema;
@@ -1023,6 +1024,63 @@ async fn tool_search_entries_skip_namespace_outputs_when_namespace_tools_are_dis
             namespace: None,
             name: "plain_dynamic".to_string(),
             description: "Plain dynamic tool.".to_string(),
+            input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            defer_loading: true,
+        },
+    ];
+
+    let entries =
+        build_tool_search_entries_for_config(&tools_config, Some(&mcp_tools), &dynamic_tools);
+    let outputs = entries
+        .into_iter()
+        .map(|entry| entry.output)
+        .collect::<Vec<_>>();
+
+    assert_eq!(outputs.len(), 1);
+    match &outputs[0] {
+        LoadableToolSpec::Function(tool) => assert_eq!(tool.name, "plain_dynamic"),
+        LoadableToolSpec::Namespace(_) => panic!("namespace tool_search output should be hidden"),
+    }
+}
+
+#[tokio::test]
+async fn tool_search_entries_honor_agent_tool_policy() {
+    let config = test_config().await;
+    let model_info = construct_model_info_offline("gpt-5.4", &config);
+    let features = Features::with_defaults();
+    let available_models = Vec::new();
+    let mut tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        image_generation_tool_auth_allowed: true,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        permission_profile: &PermissionProfile::Disabled,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    });
+    tools_config.agent_tool_policy = Some(AgentToolPolicyConfig {
+        allow_list: Some(vec!["plain_dynamic".to_string()]),
+        deny_list: None,
+        inherited: None,
+    });
+    let mcp_tools = vec![mcp_tool_info(mcp_tool(
+        "echo",
+        "Echo",
+        serde_json::json!({"type": "object"}),
+    ))];
+    let dynamic_tools = vec![
+        DynamicToolSpec {
+            namespace: None,
+            name: "plain_dynamic".to_string(),
+            description: "Allowed dynamic tool.".to_string(),
+            input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            defer_loading: true,
+        },
+        DynamicToolSpec {
+            namespace: None,
+            name: "blocked_dynamic".to_string(),
+            description: "Blocked dynamic tool.".to_string(),
             input_schema: serde_json::json!({"type": "object", "properties": {}}),
             defer_loading: true,
         },
