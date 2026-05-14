@@ -83,6 +83,10 @@ yarn.lock
 # Fork-local generated lockfile noise
 codex-rs/Cargo.lock
 
+# Fork-local build/install runtime artifacts
+scripts/.codex-build-hash
+scripts/.codex-binary-backups/
+
 # release
 package.json-e
 session.ts-e

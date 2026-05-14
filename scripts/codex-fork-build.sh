@@ -35,10 +35,15 @@ head = subprocess.check_output([
     "git", "-C", str(repo), "rev-parse", "HEAD"
 ], text=True).strip()
 tracked_diff = subprocess.check_output([
-    "git", "-C", str(repo), "diff", "--binary", "--no-ext-diff", "HEAD", "--", ".", ":(exclude)scripts/.codex-build-hash"
+    "git", "-C", str(repo), "diff", "--binary", "--no-ext-diff", "HEAD", "--", ".",
+    ":(exclude)scripts/.codex-build-hash",
+    ":(exclude)scripts/.codex-binary-backups/**",
 ])
 untracked = subprocess.check_output([
-    "git", "-C", str(repo), "ls-files", "--others", "--exclude-standard", "-z"
+    "git", "-C", str(repo), "ls-files", "--others", "--exclude-standard", "-z",
+    "--", ".",
+    ":(exclude)scripts/.codex-build-hash",
+    ":(exclude)scripts/.codex-binary-backups/**",
 ])
 paths = [Path(p.decode()) for p in untracked.split(b"\0") if p]
 if not tracked_diff and not paths:
@@ -47,9 +52,12 @@ if not tracked_diff and not paths:
 h = hashlib.sha256()
 h.update(tracked_diff)
 for rel_path in sorted(paths):
+    path = repo / rel_path
+    if not path.is_file() or path.is_symlink():
+        continue
     h.update(b"\0UNTRACKED\0")
     h.update(rel_path.as_posix().encode())
-    with (repo / rel_path).open("rb") as fh:
+    with path.open("rb") as fh:
         while True:
             chunk = fh.read(65536)
             if not chunk:

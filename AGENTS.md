@@ -54,6 +54,18 @@ In the codex-rs folder where the rust code lives:
     trivial; prefer new modules/files and keep `chatwidget.rs` focused on orchestration.
 - When running Rust commands (e.g. `just fix` or `cargo test`) be patient with the command and never try to kill them using the PID. Rust lock can make the execution slow, this is expected.
 
+## Fork Binary Update Scripts
+
+- Use `scripts/codex-fork-build.sh` from the repository root to build the fork release binary at
+  `codex-rs/target/release/codex` and record the build hash.
+- Use `scripts/codex-fork-install-binary.sh` after a successful build to актуализировать the
+  executable `codex` binary resolved from `PATH` with the binary built from this fork.
+- The install script backs up the previous `codex` target under `scripts/.codex-binary-backups/`
+  before replacing it. Use `scripts/codex-fork-install-binary.sh --dry-run` to verify source,
+  target, and backup paths without changing files.
+- Keep build and binary replacement as explicit separate steps; do not silently replace the system
+  `codex` binary as part of ordinary tests or feature implementation.
+
 ## Fork Feature Delivery Contract
 
 - Treat each fork feature as a documented contract, not as an implicit code-only customization.
