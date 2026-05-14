@@ -63,6 +63,10 @@ impl AgentNavigationState {
         self.threads.get(thread_id)
     }
 
+    pub(crate) fn get_mut(&mut self, thread_id: &ThreadId) -> Option<&mut AgentPickerThreadEntry> {
+        self.threads.get_mut(thread_id)
+    }
+
     /// Returns whether the picker cache currently knows about any threads.
     ///
     /// This is the cheapest way for `App` to decide whether opening the picker should show "No
@@ -91,6 +95,7 @@ impl AgentNavigationState {
             AgentPickerThreadEntry {
                 agent_nickname,
                 agent_role,
+                thread_note: None,
                 is_closed,
             },
         );

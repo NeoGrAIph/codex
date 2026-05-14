@@ -1449,6 +1449,8 @@ pub enum EventMsg {
     CollabResumeBegin(CollabResumeBeginEvent),
     /// Collab interaction: resume end.
     CollabResumeEnd(CollabResumeEndEvent),
+    /// Metadata-only thread note update.
+    ThreadNoteUpdated(ThreadNoteUpdatedEvent),
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS, EnumIter)]
@@ -1620,6 +1622,12 @@ impl From<CollabAgentSpawnEndEvent> for EventMsg {
 impl From<CollabAgentInteractionBeginEvent> for EventMsg {
     fn from(event: CollabAgentInteractionBeginEvent) -> Self {
         EventMsg::CollabAgentInteractionBegin(event)
+    }
+}
+
+impl From<ThreadNoteUpdatedEvent> for EventMsg {
+    fn from(event: ThreadNoteUpdatedEvent) -> Self {
+        EventMsg::ThreadNoteUpdated(event)
     }
 }
 
@@ -2477,6 +2485,22 @@ impl InitialHistory {
         }
     }
 
+    pub fn get_thread_note(&self) -> Option<String> {
+        match self {
+            InitialHistory::New | InitialHistory::Cleared => None,
+            InitialHistory::Resumed(resumed) => {
+                resumed.history.iter().find_map(|item| match item {
+                    RolloutItem::SessionMeta(meta_line) => meta_line.meta.thread_note.clone(),
+                    _ => None,
+                })
+            }
+            InitialHistory::Forked(items) => items.iter().find_map(|item| match item {
+                RolloutItem::SessionMeta(meta_line) => meta_line.meta.thread_note.clone(),
+                _ => None,
+            }),
+        }
+    }
+
     pub fn get_resumed_thread_source(&self) -> Option<ThreadSource> {
         match self {
             InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => None,
@@ -2734,6 +2758,9 @@ pub struct SessionMeta {
     /// Optional canonical agent path assigned to an AgentControl-spawned sub-agent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_path: Option<String>,
+    /// Optional metadata-only note assigned to an AgentControl-spawned sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_note: Option<String>,
     pub model_provider: Option<String>,
     /// base_instructions for the session. This *should* always be present when creating a new session,
     /// but may be missing for older sessions. If not present, fall back to rendering the base_instructions
@@ -2759,6 +2786,7 @@ impl Default for SessionMeta {
             agent_nickname: None,
             agent_role: None,
             agent_path: None,
+            thread_note: None,
             model_provider: None,
             base_instructions: None,
             dynamic_tools: None,
@@ -3432,6 +3460,11 @@ pub struct SessionConfiguredEvent {
     #[ts(optional)]
     pub thread_name: Option<String>,
 
+    /// Optional metadata-only thread note (may be unset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_note: Option<String>,
+
     /// Tell the client what model is being queried.
     pub model: String,
 
@@ -3496,6 +3529,8 @@ impl<'de> Deserialize<'de> for SessionConfiguredEvent {
             thread_source: Option<ThreadSource>,
             #[serde(default)]
             thread_name: Option<String>,
+            #[serde(default)]
+            thread_note: Option<String>,
             model: String,
             model_provider_id: String,
             service_tier: Option<String>,
@@ -3534,6 +3569,7 @@ impl<'de> Deserialize<'de> for SessionConfiguredEvent {
             forked_from_id: wire.forked_from_id,
             thread_source: wire.thread_source,
             thread_name: wire.thread_name,
+            thread_note: wire.thread_note,
             model: wire.model,
             model_provider_id: wire.model_provider_id,
             service_tier: wire.service_tier,
@@ -3763,6 +3799,9 @@ pub struct CollabAgentSpawnEndEvent {
     /// Optional role assigned to the new agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_agent_role: Option<String>,
+    /// Optional metadata-only note assigned to the new agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_thread_note: Option<String>,
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
@@ -3772,6 +3811,15 @@ pub struct CollabAgentSpawnEndEvent {
     pub reasoning_effort: ReasoningEffortConfig,
     /// Last known status of the new agent reported to the sender agent.
     pub status: AgentStatus,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct ThreadNoteUpdatedEvent {
+    pub thread_id: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_note: Option<String>,
+    #[serde(default)]
+    pub updated_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
@@ -5263,6 +5311,7 @@ mod tests {
                 forked_from_id: None,
                 thread_source: None,
                 thread_name: None,
+                thread_note: None,
                 model: "codex-mini-latest".to_string(),
                 model_provider_id: "openai".to_string(),
                 service_tier: None,

@@ -113,6 +113,7 @@ fn session_configured_produces_thread_started_event() {
         forked_from_id: None,
         thread_source: None,
         thread_name: None,
+        thread_note: None,
         model: "codex-mini-latest".to_string(),
         model_provider_id: "test-provider".to_string(),
         service_tier: None,
@@ -730,6 +731,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                     ApiCollabAgentState {
                         status: ApiCollabAgentStatus::Running,
                         message: None,
+                        thread_note: None,
                     },
                 )]),
             },

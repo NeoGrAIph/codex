@@ -1280,6 +1280,7 @@ async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
         Some(&AgentPickerThreadEntry {
             agent_nickname: None,
             agent_role: None,
+            thread_note: None,
             is_closed: true,
         })
     );
@@ -1313,6 +1314,7 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
         Some(&AgentPickerThreadEntry {
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
+            thread_note: None,
             is_closed: true,
         })
     );
@@ -1367,6 +1369,7 @@ async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
         Some(&AgentPickerThreadEntry {
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
+            thread_note: None,
             is_closed: true,
         })
     );
@@ -1405,6 +1408,7 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
             Some(&AgentPickerThreadEntry {
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
                 is_closed: false,
             })
         );
@@ -2949,6 +2953,8 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
                 thread_source: None,
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
+                thread_note: None,
                 git_info: None,
                 name: Some("agent thread".to_string()),
                 turns: Vec::new(),
@@ -2979,6 +2985,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
         Some(&AgentPickerThreadEntry {
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
+            thread_note: None,
             is_closed: false,
         })
     );
@@ -3032,6 +3039,8 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
                 thread_source: None,
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                agent_persona: None,
+                thread_note: None,
                 git_info: None,
                 name: Some("agent thread".to_string()),
                 turns: Vec::new(),
@@ -3088,6 +3097,8 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         thread_source: None,
         agent_nickname: None,
         agent_role: None,
+        agent_persona: None,
+        thread_note: None,
         git_info: None,
         name: Some("read thread".to_string()),
         turns: Vec::new(),
@@ -5161,6 +5172,8 @@ async fn thread_rollback_response_discards_queued_active_thread_events() {
                 thread_source: None,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
+                thread_note: None,
                 git_info: None,
                 name: None,
                 turns: Vec::new(),

@@ -1182,6 +1182,7 @@ stream_max_retries = 0
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
         model_provider: Some("mock_provider".to_string()),
         base_instructions: None,
         dynamic_tools: None,

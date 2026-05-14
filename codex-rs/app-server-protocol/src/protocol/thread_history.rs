@@ -634,7 +634,8 @@ impl ThreadHistoryBuilder {
         let (receiver_thread_ids, agents_states) = match &payload.new_thread_id {
             Some(id) => {
                 let receiver_id = id.to_string();
-                let received_status = CollabAgentState::from(payload.status.clone());
+                let mut received_status = CollabAgentState::from(payload.status.clone());
+                received_status.thread_note = payload.new_thread_note.clone();
                 (
                     vec![receiver_id.clone()],
                     [(receiver_id, received_status)].into_iter().collect(),
@@ -2785,6 +2786,7 @@ mod tests {
                     CollabAgentState {
                         status: crate::protocol::v2::CollabAgentStatus::Completed,
                         message: None,
+                        thread_note: None,
                     },
                 )]
                 .into_iter()
@@ -2813,6 +2815,7 @@ mod tests {
                 new_thread_id: Some(spawned_thread_id),
                 new_agent_nickname: Some("Scout".into()),
                 new_agent_role: Some("explorer".into()),
+                new_thread_note: Some("Назначение: inspect | Компетенции:".into()),
                 prompt: "inspect the repo".into(),
                 model: "gpt-5.4-mini".into(),
                 reasoning_effort: codex_protocol::openai_models::ReasoningEffort::Medium,
@@ -2843,6 +2846,7 @@ mod tests {
                     CollabAgentState {
                         status: crate::protocol::v2::CollabAgentStatus::Running,
                         message: None,
+                        thread_note: Some("Назначение: inspect | Компетенции:".into()),
                     },
                 )]
                 .into_iter()
@@ -2913,6 +2917,7 @@ mod tests {
                     CollabAgentState {
                         status: crate::protocol::v2::CollabAgentStatus::Interrupted,
                         message: None,
+                        thread_note: None,
                     },
                 )]
                 .into_iter()

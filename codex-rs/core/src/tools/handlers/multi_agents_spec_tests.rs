@@ -61,6 +61,8 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
         .properties
         .as_ref()
         .expect("spawn_agent should use object params");
+    assert!(properties.contains_key("thread_note"));
+    assert!(properties.contains_key("thread_note_competencies"));
     assert!(description.contains("Spawns an agent to work on the specified task."));
     assert!(description.contains("The spawned agent will have the same tools as you"));
     assert!(description.contains("`max_concurrent_threads_per_session = 4`"));
@@ -138,6 +140,8 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
 
     assert!(properties.contains_key("fork_context"));
     assert!(properties.contains_key("cwd"));
+    assert!(properties.contains_key("thread_note"));
+    assert!(properties.contains_key("thread_note_competencies"));
     assert_eq!(
         properties
             .get("agent_persona")
@@ -182,6 +186,8 @@ fn spawn_agent_tool_v2_hidden_metadata_keeps_cwd_input() {
         .as_ref()
         .expect("spawn_agent should use object params");
     assert!(properties.contains_key("cwd"));
+    assert!(properties.contains_key("thread_note"));
+    assert!(properties.contains_key("thread_note_competencies"));
     assert!(!properties.contains_key("agent_type"));
     assert!(!properties.contains_key("model"));
     assert!(!properties.contains_key("reasoning_effort"));
@@ -320,7 +326,12 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
     );
     assert_eq!(
         output_schema.expect("list_agents output schema")["properties"]["agents"]["items"]["required"],
-        json!(["agent_name", "agent_status", "last_task_message"])
+        json!([
+            "agent_name",
+            "agent_status",
+            "last_task_message",
+            "thread_note"
+        ])
     );
 }
 

@@ -798,6 +798,15 @@ impl App {
         thread_id: ThreadId,
         notification: ServerNotification,
     ) -> Result<()> {
+        if let ServerNotification::ThreadNoteUpdated(notification) = &notification
+            && let Ok(note_thread_id) = ThreadId::from_string(&notification.thread_id)
+            && let Some(entry) = self.agent_navigation.get_mut(&note_thread_id)
+        {
+            entry.thread_note = notification.thread_note.clone();
+            self.chat_widget
+                .update_collab_agent_thread_note(note_thread_id, notification.thread_note.clone());
+        }
+
         let inferred_session = self
             .infer_session_for_thread_notification(thread_id, &notification)
             .await;
@@ -888,6 +897,7 @@ impl App {
                         thread_id,
                         thread.agent_nickname,
                         thread.agent_role,
+                        thread.thread_note,
                         /*is_closed*/ false,
                     );
                 }
@@ -929,6 +939,7 @@ impl App {
             thread_id,
             notification.thread.agent_nickname.clone(),
             notification.thread.agent_role.clone(),
+            notification.thread.thread_note.clone(),
             /*is_closed*/ false,
         );
         Some(session)
@@ -1037,7 +1048,7 @@ impl App {
         self.primary_session_configured = Some(session.clone());
         self.upsert_agent_picker_thread(
             thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-            /*is_closed*/ false,
+            /*thread_note*/ None, /*is_closed*/ false,
         );
         let channel = self.ensure_thread_channel(thread_id);
         {

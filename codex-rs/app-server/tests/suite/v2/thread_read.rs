@@ -1284,6 +1284,7 @@ async fn seed_pathless_store_thread(
             forked_from_id: None,
             source: ProtocolSessionSource::Cli,
             thread_source: None,
+            thread_note: None,
             base_instructions: BaseInstructions::default(),
             dynamic_tools: Vec::new(),
             metadata: ThreadPersistenceMetadata {

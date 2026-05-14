@@ -1839,6 +1839,8 @@ mod tests {
                 thread_source: None,
                 agent_nickname: None,
                 agent_role: None,
+                agent_persona: None,
+                thread_note: None,
                 git_info: None,
                 name: None,
                 turns: vec![Turn {

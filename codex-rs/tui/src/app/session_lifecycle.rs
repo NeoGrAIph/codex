@@ -112,15 +112,20 @@ impl App {
         thread_id: ThreadId,
         agent_nickname: Option<String>,
         agent_role: Option<String>,
+        thread_note: Option<String>,
         is_closed: bool,
     ) {
         self.chat_widget.set_collab_agent_metadata(
             thread_id,
             agent_nickname.clone(),
             agent_role.clone(),
+            thread_note.clone(),
         );
         self.agent_navigation
             .upsert(thread_id, agent_nickname, agent_role, is_closed);
+        if let Some(entry) = self.agent_navigation.get_mut(&thread_id) {
+            entry.thread_note = thread_note;
+        }
         self.sync_active_agent_label();
     }
 
@@ -157,6 +162,11 @@ impl App {
                             .as_ref()
                             .and_then(|entry| entry.agent_role.clone())
                     }),
+                    thread.thread_note.or_else(|| {
+                        existing_entry
+                            .as_ref()
+                            .and_then(|entry| entry.thread_note.clone())
+                    }),
                     matches!(
                         thread.status,
                         codex_app_server_protocol::ThreadStatus::NotLoaded
@@ -178,12 +188,13 @@ impl App {
                         thread_id,
                         entry.agent_nickname,
                         entry.agent_role,
+                        entry.thread_note,
                         is_closed,
                     );
                 } else {
                     self.upsert_agent_picker_thread(
                         thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-                        is_closed,
+                        /*thread_note*/ None, is_closed,
                     );
                 }
                 true
@@ -273,6 +284,7 @@ impl App {
                 thread_id,
                 entry.agent_nickname.clone(),
                 entry.agent_role.clone(),
+                entry.thread_note.clone(),
             );
         }
         self.chat_widget = chat_widget;
@@ -575,6 +587,7 @@ impl App {
                 thread.thread_id,
                 thread.agent_nickname,
                 thread.agent_role,
+                thread.thread_note,
                 /*is_closed*/ false,
             );
         }

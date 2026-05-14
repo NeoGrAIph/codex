@@ -212,6 +212,7 @@ async fn thread_unarchive_preserves_pathless_store_metadata() -> Result<()> {
             forked_from_id: Some(parent_thread_id),
             source: SessionSource::Cli,
             thread_source: None,
+            thread_note: None,
             base_instructions: BaseInstructions::default(),
             dynamic_tools: Vec::new(),
             metadata: ThreadPersistenceMetadata {

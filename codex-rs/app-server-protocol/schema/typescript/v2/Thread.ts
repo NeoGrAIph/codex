@@ -74,6 +74,10 @@ agentRole: string | null,
  */
 agentPersona: string | null,
 /**
+ * Optional metadata-only note assigned to the thread.
+ */
+threadNote: string | null,
+/**
  * Optional Git metadata captured when the thread was created.
  */
 gitInfo: GitInfo | null,

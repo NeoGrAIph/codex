@@ -38,6 +38,7 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_path: Option<AgentPath>,
     pub(crate) agent_nickname: Option<String>,
     pub(crate) agent_role: Option<String>,
+    pub(crate) thread_note: Option<String>,
     pub(crate) last_task_message: Option<String>,
 }
 
@@ -177,6 +178,20 @@ impl AgentRegistry {
             .find(|metadata| metadata.agent_id == Some(thread_id))
         {
             metadata.last_task_message = Some(last_task_message);
+        }
+    }
+
+    pub(crate) fn update_thread_note(&self, thread_id: ThreadId, thread_note: Option<String>) {
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(metadata) = active_agents
+            .agent_tree
+            .values_mut()
+            .find(|metadata| metadata.agent_id == Some(thread_id))
+        {
+            metadata.thread_note = thread_note;
         }
     }
 

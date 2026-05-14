@@ -5699,6 +5699,8 @@ session_picker_view = "dense"
             thread_source: None,
             agent_nickname: None,
             agent_role: None,
+            agent_persona: None,
+            thread_note: None,
             git_info: None,
             name: Some(String::from("Named thread")),
             turns: Vec::new(),
@@ -5733,6 +5735,8 @@ session_picker_view = "dense"
             thread_source: None,
             agent_nickname: None,
             agent_role: None,
+            agent_persona: None,
+            thread_note: None,
             git_info: None,
             name: None,
             turns: vec![codex_app_server_protocol::Turn {
@@ -5800,6 +5804,8 @@ session_picker_view = "dense"
             thread_source: None,
             agent_nickname: None,
             agent_role: None,
+            agent_persona: None,
+            thread_note: None,
             git_info: None,
             name: None,
             turns: vec![codex_app_server_protocol::Turn {
@@ -5857,6 +5863,8 @@ session_picker_view = "dense"
             thread_source: None,
             agent_nickname: None,
             agent_role: None,
+            agent_persona: None,
+            thread_note: None,
             git_info: None,
             name: None,
             turns: vec![codex_app_server_protocol::Turn {

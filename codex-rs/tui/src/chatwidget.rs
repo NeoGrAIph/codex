@@ -1676,14 +1676,27 @@ impl ChatWidget {
         thread_id: ThreadId,
         agent_nickname: Option<String>,
         agent_role: Option<String>,
+        thread_note: Option<String>,
     ) {
         self.collab_agent_metadata.insert(
             thread_id,
             AgentMetadata {
                 agent_nickname,
                 agent_role,
+                thread_note,
             },
         );
+    }
+
+    pub(crate) fn update_collab_agent_thread_note(
+        &mut self,
+        thread_id: ThreadId,
+        thread_note: Option<String>,
+    ) {
+        self.collab_agent_metadata
+            .entry(thread_id)
+            .or_default()
+            .thread_note = thread_note;
     }
 
     /// Returns the cached metadata for a thread, defaulting to empty if none has been registered.
@@ -6255,6 +6268,20 @@ impl ChatWidget {
                             thread_id = notification.thread_id,
                             error = %err,
                             "ignoring app-server ThreadNameUpdated with invalid thread_id"
+                        );
+                    }
+                }
+            }
+            ServerNotification::ThreadNoteUpdated(notification) => {
+                match ThreadId::from_string(&notification.thread_id) {
+                    Ok(thread_id) => {
+                        self.update_collab_agent_thread_note(thread_id, notification.thread_note);
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            thread_id = notification.thread_id,
+                            error = %err,
+                            "ignoring app-server ThreadNoteUpdated with invalid thread_id"
                         );
                     }
                 }

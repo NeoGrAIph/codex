@@ -56,6 +56,7 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) fork_parent_spawn_call_id: Option<String>,
     pub(crate) fork_mode: Option<SpawnAgentForkMode>,
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
+    pub(crate) thread_note: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -70,6 +71,7 @@ pub(crate) struct ListedAgent {
     pub(crate) agent_name: String,
     pub(crate) agent_status: AgentStatus,
     pub(crate) last_task_message: Option<String>,
+    pub(crate) thread_note: Option<String>,
 }
 
 fn default_agent_nickname_list() -> Vec<&'static str> {
@@ -225,6 +227,7 @@ impl AgentControl {
                     agent_path,
                     agent_role,
                     agent_persona,
+                    options.thread_note.clone(),
                     /*preferred_agent_nickname*/ None,
                 )?;
                 (Some(session_source), agent_metadata)
@@ -253,6 +256,7 @@ impl AgentControl {
                         self.clone(),
                         session_source,
                         /*thread_source*/ Some(ThreadSource::Subagent),
+                        options.thread_note.clone(),
                         /*persist_extended_history*/ false,
                         /*metrics_service_name*/ None,
                         inherited_shell_snapshot,
@@ -441,6 +445,7 @@ impl AgentControl {
                 self.clone(),
                 session_source,
                 /*thread_source*/ Some(ThreadSource::Subagent),
+                options.thread_note.clone(),
                 /*persist_extended_history*/ false,
                 inherited_shell_snapshot,
                 inherited_exec_policy,
@@ -569,6 +574,7 @@ impl AgentControl {
                     agent_path,
                     resumed_agent_role,
                     agent_persona,
+                    None,
                     resumed_agent_nickname,
                 )?
             }
@@ -664,6 +670,10 @@ impl AgentControl {
             .await?;
         let mut agent_metadata = agent_metadata;
         agent_metadata.agent_id = Some(resumed_thread.thread_id);
+        let snapshot = resumed_thread.thread.config_snapshot().await;
+        agent_metadata.thread_note = self
+            .latest_thread_note(&state, resumed_thread.thread_id, snapshot.thread_note)
+            .await;
         reservation.commit(agent_metadata.clone());
         // Resumed threads are re-registered in-memory and need the same listener
         // attachment path as freshly spawned threads.
@@ -711,6 +721,21 @@ impl AgentControl {
                 .update_last_task_message(agent_id, last_task_message);
         }
         result
+    }
+
+    pub(crate) async fn set_thread_note(
+        &self,
+        thread_id: ThreadId,
+        thread_note: Option<String>,
+    ) -> CodexResult<()> {
+        let state = self.upgrade()?;
+        let thread = state.get_thread(thread_id).await?;
+        let codex_home = thread.config().await.codex_home.clone();
+        codex_rollout::append_thread_note(codex_home.as_path(), thread_id, thread_note.as_deref())
+            .await
+            .map_err(|err| CodexErr::Fatal(format!("failed to index thread note: {err}")))?;
+        self.state.update_thread_note(thread_id, thread_note);
+        Ok(())
     }
 
     /// Append a prebuilt message to an existing agent thread outside the normal user-input path.
@@ -960,10 +985,15 @@ impl AgentControl {
             && let Some(root_thread_id) = self.state.agent_id_for_path(&root_path)
             && let Ok(root_thread) = state.get_thread(root_thread_id).await
         {
+            let snapshot = root_thread.config_snapshot().await;
+            let thread_note = self
+                .latest_thread_note(&state, root_thread_id, snapshot.thread_note)
+                .await;
             agents.push(ListedAgent {
                 agent_name: root_path.to_string(),
                 agent_status: root_thread.agent_status().await,
                 last_task_message: Some(ROOT_LAST_TASK_MESSAGE.to_string()),
+                thread_note,
             });
         }
 
@@ -987,14 +1017,38 @@ impl AgentControl {
                 .map(ToString::to_string)
                 .unwrap_or_else(|| thread_id.to_string());
             let last_task_message = metadata.last_task_message.clone();
+            let thread_note = self
+                .latest_thread_note(&state, thread_id, metadata.thread_note.clone())
+                .await;
             agents.push(ListedAgent {
                 agent_name,
                 agent_status: thread.agent_status().await,
                 last_task_message,
+                thread_note,
             });
         }
 
         Ok(agents)
+    }
+
+    async fn latest_thread_note(
+        &self,
+        state: &ThreadManagerState,
+        thread_id: ThreadId,
+        fallback: Option<String>,
+    ) -> Option<String> {
+        let Ok(thread) = state.get_thread(thread_id).await else {
+            return fallback;
+        };
+        let codex_home = thread.config().await.codex_home.clone();
+        match codex_rollout::find_thread_note_update_by_id(codex_home.as_path(), &thread_id).await {
+            Ok(Some(thread_note)) => thread_note,
+            Ok(None) => fallback,
+            Err(err) => {
+                warn!("failed to read thread note index for {thread_id}: {err}");
+                fallback
+            }
+        }
     }
 
     /// Starts a detached watcher for sub-agents spawned from another thread.
@@ -1086,6 +1140,7 @@ impl AgentControl {
         agent_path: Option<AgentPath>,
         agent_role: Option<String>,
         agent_persona: Option<String>,
+        thread_note: Option<String>,
         preferred_agent_nickname: Option<String>,
     ) -> CodexResult<(SessionSource, AgentMetadata)> {
         if depth == 1 {
@@ -1113,6 +1168,7 @@ impl AgentControl {
             agent_path,
             agent_nickname,
             agent_role,
+            thread_note,
             last_task_message: None,
         };
         Ok((session_source, agent_metadata))

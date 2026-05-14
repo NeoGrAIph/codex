@@ -8,6 +8,7 @@ use crate::session::tests::make_session_and_context;
 use crate::session_prefix::format_subagent_notification_message;
 use crate::thread_manager::thread_store_from_config;
 use crate::tools::context::ToolOutput;
+use crate::tools::handlers::multi_agents::ListAgentsHandler as ListAgentsHandlerLegacy;
 use crate::tools::handlers::multi_agents_v2::CloseAgentHandler as CloseAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
@@ -192,6 +193,7 @@ struct ListedAgentResult {
     agent_name: String,
     agent_status: serde_json::Value,
     last_task_message: Option<String>,
+    thread_note: Option<String>,
 }
 
 #[tokio::test]
@@ -606,6 +608,143 @@ async fn spawn_agent_explicit_model_beats_markdown_template_default() {
         .await;
 
     assert_eq!(snapshot.model, "gpt-5.4-mini");
+}
+
+#[tokio::test]
+async fn legacy_list_agents_reports_thread_note_and_set_thread_note_updates_by_id() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+    }
+
+    let (mut session, turn) = make_session_and_context().await;
+    tokio::fs::create_dir_all(&turn.config.codex_home)
+        .await
+        .expect("codex home should be created");
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.conversation_id = root.thread_id;
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let spawn_output = SpawnAgentHandler::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "thread_note": "initial",
+                "thread_note_competencies": "tests, fmt"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+    let (spawn_content, _) = expect_text_output(spawn_output);
+    let spawn_result: SpawnAgentResult =
+        serde_json::from_str(&spawn_content).expect("spawn_agent result should be json");
+    let agent_id = parse_agent_id(&spawn_result.agent_id);
+
+    let list_output = ListAgentsHandlerLegacy
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "list_agents",
+            function_payload(json!({})),
+        ))
+        .await
+        .expect("list_agents should succeed");
+    let (list_content, list_success) = expect_text_output(list_output);
+    let list_result: ListAgentsResult =
+        serde_json::from_str(&list_content).expect("list_agents result should be json");
+    let agent = list_result
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == spawn_result.agent_id)
+        .expect("spawned agent should be listed by id");
+    assert_eq!(
+        agent.thread_note.as_deref(),
+        Some("Назначение: initial | Компетенции: tests, fmt")
+    );
+    assert_eq!(list_success, Some(true));
+
+    let set_note_output = SetThreadNoteHandler
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "set_thread_note",
+            function_payload(json!({
+                "target": spawn_result.agent_id,
+                "thread_note": "updated",
+                "thread_note_competencies": "lint"
+            })),
+        ))
+        .await
+        .expect("set_thread_note should succeed");
+    let (set_note_content, set_note_success) = expect_text_output(set_note_output);
+    let set_note_result: serde_json::Value =
+        serde_json::from_str(&set_note_content).expect("set_thread_note result should be json");
+    assert_eq!(
+        set_note_result,
+        json!({
+            "target": agent_id.to_string(),
+            "thread_note": "Назначение: updated | Компетенции: lint"
+        })
+    );
+    assert_eq!(set_note_success, Some(true));
+
+    let list_output = ListAgentsHandlerLegacy
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "list_agents",
+            function_payload(json!({})),
+        ))
+        .await
+        .expect("list_agents should succeed");
+    let (list_content, list_success) = expect_text_output(list_output);
+    let list_result: ListAgentsResult =
+        serde_json::from_str(&list_content).expect("list_agents result should be json");
+    let agent = list_result
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == agent_id.to_string())
+        .expect("spawned agent should be listed by id");
+    assert_eq!(
+        agent.thread_note.as_deref(),
+        Some("Назначение: updated | Компетенции: lint")
+    );
+    assert_eq!(list_success, Some(true));
+}
+
+#[tokio::test]
+async fn spawn_agent_rejects_duplicate_thread_note_competencies() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+
+    let err = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "thread_note": "Назначение: Тесты | Компетенции: fmt",
+                "thread_note_competencies": "lint"
+            })),
+        ))
+        .await
+        .expect_err("duplicate competencies should fail");
+
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("expected model-facing error");
+    };
+    assert!(message.contains("competencies were provided twice"));
 }
 
 #[tokio::test]
@@ -1419,6 +1558,7 @@ async fn multi_agent_v2_list_agents_returns_completed_status_and_last_task_messa
     let mut config = (*turn.config).clone();
     let _ = config.features.enable(Feature::MultiAgentV2);
     turn.config = Arc::new(config);
+    let _ = turn.features.enable(Feature::MultiAgentV2);
 
     let session = Arc::new(session);
     let turn = Arc::new(turn);
@@ -1429,12 +1569,38 @@ async fn multi_agent_v2_list_agents_returns_completed_status_and_last_task_messa
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
-                "task_name": "worker"
+                "task_name": "worker",
+                "thread_note": "inspect",
+                "thread_note_competencies": "repo"
             })),
         ))
         .await
         .expect("spawn_agent should succeed");
     let _ = expect_text_output(spawn_output);
+    let set_note_output = SetThreadNoteHandler
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "set_thread_note",
+            function_payload(json!({
+                "target": "worker",
+                "thread_note": "handoff",
+                "thread_note_competencies": "docs"
+            })),
+        ))
+        .await
+        .expect("set_thread_note should succeed");
+    let (set_note_content, set_note_success) = expect_text_output(set_note_output);
+    let set_note_result: serde_json::Value =
+        serde_json::from_str(&set_note_content).expect("set_thread_note result should be json");
+    assert_eq!(
+        set_note_result,
+        json!({
+            "target": "worker",
+            "thread_note": "Назначение: handoff | Компетенции: docs"
+        })
+    );
+    assert_eq!(set_note_success, Some(true));
 
     let agent_id = session
         .services
@@ -1496,6 +1662,10 @@ async fn multi_agent_v2_list_agents_returns_completed_status_and_last_task_messa
     assert_eq!(
         worker.last_task_message.as_deref(),
         Some("inspect this repo")
+    );
+    assert_eq!(
+        worker.thread_note.as_deref(),
+        Some("Назначение: handoff | Компетенции: docs")
     );
     assert_eq!(success, Some(true));
 }
@@ -3341,6 +3511,16 @@ async fn wait_agent_returns_not_found_for_missing_agents() {
                 (id_a.to_string(), AgentStatus::NotFound),
                 (id_b.to_string(), AgentStatus::NotFound),
             ]),
+            agent_metadata: HashMap::from([
+                (
+                    id_a.to_string(),
+                    wait::WaitAgentMetadata { thread_note: None }
+                ),
+                (
+                    id_b.to_string(),
+                    wait::WaitAgentMetadata { thread_note: None }
+                ),
+            ]),
             timed_out: false
         }
     );
@@ -3378,6 +3558,10 @@ async fn wait_agent_times_out_when_status_is_not_final() {
         result,
         wait::WaitAgentResult {
             status: HashMap::new(),
+            agent_metadata: HashMap::from([(
+                agent_id.to_string(),
+                wait::WaitAgentMetadata { thread_note: None },
+            )]),
             timed_out: true
         }
     );
@@ -3474,6 +3658,10 @@ async fn wait_agent_returns_final_status_without_timeout() {
         result,
         wait::WaitAgentResult {
             status: HashMap::from([(agent_id.to_string(), AgentStatus::Shutdown)]),
+            agent_metadata: HashMap::from([(
+                agent_id.to_string(),
+                wait::WaitAgentMetadata { thread_note: None },
+            )]),
             timed_out: false
         }
     );

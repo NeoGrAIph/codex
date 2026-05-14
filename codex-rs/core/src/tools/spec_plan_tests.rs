@@ -254,10 +254,16 @@ fn test_build_specs_collab_tools_enabled() {
 
     assert_contains_tool_names(
         &tools,
-        &["spawn_agent", "send_input", "wait_agent", "close_agent"],
+        &[
+            "spawn_agent",
+            "send_input",
+            "wait_agent",
+            "close_agent",
+            "list_agents",
+            "set_thread_note",
+        ],
     );
     assert_lacks_tool_name(&tools, "spawn_agents_on_csv");
-    assert_lacks_tool_name(&tools, "list_agents");
 
     let spawn_agent = find_tool(&tools, "spawn_agent");
     let ToolSpec::Function(ResponsesApiTool { parameters, .. }) = &spawn_agent.spec else {

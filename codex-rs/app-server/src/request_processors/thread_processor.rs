@@ -1566,6 +1566,7 @@ impl ThreadRequestProcessor {
             thread.session_id = loaded_thread.session_configured().session_id.to_string();
         }
         self.attach_thread_name(thread_uuid, &mut thread).await;
+        self.attach_thread_note(thread_uuid, &mut thread).await;
         thread.status = resolve_thread_status(
             self.thread_watch_manager
                 .loaded_status_for_thread(&thread.id)
@@ -1625,6 +1626,7 @@ impl ThreadRequestProcessor {
             /*has_in_progress_turn*/ false,
         );
         self.attach_thread_name(thread_id, &mut thread).await;
+        self.attach_thread_note(thread_id, &mut thread).await;
         let thread_id = thread.id.clone();
         Ok((ThreadUnarchiveResponse { thread }, thread_id))
     }
@@ -1812,11 +1814,14 @@ impl ThreadRequestProcessor {
         let fallback_provider = self.config.model_provider_id.clone();
 
         for stored_thread in stored_threads {
-            let (thread, _) = thread_from_stored_thread(
+            let (mut thread, _) = thread_from_stored_thread(
                 stored_thread,
                 fallback_provider.as_str(),
                 &self.config.cwd,
             );
+            if let Ok(thread_id) = ThreadId::from_string(&thread.id) {
+                self.attach_thread_note(thread_id, &mut thread).await;
+            }
             status_ids.push(thread.id.clone());
             threads.push(thread);
         }
@@ -2003,6 +2008,7 @@ impl ThreadRequestProcessor {
                 if include_turns && let Some(history) = history {
                     thread.turns = build_api_turns_from_rollout_items(&history.items);
                 }
+                self.attach_thread_note(thread_id, &mut thread).await;
                 Ok(Some(thread))
             }
             Err(ThreadStoreError::InvalidRequest { message })
@@ -2061,6 +2067,7 @@ impl ThreadRequestProcessor {
         loaded_thread: &CodexThread,
     ) -> Result<(), ThreadReadViewError> {
         self.attach_thread_name(thread_id, thread).await;
+        self.attach_thread_note(thread_id, thread).await;
 
         if include_turns {
             let history = loaded_thread
@@ -2954,6 +2961,7 @@ impl ThreadRequestProcessor {
             );
         }
         self.attach_thread_name(thread_id, &mut thread).await;
+        self.attach_thread_note(thread_id, &mut thread).await;
         Ok(thread)
     }
 
@@ -2971,6 +2979,19 @@ impl ThreadRequestProcessor {
             && stored_thread.preview.trim() != title
         {
             set_thread_name_from_title(thread, title.to_string());
+        }
+    }
+
+    async fn attach_thread_note(&self, thread_id: ThreadId, thread: &mut Thread) {
+        match codex_core::find_thread_note_update_by_id(
+            self.config.codex_home.as_path(),
+            &thread_id,
+        )
+        .await
+        {
+            Ok(Some(thread_note)) => thread.thread_note = thread_note,
+            Ok(None) => {}
+            Err(err) => warn!("failed to read thread note for {thread_id}: {err}"),
         }
     }
 
@@ -3731,6 +3752,7 @@ pub(crate) fn thread_from_stored_thread(
         thread.agent_nickname.clone(),
         thread.agent_role.clone(),
     );
+    let thread_note = thread.history.as_ref().and_then(thread_note_from_history);
     let history = thread.history;
     let thread_id = thread.thread_id.to_string();
     let thread = Thread {
@@ -3753,6 +3775,7 @@ pub(crate) fn thread_from_stored_thread(
         agent_nickname: source.get_nickname(),
         agent_role: source.get_agent_role(),
         agent_persona: source.get_agent_persona(),
+        thread_note,
         source: source.into(),
         thread_source: thread.thread_source.map(Into::into),
         git_info,
@@ -3760,6 +3783,13 @@ pub(crate) fn thread_from_stored_thread(
         turns: Vec::new(),
     };
     (thread, history)
+}
+
+fn thread_note_from_history(history: &codex_thread_store::StoredThreadHistory) -> Option<String> {
+    history.items.iter().find_map(|item| match item {
+        RolloutItem::SessionMeta(meta_line) => meta_line.meta.thread_note.clone(),
+        _ => None,
+    })
 }
 
 fn summary_from_stored_thread(
@@ -3954,6 +3984,7 @@ fn build_thread_from_snapshot(
         agent_nickname: config_snapshot.session_source.get_nickname(),
         agent_role: config_snapshot.session_source.get_agent_role(),
         agent_persona: config_snapshot.session_source.get_agent_persona(),
+        thread_note: config_snapshot.thread_note.clone(),
         source: config_snapshot.session_source.clone().into(),
         thread_source: config_snapshot.thread_source.map(Into::into),
         git_info: None,

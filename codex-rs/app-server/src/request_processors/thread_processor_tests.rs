@@ -656,6 +656,7 @@ mod thread_processor_behavior_tests {
             session_source: SessionSource::Cli,
             agent_tool_policy: None,
             thread_source: None,
+            thread_note: None,
         };
 
         assert_eq!(
@@ -948,6 +949,7 @@ mod thread_processor_behavior_tests {
             thread_source: Some(codex_protocol::protocol::ThreadSource::Subagent),
             agent_nickname: Some("atlas".to_string()),
             agent_role: Some("explorer".to_string()),
+            thread_note: None,
             model_provider: Some("test-provider".to_string()),
             ..SessionMeta::default()
         };

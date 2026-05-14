@@ -35,6 +35,8 @@ pub(crate) struct AgentPickerThreadEntry {
     pub(crate) agent_nickname: Option<String>,
     /// Agent type shown in brackets when present, for example `worker`.
     pub(crate) agent_role: Option<String>,
+    /// Metadata-only note shown in thread details when available.
+    pub(crate) thread_note: Option<String>,
     /// Whether the thread has emitted a close event and should render dimmed.
     pub(crate) is_closed: bool,
 }
@@ -45,6 +47,8 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_nickname: Option<String>,
     /// Agent type shown in brackets when present, for example `worker`.
     pub(crate) agent_role: Option<String>,
+    /// Metadata-only note shown in thread details when available.
+    pub(crate) thread_note: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -221,6 +225,7 @@ pub(crate) fn tool_call_history_cell(
                 first_receiver,
                 prompt,
                 spawn_request,
+                first_agent_state(receiver_thread_ids, agents_states),
                 &mut agent_metadata,
             ))
         }
@@ -270,22 +275,48 @@ fn spawn_end(
     new_thread_id: Option<ThreadId>,
     prompt: &str,
     spawn_request: Option<&SpawnRequestSummary>,
+    status: Option<&CollabAgentState>,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
+    let metadata = new_thread_id.map(|thread_id| (thread_id, agent_metadata(thread_id)));
     let title = match new_thread_id {
-        Some(thread_id) => title_with_agent(
-            "Spawned",
-            agent_label(thread_id, &agent_metadata(thread_id)),
-            spawn_request,
-        ),
+        Some(thread_id) => {
+            let metadata = metadata
+                .as_ref()
+                .map(|(_, metadata)| metadata)
+                .cloned()
+                .unwrap_or_default();
+            title_with_agent("Spawned", agent_label(thread_id, &metadata), spawn_request)
+        }
         None => title_text("Agent spawn failed"),
     };
 
     let mut details = Vec::new();
+    let metadata_note = metadata
+        .as_ref()
+        .and_then(|(_, metadata)| metadata.thread_note.as_deref());
+    if let Some(line) = thread_note_line(
+        status
+            .and_then(|status| status.thread_note.as_deref())
+            .or(metadata_note),
+    ) {
+        details.push(line);
+    }
     if let Some(line) = prompt_line(prompt) {
         details.push(line);
     }
     collab_event(title, details)
+}
+
+fn thread_note_line(thread_note: Option<&str>) -> Option<Line<'static>> {
+    let thread_note = thread_note.map(str::trim).filter(|note| !note.is_empty())?;
+    Some(
+        vec![
+            Span::from("Note: ").dim(),
+            Span::from(truncate_text(thread_note, COLLAB_PROMPT_PREVIEW_GRAPHEMES)),
+        ]
+        .into(),
+    )
 }
 
 fn interaction_end(
@@ -485,10 +516,13 @@ fn prompt_line(prompt: &str) -> Option<Line<'static>> {
     if trimmed.is_empty() {
         None
     } else {
-        Some(Line::from(Span::from(truncate_text(
-            trimmed,
-            COLLAB_PROMPT_PREVIEW_GRAPHEMES,
-        ))))
+        Some(
+            vec![
+                Span::from("Prompt: ").dim(),
+                Span::from(truncate_text(trimmed, COLLAB_PROMPT_PREVIEW_GRAPHEMES)),
+            ]
+            .into(),
+        )
     }
 }
 
@@ -854,6 +888,7 @@ mod tests {
         CollabAgentState {
             status,
             message: message.map(str::to_string),
+            thread_note: None,
         }
     }
 
@@ -862,11 +897,13 @@ mod tests {
             AgentMetadata {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                thread_note: None,
             }
         } else if thread_id == bob_id {
             AgentMetadata {
                 agent_nickname: Some("Bob".to_string()),
                 agent_role: Some("worker".to_string()),
+                thread_note: None,
             }
         } else {
             AgentMetadata::default()

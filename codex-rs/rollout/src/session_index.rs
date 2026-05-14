@@ -15,12 +15,20 @@ use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
 
 const SESSION_INDEX_FILE: &str = "session_index.jsonl";
+const THREAD_NOTE_INDEX_FILE: &str = "thread_note_index.jsonl";
 const READ_CHUNK_SIZE: usize = 8192;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionIndexEntry {
     pub id: ThreadId,
     pub thread_name: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ThreadNoteIndexEntry {
+    pub id: ThreadId,
+    pub thread_note: Option<String>,
     pub updated_at: String,
 }
 
@@ -43,6 +51,37 @@ pub async fn append_thread_name(
         updated_at,
     };
     append_session_index_entry(codex_home, &entry).await
+}
+
+/// Append a thread note update to the thread note index.
+/// The index is append-only; the most recent entry wins and `None` clears the note.
+pub async fn append_thread_note(
+    codex_home: &Path,
+    thread_id: ThreadId,
+    thread_note: Option<&str>,
+) -> std::io::Result<()> {
+    use time::OffsetDateTime;
+    use time::format_description::well_known::Rfc3339;
+
+    let updated_at = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_string());
+    let entry = ThreadNoteIndexEntry {
+        id: thread_id,
+        thread_note: thread_note.map(str::to_string),
+        updated_at,
+    };
+    let path = thread_note_index_path(codex_home);
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .await?;
+    let mut line = serde_json::to_string(&entry).map_err(std::io::Error::other)?;
+    line.push('\n');
+    file.write_all(line.as_bytes()).await?;
+    file.flush().await?;
+    Ok(())
 }
 
 /// Append a raw session index entry to `session_index.jsonl`.
@@ -78,6 +117,34 @@ pub async fn find_thread_name_by_id(
         .await
         .map_err(std::io::Error::other)??;
     Ok(entry.map(|entry| entry.thread_name))
+}
+
+/// Find the latest thread note for a thread id, if any.
+pub async fn find_thread_note_by_id(
+    codex_home: &Path,
+    thread_id: &ThreadId,
+) -> std::io::Result<Option<String>> {
+    Ok(find_thread_note_update_by_id(codex_home, thread_id)
+        .await?
+        .flatten())
+}
+
+/// Find the latest thread note update for a thread id.
+/// `None` means no update exists; `Some(None)` means the latest update cleared the note.
+pub async fn find_thread_note_update_by_id(
+    codex_home: &Path,
+    thread_id: &ThreadId,
+) -> std::io::Result<Option<Option<String>>> {
+    let path = thread_note_index_path(codex_home);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let id = *thread_id;
+    let entry =
+        tokio::task::spawn_blocking(move || scan_thread_note_index_from_end_by_id(&path, &id))
+            .await
+            .map_err(std::io::Error::other)??;
+    Ok(entry.map(|entry| entry.thread_note))
 }
 
 /// Find the latest thread names for a batch of thread ids.
@@ -156,6 +223,65 @@ pub async fn find_thread_meta_by_name_str(
 
 fn session_index_path(codex_home: &Path) -> PathBuf {
     codex_home.join(SESSION_INDEX_FILE)
+}
+
+fn thread_note_index_path(codex_home: &Path) -> PathBuf {
+    codex_home.join(THREAD_NOTE_INDEX_FILE)
+}
+
+fn scan_thread_note_index_from_end_by_id(
+    path: &Path,
+    thread_id: &ThreadId,
+) -> std::io::Result<Option<ThreadNoteIndexEntry>> {
+    let mut file = File::open(path)?;
+    let mut remaining = file.metadata()?.len();
+    let mut line_rev: Vec<u8> = Vec::new();
+    let mut buf = vec![0u8; READ_CHUNK_SIZE];
+
+    while remaining > 0 {
+        let read_size = usize::try_from(remaining.min(READ_CHUNK_SIZE as u64))
+            .map_err(std::io::Error::other)?;
+        remaining -= read_size as u64;
+        file.seek(SeekFrom::Start(remaining))?;
+        file.read_exact(&mut buf[..read_size])?;
+
+        for &byte in buf[..read_size].iter().rev() {
+            if byte == b'\n' {
+                if let Some(entry) = parse_thread_note_line_from_rev(&mut line_rev, thread_id)? {
+                    return Ok(Some(entry));
+                }
+                continue;
+            }
+            line_rev.push(byte);
+        }
+    }
+
+    parse_thread_note_line_from_rev(&mut line_rev, thread_id)
+}
+
+fn parse_thread_note_line_from_rev(
+    line_rev: &mut Vec<u8>,
+    thread_id: &ThreadId,
+) -> std::io::Result<Option<ThreadNoteIndexEntry>> {
+    if line_rev.is_empty() {
+        return Ok(None);
+    }
+    line_rev.reverse();
+    let line = std::mem::take(line_rev);
+    let Ok(mut line) = String::from_utf8(line) else {
+        return Ok(None);
+    };
+    if line.ends_with('\r') {
+        line.pop();
+    }
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let Ok(entry) = serde_json::from_str::<ThreadNoteIndexEntry>(trimmed) else {
+        return Ok(None);
+    };
+    Ok((entry.id == *thread_id).then_some(entry))
 }
 
 fn scan_index_from_end_by_id(

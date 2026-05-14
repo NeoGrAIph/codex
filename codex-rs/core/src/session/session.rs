@@ -79,6 +79,8 @@ pub(crate) struct SessionConfiguration {
     pub(super) codex_home: AbsolutePathBuf,
     /// Optional user-facing name for the thread, updated during the session.
     pub(super) thread_name: Option<String>,
+    /// Optional metadata-only note for the thread.
+    pub(super) thread_note: Option<String>,
     /// Sticky environments for turns that do not provide a turn-local override.
     pub(super) environments: Vec<TurnEnvironmentSelection>,
 
@@ -147,6 +149,7 @@ impl SessionConfiguration {
             reasoning_effort: self.collaboration_mode.reasoning_effort(),
             personality: self.personality,
             session_source: self.session_source.clone(),
+            thread_note: self.thread_note.clone(),
             agent_tool_policy: self.original_config_do_not_use.agent_tool_policy.clone(),
             thread_source: self.thread_source,
         }
@@ -419,6 +422,7 @@ impl Session {
                                 forked_from_id,
                                 source: session_source,
                                 thread_source: session_configuration.thread_source,
+                                thread_note: session_configuration.thread_note.clone(),
                                 base_instructions: BaseInstructions {
                                     text: session_configuration.base_instructions.clone(),
                                 },
@@ -910,6 +914,7 @@ impl Session {
                     forked_from_id,
                     thread_source: session_configuration.thread_source,
                     thread_name: session_configuration.thread_name.clone(),
+                    thread_note: session_configuration.thread_note.clone(),
                     model: session_configuration.collaboration_mode.model().to_string(),
                     model_provider_id: config.model_provider_id.clone(),
                     service_tier: session_configuration.service_tier.clone(),

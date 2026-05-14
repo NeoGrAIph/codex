@@ -286,6 +286,67 @@ pub fn create_close_agent_tool_v2() -> ToolSpec {
     })
 }
 
+pub fn create_set_thread_note_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "target".to_string(),
+            JsonSchema::string(Some(
+                "Optional target agent. Omit to update the current thread; use a visible agent id or, in MultiAgentV2, a canonical task name to update a sub-agent note."
+                    .to_string(),
+            )),
+        ),
+        (
+            "thread_note".to_string(),
+            JsonSchema::any_of(
+                vec![JsonSchema::string(None), JsonSchema::null(None)],
+                Some(
+                    "Metadata-only purpose note for the target thread. Use null or an empty string to clear it. Put competencies in `thread_note_competencies`; do not put note metadata in task prompts. The note is shown in orchestration surfaces and is not added to model instructions or runtime context."
+                        .to_string(),
+                ),
+            ),
+        ),
+        (
+            "thread_note_competencies".to_string(),
+            JsonSchema::any_of(
+                vec![JsonSchema::string(None), JsonSchema::null(None)],
+                Some(
+                    "Optional metadata-only competencies for the target thread. Combined with `thread_note` into the canonical stored note. If `thread_note` already contains non-empty canonical competencies, providing this field is rejected."
+                        .to_string(),
+                ),
+            ),
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "set_thread_note".to_string(),
+        description:
+            "Set or clear a metadata-only note for the current thread or a visible sub-agent."
+                .to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            properties,
+            Some(vec!["thread_note".to_string()]),
+            Some(false.into()),
+        ),
+        output_schema: Some(json!({
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "The updated target as supplied by the caller, or the current thread id when omitted."
+                },
+                "thread_note": {
+                    "type": ["string", "null"],
+                    "description": "The normalized target note, or null when cleared."
+                }
+            },
+            "required": ["target", "thread_note"],
+            "additionalProperties": false
+        })),
+    })
+}
+
 fn agent_status_output_schema() -> Value {
     json!({
         "oneOf": [
@@ -401,9 +462,13 @@ fn list_agents_output_schema() -> Value {
                         "last_task_message": {
                             "type": ["string", "null"],
                             "description": "Most recent user or inter-agent instruction received by the agent, when available."
+                        },
+                        "thread_note": {
+                            "type": ["string", "null"],
+                            "description": "Metadata-only note for coordination and UI surfaces, when available."
                         }
                     },
-                    "required": ["agent_name", "agent_status", "last_task_message"],
+                    "required": ["agent_name", "agent_status", "last_task_message", "thread_note"],
                     "additionalProperties": false
                 },
                 "description": "Live agents visible in the current root thread tree."
@@ -437,9 +502,24 @@ fn wait_output_schema_v1() -> Value {
             "timed_out": {
                 "type": "boolean",
                 "description": "Whether the wait call returned due to timeout before any agent reached a final status."
+            },
+            "agent_metadata": {
+                "type": "object",
+                "description": "Metadata keyed by the same agent target strings used in status.",
+                "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                        "thread_note": {
+                            "type": ["string", "null"],
+                            "description": "Metadata-only note for coordination and UI surfaces, when available."
+                        }
+                    },
+                    "required": ["thread_note"],
+                    "additionalProperties": false
+                }
             }
         },
-        "required": ["status", "timed_out"],
+        "required": ["status", "agent_metadata", "timed_out"],
         "additionalProperties": false
     })
 }
@@ -533,6 +613,26 @@ fn spawn_agent_common_properties_v1(agent_type_description: &str) -> BTreeMap<St
             )),
         ),
         (
+            "thread_note".to_string(),
+            JsonSchema::any_of(
+                vec![JsonSchema::string(None), JsonSchema::null(None)],
+                Some(
+                    "Optional metadata-only purpose note for the spawned thread. Put purpose/current responsibility/handoff state here. Put competencies in `thread_note_competencies`, not in `message`. This metadata is stored for orchestration and UI surfaces, but is not returned from spawn_agent and is not added to the agent prompt or instructions."
+                        .to_string(),
+                ),
+            ),
+        ),
+        (
+            "thread_note_competencies".to_string(),
+            JsonSchema::any_of(
+                vec![JsonSchema::string(None), JsonSchema::null(None)],
+                Some(
+                    "Optional metadata-only competencies for the spawned thread. Use this for skills, domains, or test responsibilities. Do not put competencies in `message`; `message` is only the task/instruction prompt sent to the agent. If the user gives a length limit for note/competencies, apply it to this value and `thread_note` separately, excluding generated labels."
+                        .to_string(),
+                ),
+            ),
+        ),
+        (
             "cwd".to_string(),
             JsonSchema::string(Some(
                 "Optional working directory for the new agent. Omit to inherit the parent cwd; set only when the agent must start in a different repository or worktree. Relative paths resolve against the parent thread cwd."
@@ -578,6 +678,26 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
                 "Optional persona name within the selected markdown agent role template. Select the role with `agent_type` (for example, `agent_type: \"orchestrator\"`) and use this field only for the persona name (for example, `default`). Omit to use the default persona."
                     .to_string(),
             )),
+        ),
+        (
+            "thread_note".to_string(),
+            JsonSchema::any_of(
+                vec![JsonSchema::string(None), JsonSchema::null(None)],
+                Some(
+                    "Optional metadata-only purpose note for the spawned thread. Put purpose/current responsibility/handoff state here. Put competencies in `thread_note_competencies`, not in `message`. This metadata is stored for orchestration and UI surfaces, but is not returned from spawn_agent and is not added to the agent prompt or instructions."
+                        .to_string(),
+                ),
+            ),
+        ),
+        (
+            "thread_note_competencies".to_string(),
+            JsonSchema::any_of(
+                vec![JsonSchema::string(None), JsonSchema::null(None)],
+                Some(
+                    "Optional metadata-only competencies for the spawned thread. Use this for skills, domains, or test responsibilities. Do not put competencies in `message`; `message` is only the task/instruction prompt sent to the agent. If the user gives a length limit for note/competencies, apply it to this value and `thread_note` separately, excluding generated labels."
+                        .to_string(),
+                ),
+            ),
         ),
         (
             "cwd".to_string(),

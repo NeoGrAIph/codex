@@ -46,6 +46,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
         spawned_thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
+        None,
     );
 
     chat.handle_server_notification(
@@ -86,6 +87,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                     AppServerCollabAgentState {
                         status: AppServerCollabAgentStatus::PendingInit,
                         message: None,
+                        thread_note: None,
                     },
                 )]),
             },
@@ -431,11 +433,13 @@ async fn live_app_server_collab_wait_items_render_history() {
         receiver_thread_id,
         Some("Robie".to_string()),
         Some("explorer".to_string()),
+        None,
     );
     chat.set_collab_agent_metadata(
         other_receiver_thread_id,
         Some("Ada".to_string()),
         Some("reviewer".to_string()),
+        None,
     );
 
     chat.handle_server_notification(
@@ -484,6 +488,7 @@ async fn live_app_server_collab_wait_items_render_history() {
                         AppServerCollabAgentState {
                             status: AppServerCollabAgentStatus::Completed,
                             message: Some("Done".to_string()),
+                            thread_note: None,
                         },
                     ),
                     (
@@ -491,6 +496,7 @@ async fn live_app_server_collab_wait_items_render_history() {
                         AppServerCollabAgentState {
                             status: AppServerCollabAgentStatus::Running,
                             message: None,
+                            thread_note: None,
                         },
                     ),
                 ]),
@@ -554,6 +560,7 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                     AppServerCollabAgentState {
                         status: AppServerCollabAgentStatus::PendingInit,
                         message: None,
+                        thread_note: None,
                     },
                 )]),
             },

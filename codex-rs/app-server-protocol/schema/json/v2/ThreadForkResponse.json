@@ -286,6 +286,12 @@
         },
         "status": {
           "$ref": "#/definitions/CollabAgentStatus"
+        },
+        "threadNote": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1429,6 +1435,13 @@
             }
           ],
           "description": "Current runtime status for the thread."
+        },
+        "threadNote": {
+          "description": "Optional metadata-only note assigned to the thread.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "threadSource": {
           "anyOf": [

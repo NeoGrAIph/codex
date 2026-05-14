@@ -903,6 +903,7 @@ mod tests {
             agent_nickname: None,
             agent_role: None,
             agent_persona: None,
+            thread_note: None,
             source,
             thread_source: None,
             git_info: None,

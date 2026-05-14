@@ -1145,6 +1145,7 @@ fn session_configured_from_thread_response(
         forked_from_id: None,
         thread_source: None,
         thread_name,
+        thread_note: None,
         model,
         model_provider_id,
         service_tier,

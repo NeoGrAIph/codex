@@ -93,6 +93,7 @@ pub enum RolloutRecorderParams {
         forked_from_id: Option<ThreadId>,
         source: SessionSource,
         thread_source: Option<ThreadSource>,
+        thread_note: Box<Option<String>>,
         base_instructions: BaseInstructions,
         dynamic_tools: Vec<DynamicToolSpec>,
         event_persistence_mode: EventPersistenceMode,
@@ -179,10 +180,18 @@ impl RolloutRecorderParams {
             forked_from_id,
             source,
             thread_source,
+            thread_note: Box::new(None),
             base_instructions,
             dynamic_tools,
             event_persistence_mode,
         }
+    }
+
+    pub fn with_thread_note(mut self, note: Option<String>) -> Self {
+        if let Self::Create { thread_note, .. } = &mut self {
+            **thread_note = note;
+        }
+        self
     }
 
     pub fn resume(path: PathBuf, event_persistence_mode: EventPersistenceMode) -> Self {
@@ -675,6 +684,7 @@ impl RolloutRecorder {
                     forked_from_id,
                     source,
                     thread_source,
+                    thread_note,
                     base_instructions,
                     dynamic_tools,
                     event_persistence_mode,
@@ -702,6 +712,7 @@ impl RolloutRecorder {
                         agent_nickname: source.get_nickname(),
                         agent_role: source.get_agent_role(),
                         agent_path: source.get_agent_path().map(Into::into),
+                        thread_note: *thread_note,
                         source,
                         thread_source,
                         model_provider: Some(config.model_provider_id().to_string()),

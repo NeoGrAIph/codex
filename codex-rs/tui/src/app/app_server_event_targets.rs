@@ -52,6 +52,9 @@ pub(super) fn server_notification_thread_target(
         ServerNotification::ThreadNameUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }
+        ServerNotification::ThreadNoteUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::ThreadTokenUsageUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }

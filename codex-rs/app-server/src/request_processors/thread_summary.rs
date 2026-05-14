@@ -290,6 +290,7 @@ pub(crate) fn summary_to_thread(
         agent_nickname: source.get_nickname(),
         agent_role: source.get_agent_role(),
         agent_persona: source.get_agent_persona(),
+        thread_note: None,
         source: source.into(),
         thread_source: None,
         git_info,

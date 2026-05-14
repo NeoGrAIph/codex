@@ -3923,6 +3923,26 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/note/updated"
+              ],
+              "title": "Thread/note/updatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadNoteUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/note/updatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "thread/goal/updated"
               ],
               "title": "Thread/goal/updatedNotificationMethod",
@@ -6456,6 +6476,12 @@
           },
           "status": {
             "$ref": "#/definitions/v2/CollabAgentStatus"
+          },
+          "threadNote": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -15111,6 +15137,13 @@
             ],
             "description": "Current runtime status for the thread."
           },
+          "threadNote": {
+            "description": "Optional metadata-only note assigned to the thread.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "threadSource": {
             "anyOf": [
               {
@@ -16465,6 +16498,25 @@
           "threadId"
         ],
         "title": "ThreadNameUpdatedNotification",
+        "type": "object"
+      },
+      "ThreadNoteUpdatedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          },
+          "threadNote": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadNoteUpdatedNotification",
         "type": "object"
       },
       "ThreadReadParams": {

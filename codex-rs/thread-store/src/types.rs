@@ -51,6 +51,8 @@ pub struct CreateThreadParams {
     pub source: SessionSource,
     /// Optional analytics source classification for this thread.
     pub thread_source: Option<ThreadSource>,
+    /// Creation-time metadata-only note for this thread.
+    pub thread_note: Option<String>,
     /// Base instructions persisted in session metadata.
     pub base_instructions: BaseInstructions,
     /// Dynamic tools available to the thread at startup.

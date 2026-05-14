@@ -1419,6 +1419,7 @@ server_notification_definitions! {
     ThreadClosed => "thread/closed" (v2::ThreadClosedNotification),
     SkillsChanged => "skills/changed" (v2::SkillsChangedNotification),
     ThreadNameUpdated => "thread/name/updated" (v2::ThreadNameUpdatedNotification),
+    ThreadNoteUpdated => "thread/note/updated" (v2::ThreadNoteUpdatedNotification),
     #[experimental("thread/goal/updated")]
     ThreadGoalUpdated => "thread/goal/updated" (v2::ThreadGoalUpdatedNotification),
     #[experimental("thread/goal/cleared")]
@@ -2214,6 +2215,7 @@ mod tests {
                     agent_nickname: None,
                     agent_role: None,
                     agent_persona: None,
+                    thread_note: None,
                     git_info: None,
                     name: None,
                     turns: Vec::new(),
@@ -2259,6 +2261,7 @@ mod tests {
                         "agentNickname": null,
                         "agentRole": null,
                         "agentPersona": null,
+                        "threadNote": null,
                         "gitInfo": null,
                         "name": null,
                         "turns": []

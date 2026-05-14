@@ -171,6 +171,12 @@
         },
         "status": {
           "$ref": "#/definitions/CollabAgentStatus"
+        },
+        "threadNote": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

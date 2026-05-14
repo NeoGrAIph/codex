@@ -11,6 +11,7 @@ use crate::turn_timing::now_unix_timestamp_ms;
 use codex_protocol::AgentPath;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::Op;
+use codex_protocol::thread_note::normalize_thread_note_parts;
 use codex_tools::ToolSpec;
 use std::future::Future;
 use std::path::PathBuf;
@@ -59,6 +60,11 @@ impl ToolHandler for Handler {
             } = invocation;
             let arguments = function_arguments(payload)?;
             let args: SpawnAgentArgs = parse_arguments(&arguments)?;
+            let thread_note = normalize_thread_note_parts(
+                args.thread_note.as_deref(),
+                args.thread_note_competencies.as_deref(),
+            )
+            .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))?;
             let fork_mode = args.fork_mode()?;
             let spawn_cwd = resolve_spawn_agent_cwd(&turn.cwd, args.cwd.as_deref())?;
             if spawn_cwd.is_explicit() && fork_mode.is_some() {
@@ -213,6 +219,7 @@ impl ToolHandler for Handler {
                         fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
                         fork_mode,
                         environments,
+                        thread_note: thread_note.clone(),
                     },
                 ),
             )
@@ -259,6 +266,10 @@ impl ToolHandler for Handler {
                 .and_then(|snapshot| snapshot.reasoning_effort)
                 .unwrap_or(args.reasoning_effort.unwrap_or_default());
             let nickname = new_agent_nickname.clone();
+            let new_thread_note = agent_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.thread_note.clone())
+                .or(thread_note);
             session
                 .send_event(
                     &turn,
@@ -269,6 +280,7 @@ impl ToolHandler for Handler {
                         new_thread_id,
                         new_agent_nickname,
                         new_agent_role,
+                        new_thread_note,
                         prompt,
                         model: effective_model,
                         reasoning_effort: effective_reasoning_effort,
@@ -310,6 +322,8 @@ struct SpawnAgentArgs {
     task_name: String,
     agent_type: Option<String>,
     agent_persona: Option<String>,
+    thread_note: Option<String>,
+    thread_note_competencies: Option<String>,
     model: Option<String>,
     reasoning_effort: Option<ReasoningEffort>,
     cwd: Option<PathBuf>,

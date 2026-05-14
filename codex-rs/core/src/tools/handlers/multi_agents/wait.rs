@@ -177,6 +177,23 @@ impl ToolHandler for Handler {
         let timed_out = statuses.is_empty();
         let statuses_by_id = statuses.clone().into_iter().collect::<HashMap<_, _>>();
         let agent_statuses = build_wait_agent_statuses(&statuses_by_id, &receiver_agents);
+        let agent_metadata = receiver_thread_ids
+            .iter()
+            .filter_map(|thread_id| {
+                let target = target_by_thread_id.get(thread_id)?.clone();
+                let metadata = session
+                    .services
+                    .agent_control
+                    .get_agent_metadata(*thread_id)
+                    .unwrap_or_default();
+                Some((
+                    target,
+                    WaitAgentMetadata {
+                        thread_note: metadata.thread_note,
+                    },
+                ))
+            })
+            .collect();
         let result = WaitAgentResult {
             status: statuses
                 .into_iter()
@@ -187,6 +204,7 @@ impl ToolHandler for Handler {
                         .map(|target| (target, status))
                 })
                 .collect(),
+            agent_metadata,
             timed_out,
         };
 
@@ -218,7 +236,13 @@ struct WaitArgs {
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct WaitAgentResult {
     pub(crate) status: HashMap<String, AgentStatus>,
+    pub(crate) agent_metadata: HashMap<String, WaitAgentMetadata>,
     pub(crate) timed_out: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct WaitAgentMetadata {
+    pub(crate) thread_note: Option<String>,
 }
 
 impl ToolOutput for WaitAgentResult {

@@ -52,6 +52,7 @@ use codex_app_server_protocol::ServerRequestPayload;
 use codex_app_server_protocol::SkillsChangedNotification;
 use codex_app_server_protocol::ThreadGoalUpdatedNotification;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadNoteUpdatedNotification;
 use codex_app_server_protocol::ThreadRealtimeClosedNotification;
 use codex_app_server_protocol::ThreadRealtimeErrorNotification;
 use codex_app_server_protocol::ThreadRealtimeItemAddedNotification;
@@ -1203,6 +1204,17 @@ pub(crate) async fn apply_bespoke_event_handling(
             };
             outgoing
                 .send_global_server_notification(ServerNotification::ThreadGoalUpdated(
+                    notification,
+                ))
+                .await;
+        }
+        EventMsg::ThreadNoteUpdated(thread_note_event) => {
+            let notification = ThreadNoteUpdatedNotification {
+                thread_id: thread_note_event.thread_id.to_string(),
+                thread_note: thread_note_event.thread_note.clone(),
+            };
+            outgoing
+                .send_global_server_notification(ServerNotification::ThreadNoteUpdated(
                     notification,
                 ))
                 .await;

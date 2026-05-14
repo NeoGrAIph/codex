@@ -146,10 +146,10 @@ Example with notification opt-out:
 - `thread/resume` — reopen an existing thread by id so subsequent `turn/start` calls append to it. Accepts the same permission override rules as `thread/start`.
 - `thread/fork` — fork an existing thread into a new thread id by copying the stored history; if the source thread is currently mid-turn, the fork records the same interruption marker as `turn/interrupt` instead of inheriting an unmarked partial turn suffix. The returned `thread.forkedFromId` points at the source thread when known. Accepts `ephemeral: true` for an in-memory temporary fork, emits `thread/started` (including the current `thread.status`), and auto-subscribes you to turn/item events for the new thread. Experimental clients can pass `excludeTurns: true` when they plan to page fork history via `thread/turns/list` instead of receiving the full turn array immediately. Accepts the same permission override rules as `thread/start`.
 - `thread/start`, `thread/resume`, and `thread/fork` responses include the legacy `sandbox` compatibility projection. Experimental clients can read response `permissionProfile` for the exact active runtime permissions and `activePermissionProfile` for the named or implicit built-in profile identity/provenance when known.
-- `thread/list` — page through stored rollouts; supports cursor-based pagination and optional `modelProviders`, `sourceKinds`, `archived`, `cwd`, and `searchTerm` filters. Each returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded.
+- `thread/list` — page through stored rollouts; supports cursor-based pagination and optional `modelProviders`, `sourceKinds`, `archived`, `cwd`, and `searchTerm` filters. Each returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded. Fork builds also include `threadNote` as metadata-only purpose/competency text, or `null` when no note is set.
 - `thread/loaded/list` — list the thread ids currently loaded in memory.
-- `thread/read` — read a stored thread by id without resuming it; optionally include turns via `includeTurns`. The returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded.
-- Sub-agent threads may include optional `thread.agentPersona` when they were spawned through a markdown agent role template. This is additive metadata for clients; tool restrictions from the template are enforced server-side.
+- `thread/read` — read a stored thread by id without resuming it; optionally include turns via `includeTurns`. The returned `thread` includes `status` (`ThreadStatus`), defaulting to `notLoaded` when the thread is not currently loaded. Fork builds also include `threadNote` as metadata-only purpose/competency text, or `null` when no note is set.
+- Sub-agent threads may include optional `thread.agentPersona` when they were spawned through a markdown agent role template. Fork builds may include `thread.threadNote`; this is thread-owned display metadata, not a prompt, role, persona, cwd, or permission source. These fields are additive metadata for clients; tool restrictions from the template are enforced server-side.
 - `thread/turns/list` — experimental; page through a stored thread’s turn history without resuming it; supports cursor-based pagination with `sortDirection`, `itemsView`, `nextCursor`, and `backwardsCursor`.
 - `thread/turns/items/list` — experimental; reserved for paging full items for one turn. The API shape is present, but app-server currently returns an unsupported-method JSON-RPC error.
 - `thread/metadata/update` — patch stored thread metadata in sqlite; currently supports updating persisted `gitInfo` fields and returns the refreshed `thread`.
@@ -406,7 +406,7 @@ Later, after the idle unload timeout:
 
 ### Example: Read a thread
 
-Use `thread/read` to fetch a stored thread by id without resuming it. Pass `includeTurns` when you want thread history loaded into `thread.turns`. The returned thread includes `agentNickname` and `agentRole` for AgentControl-spawned thread sub-agents when available.
+Use `thread/read` to fetch a stored thread by id without resuming it. Pass `includeTurns` when you want thread history loaded into `thread.turns`. The returned thread includes `agentNickname`, `agentRole`, and fork-only `threadNote` for AgentControl-spawned thread sub-agents when available.
 
 ```json
 { "method": "thread/read", "id": 22, "params": { "threadId": "thr_123" } }
@@ -1165,7 +1165,7 @@ All filesystem paths in this section must be absolute.
 
 ## Events
 
-Event notifications are the server-initiated event stream for thread lifecycles, turn lifecycles, and the items within them. After you start or resume a thread, keep reading stdout for `thread/started`, `thread/archived`, `thread/unarchived`, `thread/closed`, `turn/*`, and `item/*` notifications.
+Event notifications are the server-initiated event stream for thread lifecycles, turn lifecycles, and the items within them. After you start or resume a thread, keep reading stdout for `thread/started`, `thread/archived`, `thread/unarchived`, `thread/closed`, `thread/note/updated`, `turn/*`, and `item/*` notifications. Fork builds emit `thread/note/updated` with `{ threadId, threadNote }`; `threadNote: null` clears cached note display for that thread.
 
 Thread realtime uses a separate thread-scoped notification surface. `thread/realtime/*` notifications are ephemeral transport events, not `ThreadItem`s, and are not returned by `thread/read`, `thread/resume`, or `thread/fork`.
 
@@ -1226,6 +1226,7 @@ The app-server streams JSON-RPC notifications while a turn is running. Each turn
 - `turn/plan/updated` — `{ turnId, explanation?, plan }` whenever the agent shares or changes its plan; each `plan` entry is `{ step, status }` with `status` in `pending`, `inProgress`, or `completed`.
 - `model/rerouted` — `{ threadId, turnId, fromModel, toModel, reason }` when the backend reroutes a request to a different model (for example, due to high-risk cyber safety checks).
 - `model/verification` — `{ threadId, turnId, verifications }` when the backend flags additional account verification, such as `trustedAccessForCyber`.
+- Fork collab items expose `CollabAgentState.threadNote` so clients can render sub-agent purpose/competency metadata in history and live state without reading `Thread.source`.
 
 Today both notifications carry an empty `items` array even when item events were streamed; rely on `item/*` notifications for the canonical item list until this is fixed.
 

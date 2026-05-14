@@ -621,6 +621,12 @@
         },
         "status": {
           "$ref": "#/definitions/CollabAgentStatus"
+        },
+        "threadNote": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -3126,6 +3132,13 @@
           ],
           "description": "Current runtime status for the thread."
         },
+        "threadNote": {
+          "description": "Optional metadata-only note assigned to the thread.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "threadSource": {
           "anyOf": [
             {
@@ -3951,6 +3964,23 @@
           "type": "string"
         },
         "threadName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadNoteUpdatedNotification": {
+      "properties": {
+        "threadId": {
+          "type": "string"
+        },
+        "threadNote": {
           "type": [
             "string",
             "null"
@@ -5021,6 +5051,26 @@
         "params"
       ],
       "title": "Thread/name/updatedNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "thread/note/updated"
+          ],
+          "title": "Thread/note/updatedNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadNoteUpdatedNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/note/updatedNotification",
       "type": "object"
     },
     {

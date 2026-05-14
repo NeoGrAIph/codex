@@ -104,7 +104,8 @@ pub fn item_event_to_server_notification(
             let (receiver_thread_ids, agents_states) = match end_event.new_thread_id {
                 Some(id) => {
                     let receiver_id = id.to_string();
-                    let received_status = CollabAgentState::from(end_event.status.clone());
+                    let mut received_status = CollabAgentState::from(end_event.status.clone());
+                    received_status.thread_note = end_event.new_thread_note.clone();
                     (
                         vec![receiver_id.clone()],
                         [(receiver_id, received_status)].into_iter().collect(),

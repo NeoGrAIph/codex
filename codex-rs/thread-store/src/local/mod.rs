@@ -739,6 +739,7 @@ mod tests {
             forked_from_id: None,
             source: SessionSource::Exec,
             thread_source: None,
+            thread_note: None,
             base_instructions: BaseInstructions::default(),
             dynamic_tools: Vec::new(),
             metadata: thread_metadata(),

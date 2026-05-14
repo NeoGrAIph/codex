@@ -38,7 +38,8 @@ pub(super) async fn create_thread(
             params.base_instructions,
             params.dynamic_tools,
             event_persistence_mode(params.event_persistence_mode),
-        ),
+        )
+        .with_thread_note(params.thread_note),
         state_db_ctx,
         /*state_builder*/ None,
     )

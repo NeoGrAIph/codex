@@ -28,8 +28,10 @@ use crate::tools::handlers::WriteStdinHandler;
 use crate::tools::handlers::agent_jobs::ReportAgentJobResultHandler;
 use crate::tools::handlers::agent_jobs::SpawnAgentsOnCsvHandler;
 use crate::tools::handlers::multi_agents::CloseAgentHandler;
+use crate::tools::handlers::multi_agents::ListAgentsHandler;
 use crate::tools::handlers::multi_agents::ResumeAgentHandler;
 use crate::tools::handlers::multi_agents::SendInputHandler;
+use crate::tools::handlers::multi_agents::SetThreadNoteHandler;
 use crate::tools::handlers::multi_agents::SpawnAgentHandler;
 use crate::tools::handlers::multi_agents::WaitAgentHandler;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
@@ -37,6 +39,7 @@ use crate::tools::handlers::multi_agents_v2::CloseAgentHandler as CloseAgentHand
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
+use crate::tools::handlers::multi_agents_v2::SetThreadNoteHandler as SetThreadNoteHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::tools::handlers::shell_spec::ShellToolOptions;
@@ -316,6 +319,7 @@ pub fn build_tool_registry_builder(
             )));
             builder.register_handler(Arc::new(CloseAgentHandlerV2));
             builder.register_handler(Arc::new(ListAgentsHandlerV2));
+            builder.register_handler(Arc::new(SetThreadNoteHandlerV2));
         } else {
             let agent_type_description =
                 agent_type_description(config, params.default_agent_type_description);
@@ -331,6 +335,8 @@ pub fn build_tool_registry_builder(
             builder.register_handler(Arc::new(ResumeAgentHandler));
             builder.register_handler(Arc::new(WaitAgentHandler::new(params.wait_agent_timeouts)));
             builder.register_handler(Arc::new(CloseAgentHandler));
+            builder.register_handler(Arc::new(ListAgentsHandler));
+            builder.register_handler(Arc::new(SetThreadNoteHandler));
         }
     }
 
