@@ -58,6 +58,7 @@ use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut_matches;
 use crate::multi_agents::previous_agent_shortcut_matches;
 use crate::pager_overlay::Overlay;
+use crate::pager_overlay::TranscriptOverlay;
 use crate::render::highlight::highlight_bash_to_lines;
 use crate::render::renderable::Renderable;
 use crate::resume_picker::SessionSelection;
@@ -181,6 +182,7 @@ use tokio::task::JoinHandle;
 use toml::Value as TomlValue;
 use uuid::Uuid;
 mod agent_navigation;
+mod agents_overlay;
 mod app_server_event_targets;
 mod app_server_events;
 pub(crate) mod app_server_requests;
@@ -450,6 +452,7 @@ pub(crate) struct App {
 
     // Pager overlay state (Transcript or Static like Diff)
     pub(crate) overlay: Option<Overlay>,
+    suspended_transcript_overlay: Option<TranscriptOverlay>,
     pub(crate) deferred_history_lines: Vec<Line<'static>>,
     has_emitted_history_lines: bool,
     transcript_reflow: TranscriptReflowState,
@@ -495,6 +498,7 @@ pub(crate) struct App {
     thread_event_channels: HashMap<ThreadId, ThreadEventChannel>,
     thread_event_listener_tasks: HashMap<ThreadId, JoinHandle<()>>,
     agent_navigation: AgentNavigationState,
+    agent_overlay_active_since: HashMap<ThreadId, Instant>,
     side_threads: HashMap<ThreadId, SideThreadState>,
     active_thread_id: Option<ThreadId>,
     active_thread_rx: Option<mpsc::Receiver<ThreadBufferedEvent>>,
@@ -879,6 +883,7 @@ See the Codex keymap documentation for supported actions and examples."
             keymap: runtime_keymap,
             transcript_cells: Vec::new(),
             overlay: None,
+            suspended_transcript_overlay: None,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
             transcript_reflow: TranscriptReflowState::default(),
@@ -899,6 +904,7 @@ See the Codex keymap documentation for supported actions and examples."
             thread_event_channels: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
+            agent_overlay_active_since: HashMap::new(),
             side_threads: HashMap::new(),
             active_thread_id: None,
             active_thread_rx: None,
@@ -1096,7 +1102,7 @@ See the Codex keymap documentation for supported actions and examples."
         }
 
         if self.overlay.is_some() {
-            let _ = self.handle_backtrack_overlay_event(tui, event).await?;
+            let _ = self.handle_overlay_event(tui, app_server, event).await?;
         } else {
             match event {
                 TuiEvent::Key(key_event) => {

@@ -195,8 +195,12 @@ impl App {
             }
             AppEvent::InsertHistoryCell(cell) => {
                 let cell: Arc<dyn HistoryCell> = cell.into();
-                if let Some(Overlay::Transcript(t)) = &mut self.overlay {
-                    t.insert_cell(cell.clone());
+                self.for_each_transcript_overlay_mut(|overlay| overlay.insert_cell(cell.clone()));
+                if matches!(
+                    self.overlay,
+                    Some(Overlay::Transcript(_) | Overlay::Agents(_))
+                ) || self.suspended_transcript_overlay.is_some()
+                {
                     tui.frame_requester().schedule_frame();
                 }
                 self.transcript_cells.push(cell.clone());
@@ -231,8 +235,14 @@ impl App {
                     self.transcript_cells
                         .splice(start..end, std::iter::once(consolidated.clone()));
 
-                    if let Some(Overlay::Transcript(t)) = &mut self.overlay {
-                        t.consolidate_cells(start..end, consolidated.clone());
+                    self.for_each_transcript_overlay_mut(|overlay| {
+                        overlay.consolidate_cells(start..end, consolidated.clone());
+                    });
+                    if matches!(
+                        self.overlay,
+                        Some(Overlay::Transcript(_) | Overlay::Agents(_))
+                    ) || self.suspended_transcript_overlay.is_some()
+                    {
                         tui.frame_requester().schedule_frame();
                     }
 
@@ -257,16 +267,28 @@ impl App {
                     self.transcript_cells
                         .splice(start..end, std::iter::once(consolidated.clone()));
 
-                    if let Some(Overlay::Transcript(t)) = &mut self.overlay {
-                        t.consolidate_cells(start..end, consolidated.clone());
+                    self.for_each_transcript_overlay_mut(|overlay| {
+                        overlay.consolidate_cells(start..end, consolidated.clone());
+                    });
+                    if matches!(
+                        self.overlay,
+                        Some(Overlay::Transcript(_) | Overlay::Agents(_))
+                    ) || self.suspended_transcript_overlay.is_some()
+                    {
                         tui.frame_requester().schedule_frame();
                     }
 
                     self.finish_required_stream_reflow(tui)?;
                 } else {
                     self.transcript_cells.push(consolidated.clone());
-                    if let Some(Overlay::Transcript(t)) = &mut self.overlay {
-                        t.insert_cell(consolidated.clone());
+                    self.for_each_transcript_overlay_mut(|overlay| {
+                        overlay.insert_cell(consolidated.clone());
+                    });
+                    if matches!(
+                        self.overlay,
+                        Some(Overlay::Transcript(_) | Overlay::Agents(_))
+                    ) || self.suspended_transcript_overlay.is_some()
+                    {
                         tui.frame_requester().schedule_frame();
                     }
                     self.insert_history_cell_lines(

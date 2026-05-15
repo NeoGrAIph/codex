@@ -57,14 +57,14 @@ replacement for `[agents.<role>]` or `.codex/agents/*.toml`.
 - `agent_persona` is model-facing tool input only; persona/policy/cwd are not returned in spawn
   output.
 - v1 adds optional app-server `Thread.agentPersona` and optional source `agent_persona` metadata.
-- v1 does not add SQLite persona projection or TUI persona display.
+- v1 does not add SQLite persona projection or TUI policy display.
 - Tool policy uses `wildmatch` masks with `*` and `?`.
 
 ## Handoff Notes
 
 - `thread-note` owns human display notes. Agent personas must never be copied into
   `thread_note`, and notes must never become persona/developer instructions.
-- TUI and `agents-overlay` may continue using role, nickname, cwd, and thread-note metadata.
-  They must not require policy projection in v1.
-- If a later UI feature needs persona labels, add an explicit optional projection and snapshot
-  coverage in that feature's contract.
+- TUI and `agents-overlay` may continue using role, nickname, persona, cwd, and thread-note
+  metadata. They must not require policy projection in v1.
+- Persona labels are owned by the `agents-overlay` contract when rendered; template policy remains
+  server-side only.

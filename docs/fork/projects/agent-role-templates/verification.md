@@ -38,7 +38,7 @@ additive/backward compatible.
 | Resume compatibility | Missing persona metadata remains readable and policy remains runtime-only |
 | Old rollout | Missing template state deserializes as absent and preserves upstream behavior |
 | App-server compatibility | Stable schema changes are additive and expose `Thread.agentPersona` |
-| TUI compatibility | No TUI persona display, snapshot churn, or agents-overlay dependency is introduced in v1 |
+| TUI compatibility | Persona may be rendered by `agents-overlay`; template policy is not projected to TUI |
 | Thread-note boundary | Persona text never becomes `thread_note`, and thread notes never become developer instructions |
 
 ## Focused Commands
@@ -84,7 +84,7 @@ avoid:
 just write-config-schema
 ```
 
-Run TUI checks only if a later change adds visible persona/template UI:
+Run TUI checks when a separate UI feature renders persona/template metadata:
 
 ```bash
 cargo test -p codex-tui
@@ -111,14 +111,15 @@ cargo insta pending-snapshots -p codex-tui
 - App-server TypeScript/JSON schema diff is limited to optional `agentPersona` and optional
   `SubAgentSource::ThreadSpawn.agent_persona`.
 - No SQLite migration in v1.
-- No TUI snapshots in v1 unless a separate UI feature adds visible persona/template labels.
+- Persona label snapshots are owned by the UI feature that renders them; template policy still has
+  no TUI snapshot surface in v1.
 - No generated config schema diff unless implementation deliberately adds TOML-configured
   template fields.
 - No model-facing `spawn_agent` output shape change for persona, policy, or effective cwd.
 
 ## Known Coverage Gaps
 
-- Persona display in TUI is out of scope for v1.
+- General persona display remains out of scope here; `agents-overlay` owns its optional row label.
 - App-server raw policy display is out of scope for v1; policy remains runtime-only.
 - SQLite persona/policy projection is out of scope for v1.
 - Tool policy wildcard matching is implemented with `wildmatch` masks.

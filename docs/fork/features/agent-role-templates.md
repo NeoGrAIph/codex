@@ -7,7 +7,7 @@
 - Baseline: `rust-v0.130.0` / `58573da43ab697e8b79f152c53df4b42230395a8`
 - Goal: add markdown-backed personas and template-scoped policy on top of native TOML agent roles.
 - Scope in: markdown template discovery, `agent_persona`, persona instruction append, template defaults, template-only roles, session-scoped tool policy, additive app-server persona projection.
-- Scope out: replacing native TOML roles, SQLite persona projection, TUI persona display, returning persona/policy/cwd in model-facing spawn output.
+- Scope out: replacing native TOML roles, SQLite persona projection, policy projection to TUI, returning persona/policy/cwd in model-facing spawn output.
 
 ## User Contract
 
@@ -103,7 +103,8 @@ Matching rules:
 - App-server v2 adds stable optional `Thread.agentPersona` and optional `agent_persona` in the existing `Thread.source` projection. Tool policy remains runtime-only and is not exposed to app-server clients. No SQLite column is added.
 - `agent_persona` is a model-facing `spawn_agent` parameter, not an app-server client request.
 - `thread-note` remains separate display metadata; templates must not write note content.
-- TUI/agents-overlay must not depend on persona projection in v1.
+- TUI may display persona when it is already available from app-server metadata, but must not
+  require or display template policy in v1.
 
 ## Verification Matrix
 
@@ -115,7 +116,7 @@ Matching rules:
 | Forking | full-history rejects persona/template/model/reasoning/cwd overrides |
 | Policy | read-only tightening, allow/deny filtering, dispatch blocking |
 | Persistence | optional source fields are backward compatible with old rollouts |
-| Compatibility | additive app-server schema, no SQLite migration or TUI persona projection |
+| Compatibility | additive app-server schema, no SQLite migration or TUI policy projection |
 
 ## Doc Changelog
 
@@ -125,5 +126,7 @@ Matching rules:
   persona via optional `agent_persona`.
 - 2026-05-13: Aligned markdown template role discovery output with native `Available roles`
   formatting and native-role precedence.
+- 2026-05-15: Clarified that `agents-overlay` may render available persona labels while template
+  policy remains server-side only.
 - 2026-05-12: Expanded `fork/130` contract with child-cwd ordering, exact markdown format, policy enforcement, persistence, and app-server/TUI boundaries.
 - 2026-05-12: Initial `fork/130` contract.

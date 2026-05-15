@@ -18,6 +18,7 @@
 use std::io::Result;
 use std::sync::Arc;
 
+use crate::agents_overlay::AgentsOverlay;
 use crate::chatwidget::ActiveCellTranscriptKey;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::UserHistoryCell;
@@ -49,6 +50,7 @@ use ratatui::widgets::Wrap;
 
 pub(crate) enum Overlay {
     Transcript(TranscriptOverlay),
+    Agents(Box<AgentsOverlay>),
     Static(StaticOverlay),
 }
 
@@ -76,6 +78,12 @@ impl Overlay {
     pub(crate) fn handle_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
         match self {
             Overlay::Transcript(o) => o.handle_event(tui, event),
+            Overlay::Agents(o) => {
+                let _ = o
+                    .handle_event(tui, event, /*has_suspended_transcript*/ false)
+                    .map_err(std::io::Error::other)?;
+                Ok(())
+            }
             Overlay::Static(o) => o.handle_event(tui, event),
         }
     }
@@ -83,6 +91,7 @@ impl Overlay {
     pub(crate) fn is_done(&self) -> bool {
         match self {
             Overlay::Transcript(o) => o.is_done(),
+            Overlay::Agents(o) => o.is_done(),
             Overlay::Static(o) => o.is_done(),
         }
     }
@@ -812,6 +821,21 @@ impl StaticOverlay {
             view: PagerView::new(renderables, title, /*scroll_offset*/ 0, keymap),
             is_done: false,
         }
+    }
+
+    pub(crate) fn replace_lines(&mut self, lines: Vec<Line<'static>>) {
+        let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+        self.view.renderables = vec![Box::new(CachedRenderable::new(paragraph))];
+        self.view.scroll_offset = 0;
+    }
+
+    pub(crate) fn replace_lines_preserving_scroll(&mut self, lines: Vec<Line<'static>>) {
+        let paragraph = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+        self.view.renderables = vec![Box::new(CachedRenderable::new(paragraph))];
+    }
+
+    pub(crate) fn scroll_chunk_into_view(&mut self, chunk_index: usize) {
+        self.view.scroll_chunk_into_view(chunk_index);
     }
 
     fn render_hints(&self, area: Rect, buf: &mut Buffer) {
