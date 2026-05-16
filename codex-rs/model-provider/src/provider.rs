@@ -82,6 +82,13 @@ pub trait ModelProvider: fmt::Debug + Send + Sync {
 
     /// Returns the provider-owned capability upper bounds.
     fn capabilities(&self) -> ProviderCapabilities {
+        if self.info().wire_api == codex_model_provider_info::WireApi::ChatCompletions {
+            return ProviderCapabilities {
+                namespace_tools: false,
+                image_generation: false,
+                web_search: false,
+            };
+        }
         ProviderCapabilities::default()
     }
 
@@ -221,6 +228,10 @@ impl ModelProvider for ConfiguredModelProvider {
             Some(model_catalog) => Arc::new(StaticModelsManager::new(
                 self.auth_manager.clone(),
                 model_catalog,
+            )),
+            None if self.info.is_deepseek() => Arc::new(StaticModelsManager::new(
+                self.auth_manager.clone(),
+                crate::deepseek::static_model_catalog(),
             )),
             None => {
                 let endpoint = Arc::new(OpenAiModelsEndpoint::new(

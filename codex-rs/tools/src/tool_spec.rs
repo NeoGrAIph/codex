@@ -2,6 +2,7 @@ use crate::FreeformTool;
 use crate::JsonSchema;
 use crate::LoadableToolSpec;
 use crate::ResponsesApiNamespace;
+use crate::ResponsesApiNamespaceTool;
 use crate::ResponsesApiTool;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
@@ -108,6 +109,57 @@ pub fn create_tools_json_for_responses_api(
     }
 
     Ok(tools_json)
+}
+
+pub fn create_tools_json_for_chat_completions_api(
+    tools: &[ToolSpec],
+) -> Result<Vec<Value>, String> {
+    let mut tools_json = Vec::new();
+
+    for tool in tools {
+        match tool {
+            ToolSpec::Function(tool) => tools_json.push(chat_function_tool_json(tool)?),
+            ToolSpec::Namespace(namespace) => {
+                for tool in &namespace.tools {
+                    match tool {
+                        ResponsesApiNamespaceTool::Function(tool) => {
+                            tools_json.push(chat_function_tool_json(tool)?);
+                        }
+                    }
+                }
+            }
+            ToolSpec::ToolSearch { .. }
+            | ToolSpec::LocalShell {}
+            | ToolSpec::ImageGeneration { .. }
+            | ToolSpec::WebSearch { .. }
+            | ToolSpec::Freeform(_) => {
+                return Err(format!(
+                    "tool `{}` is not supported by chat_completions providers",
+                    tool.name()
+                ));
+            }
+        }
+    }
+
+    Ok(tools_json)
+}
+
+fn chat_function_tool_json(tool: &ResponsesApiTool) -> Result<Value, String> {
+    let parameters = serde_json::to_value(&tool.parameters)
+        .map_err(|err| format!("failed to encode tool parameters: {err}"))?;
+    let mut function = serde_json::json!({
+        "name": tool.name,
+        "description": tool.description,
+        "parameters": parameters,
+    });
+    if tool.strict {
+        function["strict"] = Value::Bool(true);
+    }
+
+    Ok(serde_json::json!({
+        "type": "function",
+        "function": function,
+    }))
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

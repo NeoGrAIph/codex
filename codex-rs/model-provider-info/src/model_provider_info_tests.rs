@@ -36,6 +36,37 @@ base_url = "http://localhost:11434/v1"
 }
 
 #[test]
+fn test_deserialize_chat_completions_wire_api() {
+    let provider_toml = r#"
+name = "DeepSeek"
+base_url = "https://api.deepseek.com"
+env_key = "DEEPSEEK_API_KEY"
+wire_api = "chat_completions"
+        "#;
+
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+
+    assert_eq!(provider.wire_api, WireApi::ChatCompletions);
+}
+
+#[test]
+fn built_in_model_providers_include_deepseek() {
+    let providers = built_in_model_providers(/*openai_base_url*/ None);
+    let provider = providers
+        .get(DEEPSEEK_PROVIDER_ID)
+        .expect("deepseek provider should be built in");
+
+    assert_eq!(provider.name, "DeepSeek");
+    assert_eq!(
+        provider.base_url.as_deref(),
+        Some(DEEPSEEK_DEFAULT_BASE_URL)
+    );
+    assert_eq!(provider.env_key.as_deref(), Some("DEEPSEEK_API_KEY"));
+    assert_eq!(provider.wire_api, WireApi::ChatCompletions);
+    assert!(!provider.requires_openai_auth);
+}
+
+#[test]
 fn test_deserialize_azure_model_provider_toml() {
     let azure_provider_toml = r#"
 name = "Azure"
