@@ -1,0 +1,34 @@
+{
+  "name": "codex-app-chrome",
+  "version": "0.1.7",
+  "description": "Chrome automation for remote URLs, authenticated/profile-dependent pages, existing Chrome tabs, cookies, extensions, and Codex App Chrome Extension setup.",
+  "author": {
+    "name": "Codex App Fork"
+  },
+  "license": "Proprietary",
+  "keywords": [
+    "browser",
+    "chrome"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex App Chrome",
+    "shortDescription": "Control Chrome with Codex App",
+    "longDescription": "Codex App Chrome lets Codex App use your Chrome browser for tasks that need your existing browser state, including open tabs, page content, and websites you're already signed into. It can navigate, view, click, type, and take screenshots while working. You stay in control: Codex App asks before interacting with new sites, you can stop actions at any time, and you can manage or remove Chrome access in settings. Browser content may include sensitive information from logged-in sites.",
+    "developerName": "Codex App Fork",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read"
+    ],
+    "defaultPrompt": [
+      "file my expenses for me",
+      "review my messages on social media",
+      "put in a PTO request in Workday"
+    ],
+    "brandColor": "#10A37F",
+    "composerIcon": "./assets/google-chrome-composer.png",
+    "logo": "./assets/google-chrome.png",
+    "screenshots": []
+  }
+}
