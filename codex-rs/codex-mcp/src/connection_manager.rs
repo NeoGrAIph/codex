@@ -351,6 +351,12 @@ impl McpConnectionManager {
         !self.clients.is_empty()
     }
 
+    pub fn server_names(&self) -> Vec<String> {
+        let mut server_names = self.clients.keys().cloned().collect::<Vec<_>>();
+        server_names.sort();
+        server_names
+    }
+
     pub(crate) fn contains_server(&self, server_name: &str) -> bool {
         self.clients.contains_key(server_name)
     }
@@ -756,7 +762,7 @@ impl McpConnectionManager {
 
     /// Returns presentation metadata without waiting for uncached clients still initializing.
     /// Cached values will be used if available and the server is still starting up.
-    pub(crate) async fn list_available_server_infos(&self) -> HashMap<String, McpServerInfo> {
+    pub async fn list_available_server_infos(&self) -> HashMap<String, McpServerInfo> {
         let mut server_infos = HashMap::new();
         for (server_name, client) in &self.clients {
             if !client.startup_complete.load(Ordering::Acquire) {
