@@ -610,12 +610,14 @@ async fn environment_count_controls_environment_backed_tools() {
     no_environment.assert_visible_lacks(&[
         "shell_command",
         "exec_command",
+        "run_skill_script",
         "apply_patch",
         "view_image",
     ]);
     no_environment.assert_registered_lacks(&[
         "shell_command",
         "exec_command",
+        "run_skill_script",
         "apply_patch",
         "view_image",
     ]);
@@ -627,9 +629,18 @@ async fn environment_count_controls_environment_backed_tools() {
         turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
     })
     .await;
-    multiple_environments.assert_visible_contains(&["exec_command", "apply_patch", "view_image"]);
+    multiple_environments.assert_visible_contains(&[
+        "exec_command",
+        "run_skill_script",
+        "apply_patch",
+        "view_image",
+    ]);
     assert!(has_parameter(
         multiple_environments.visible_spec("exec_command"),
+        "environment_id"
+    ));
+    assert!(has_parameter(
+        multiple_environments.visible_spec("run_skill_script"),
         "environment_id"
     ));
     assert!(apply_patch_accepts_environment_id(
@@ -670,6 +681,7 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
     )
     .await;
     direct_mcp.assert_visible_contains(&[
+        "list_mcp_servers",
         "list_mcp_resources",
         "list_mcp_resource_templates",
         "read_mcp_resource",
@@ -695,13 +707,14 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
     )
     .await;
     missing_model_capability.assert_visible_lacks(&["tool_search"]);
+    missing_model_capability.assert_visible_contains(&["list_mcp_servers"]);
 
     let missing_deferred_tools = probe(|turn| {
         set_feature(turn, Feature::Collab, /*enabled*/ false);
         turn.model_info.supports_search_tool = true;
     })
     .await;
-    missing_deferred_tools.assert_visible_lacks(&["tool_search"]);
+    missing_deferred_tools.assert_visible_lacks(&["tool_search", "list_mcp_servers"]);
     missing_deferred_tools.assert_visible_lacks(&[
         "list_mcp_resources",
         "list_mcp_resource_templates",
@@ -719,7 +732,7 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
         },
     )
     .await;
-    bedrock_namespace_capability.assert_visible_contains(&["tool_search"]);
+    bedrock_namespace_capability.assert_visible_contains(&["tool_search", "list_mcp_servers"]);
 
     let enabled = probe_with(
         |turn| {
@@ -728,9 +741,15 @@ async fn mcp_and_tool_search_follow_direct_and_deferred_tool_exposure() {
         searchable_mcp,
     )
     .await;
-    enabled.assert_visible_contains(&["tool_search"]);
+    enabled.assert_visible_contains(&["tool_search", "list_mcp_servers"]);
+    enabled.assert_visible_lacks(&[
+        "list_mcp_resources",
+        "list_mcp_resource_templates",
+        "read_mcp_resource",
+    ]);
     enabled.assert_registered_contains(&[
         "tool_search",
+        "list_mcp_servers",
         &ToolName::namespaced("mcp__searchable", "lookup").to_string(),
     ]);
 }

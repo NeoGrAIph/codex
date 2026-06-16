@@ -13,6 +13,7 @@ use crate::tools::handlers::GetContextRemainingHandler;
 use crate::tools::handlers::ListAvailablePluginsToInstallHandler;
 use crate::tools::handlers::ListMcpResourceTemplatesHandler;
 use crate::tools::handlers::ListMcpResourcesHandler;
+use crate::tools::handlers::ListMcpServersHandler;
 use crate::tools::handlers::McpHandler;
 use crate::tools::handlers::NewContextWindowHandler;
 use crate::tools::handlers::PlanHandler;
@@ -20,6 +21,7 @@ use crate::tools::handlers::ReadMcpResourceHandler;
 use crate::tools::handlers::RequestPermissionsHandler;
 use crate::tools::handlers::RequestPluginInstallHandler;
 use crate::tools::handlers::RequestUserInputHandler;
+use crate::tools::handlers::RunSkillScriptHandler;
 use crate::tools::handlers::ShellCommandHandler;
 use crate::tools::handlers::ShellCommandHandlerOptions;
 use crate::tools::handlers::TestSyncHandler;
@@ -595,13 +597,15 @@ fn add_shell_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Planne
 
     match shell_type_for_model_and_features(&turn_context.model_info, features) {
         ConfigShellToolType::UnifiedExec => {
-            planned_tools.add(ExecCommandHandler::new(ExecCommandHandlerOptions {
+            let exec_options = ExecCommandHandlerOptions {
                 allow_login_shell,
                 exec_permission_approvals_enabled,
                 include_environment_id,
                 include_shell_parameter: unified_exec_should_include_shell_parameter(turn_context),
-            }));
+            };
+            planned_tools.add(ExecCommandHandler::new(exec_options));
             planned_tools.add(WriteStdinHandler);
+            planned_tools.add(RunSkillScriptHandler::new(exec_options, environment_mode));
 
             // Keep the legacy shell tool registered while unified exec is
             // model-visible.
@@ -628,6 +632,10 @@ fn unified_exec_should_include_shell_parameter(turn_context: &TurnContext) -> bo
 }
 
 fn add_mcp_resource_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
+    if context.mcp_tools.is_some() || context.deferred_mcp_tools.is_some() {
+        planned_tools.add(ListMcpServersHandler);
+    }
+
     if context.mcp_tools.is_some() {
         planned_tools.add(ListMcpResourcesHandler);
         planned_tools.add(ListMcpResourceTemplatesHandler);
