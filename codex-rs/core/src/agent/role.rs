@@ -126,6 +126,14 @@ pub(crate) fn resolve_role_config<'a>(
         .or_else(|| built_in::configs().get(role_name))
 }
 
+pub(crate) fn built_in_role_configs() -> &'static BTreeMap<String, AgentRoleConfig> {
+    built_in::configs()
+}
+
+pub(crate) fn built_in_role_config_file_contents(path: &Path) -> Option<&'static str> {
+    built_in::config_file_contents(path)
+}
+
 mod reload {
     use super::*;
 

@@ -133,6 +133,14 @@ pub(crate) enum AppEvent {
     OpenAgentPicker,
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
+    /// Open the role-template manager for sub-agent roles.
+    OpenAgentRoleTemplates,
+    /// Open the prompt used to create a new user role template file.
+    OpenAgentRoleTemplateCreatePrompt,
+    /// Create a user role template from the submitted name.
+    CreateAgentRoleTemplate {
+        raw_name: String,
+    },
 
     /// Fork the current thread into a transient side conversation.
     StartSide {

@@ -1,0 +1,16 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  Agent Role Templates
+  Create and inspect role profiles used by spawn_agent.agent_type.
+  User templates live in $CODEX_HOME/agents/*.toml.
+
+› 1. Create new template   Creates a valid starter file under $CODEX_HOME/agents/. New sessions
+                           load user roles from that native config directory.
+  2. [user] code-reviewer  Review code changes before handoff.
+  3. [built-in] default    Default agent.
+  4. [built-in] explorer   Use `explorer` for specific codebase questions.
+  5. [built-in] worker     Use for execution and production work.
+
+  Press enter to confirm or esc to go back
