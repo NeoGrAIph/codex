@@ -3,14 +3,14 @@
 ## Feature passport
 
 - Code name: `agent-role-templates`
-- Status: переносимая fork-возможность.
-- Goal: дать sub-agents осмысленные роли и инструкции через markdown templates/persona metadata.
-- Scope in: built-in role templates, manifest/authoring docs, persona/thread metadata, model instructions in markdown roles.
-- Scope out: runtime limits и cwd; они описаны отдельно.
+- Status: первая native TUI-итерация реализована для `fork/140`; markdown/persona перенос остаётся следующим этапом.
+- Goal: дать sub-agents осмысленные роли и инструкции через native role templates, чтобы пользователь мог видеть, создавать и применять специализации без ручного повторения роли в каждом prompt.
+- Scope in: native TOML role catalog, built-in/user role projection, starter role template creation, TUI list/detail/create/open-file flow, spawn-agent role selection through existing `agent_type`.
+- Scope out: markdown role loader, persona manifest, runtime limits и cwd; они описываются и переносятся отдельно.
 
 ## Как работает для пользователя
 
-Пользователь или orchestrator запускает sub-agent с понятной специализацией: explorer, worker, reviewer и т.п. Польза: agents стартуют с нужной ролью и не требуют каждый раз ручного описания роли.
+Пользователь открывает `/agent-roles` или `/agents`, видит built-in и user templates, создаёт новый user template в `$CODEX_HOME/agents/<role>.toml`, при необходимости открывает этот TOML-файл для редактирования и затем просит Codex запустить sub-agent с `agent_type` равным имени роли. Built-in роли остаются read-only; user roles управляются через существующий native config directory.
 
 ## Branches and commits
 
@@ -31,10 +31,38 @@
 
 Затрагивались template files, core agent control/registry, protocol/thread metadata, app-server projection, TUI rendering и docs. В поздних переносах это стало cross-surface feature, а не только набором markdown-файлов. В `fork/130` native TOML roles остаются primary, а markdown roles дают defaults для `model`/`reasoning_effort`; full-history fork rejects role/persona/model/reasoning/cwd overrides.
 
-## Native coverage in rust-v0.140.0
+## Native coverage in rust-v0.140.0 / fork/140
 
-Status: `partial`. Native release имеет role system: `apply_role_to_config`, `resolve_role_config`, built-ins `default`, `explorer`, `worker`, TOML configs, `AgentRoleConfig`, `spawn_agent.agent_type`, persisted role/nickname/path metadata and TUI labels. Не хватает fork markdown role templates/persona manifest contract, native markdown role loader, reviewer-style built-ins and markdown model-instruction template behavior.
+Status: `partial, expanded`. Native release уже имел role system: `apply_role_to_config`, `resolve_role_config`, built-ins `default`, `explorer`, `worker`, TOML configs, `AgentRoleConfig`, `spawn_agent.agent_type`, persisted role/nickname/path metadata and TUI labels. В `feature/140/agent-role-templates` добавлен native projection/catalog для этих ролей и TUI управление templates без нового config format. Не хватает fork markdown role templates/persona manifest contract, native markdown role loader, reviewer-style built-ins and markdown model-instruction template behavior.
+
+## Native integration map
+
+| Surface | Source of truth / behavior |
+| --- | --- |
+| Source of truth | `Config.agent_roles` плюс built-ins из `codex-rs/core/src/agent/role.rs`; новый `agent_role_templates` только проецирует этот источник и создаёт user TOML-файл. |
+| Config/profile surface | `$CODEX_HOME/agents/*.toml` и существующий flattened `AgentRoleConfig`; отдельный profile registry не добавляется. |
+| Spawn tool spec/handlers | `spawn_agent.agent_type` остаётся native selector; schema/list продолжает строиться из role config через существующий multi-agent path. |
+| Runtime state | `apply_role_to_config` и `resolve_role_config` остаются местом применения role defaults; TUI не хранит отдельную role enum/list. |
+| TUI projection | `/agent-roles` и alias `/agents` открывают list/detail/create flow; `/agent` и `/subagents` продолжают управлять active sub-agent windows. |
+| App-server protocol | Не менялся: role templates остаются config/runtime capability, wire contract не расширен. |
+| Persistence/resume | Новые role files сохраняются как `$CODEX_HOME/agents/*.toml`; existing session metadata с `agent_role` остаётся строковым и backward-compatible. |
+| Tool/model/policy defaults | Модель, reasoning, service tier, tools/skills и developer instructions наследуются из native role config при spawn; policy/env behavior не менялся. |
+| Intentionally unaffected | Permission profiles, sandbox/env selection, mailbox/thread-store format, app-server schema, existing `/agent` sub-agent navigation. |
 
 ## Porting/current-state notes
 
 При переносе в новую ветку нужно проверять current upstream skills/agents/model instructions path. Fork templates должны использовать native template/resource loading, а не отдельный обходной loader.
+
+## Verification matrix
+
+| Surface | Проверка |
+| --- | --- |
+| Core role template projection/create | `just test -p codex-core agent_role_templates` |
+| TUI slash/popup/create snapshot | `just test -p codex-tui agent_role` |
+| Snapshot acceptance | `cargo insta show tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__agent_role_templates_popup.snap.new` и `cargo insta accept --snapshot 'tui/src/chatwidget/snapshots/codex_tui__chatwidget__tests__agent_role_templates_popup.snap'` при intentional UI diff. |
+| Formatting | `just fmt` в `codex-rs` |
+| Diff hygiene | `git diff --check` |
+
+## Doc changelog
+
+- 2026-06-17: зафиксирована первая `fork/140` итерация: native catalog/create TUI для TOML role templates, без app-server protocol change и без markdown/persona loader.

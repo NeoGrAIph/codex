@@ -291,6 +291,9 @@ impl ChatWidget {
             SlashCommand::Agent | SlashCommand::MultiAgents => {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
+            SlashCommand::AgentRoles => {
+                self.app_event_tx.send(AppEvent::OpenAgentRoleTemplates);
+            }
             SlashCommand::Permissions => {
                 self.open_permissions_popup();
             }
@@ -1067,6 +1070,7 @@ impl ChatWidget {
             | SlashCommand::Btw
             | SlashCommand::Keymap
             | SlashCommand::Agent
+            | SlashCommand::AgentRoles
             | SlashCommand::MultiAgents
             | SlashCommand::Permissions
             | SlashCommand::ElevateSandbox

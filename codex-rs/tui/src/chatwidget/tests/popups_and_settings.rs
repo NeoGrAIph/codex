@@ -2443,6 +2443,52 @@ async fn multi_agent_enable_prompt_snapshot() {
 }
 
 #[tokio::test]
+async fn agent_role_templates_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let role_path = chat.config.codex_home.join("agents/code-reviewer.toml");
+    std::fs::create_dir_all(role_path.parent().expect("role path parent")).expect("create dir");
+    std::fs::write(
+        &role_path,
+        r#"name = "code-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review code changes and report concrete risks."
+model = "gpt-5.3-codex"
+model_reasoning_effort = "high"
+"#,
+    )
+    .expect("write role");
+    chat.config.agent_roles.insert(
+        "code-reviewer".to_string(),
+        crate::legacy_core::config::AgentRoleConfig {
+            description: Some("Review code changes before handoff.".to_string()),
+            config_file: Some(role_path.to_path_buf()),
+            nickname_candidates: Some(vec!["Ada".to_string()]),
+        },
+    );
+
+    chat.open_agent_role_templates_popup();
+
+    let codex_home = chat.config.codex_home.display().to_string();
+    let popup = render_bottom_popup(&chat, /*width*/ 100).replace(&codex_home, "$CODEX_HOME");
+    assert_chatwidget_snapshot!("agent_role_templates_popup", popup);
+}
+
+#[tokio::test]
+async fn agent_role_template_create_updates_session_catalog() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.create_agent_role_template("Code Reviewer".to_string());
+
+    let role_path = chat.config.codex_home.join("agents/code-reviewer.toml");
+    assert!(role_path.exists());
+    assert!(chat.config.agent_roles.contains_key("code-reviewer"));
+    let codex_home = chat.config.codex_home.display().to_string();
+    let popup = render_bottom_popup(&chat, /*width*/ 100).replace(&codex_home, "$CODEX_HOME");
+    assert!(popup.contains("code-reviewer"));
+}
+
+#[tokio::test]
 async fn multi_agent_enable_prompt_updates_feature_and_emits_notice() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

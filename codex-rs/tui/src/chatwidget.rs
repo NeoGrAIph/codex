@@ -356,6 +356,7 @@ mod pets;
 mod session_flow;
 mod session_header;
 use self::session_header::SessionHeader;
+mod agent_role_templates;
 mod hook_lifecycle;
 mod hooks;
 mod interaction;

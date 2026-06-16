@@ -41,6 +41,8 @@ pub enum SlashCommand {
     Plan,
     Goal,
     Agent,
+    #[strum(to_string = "agent-roles", serialize = "agents")]
+    AgentRoles,
     Side,
     Btw,
     Copy,
@@ -121,6 +123,7 @@ impl SlashCommand {
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Goal => "set or view the goal for a long-running task",
             SlashCommand::Agent | SlashCommand::MultiAgents => "switch the active agent thread",
+            SlashCommand::AgentRoles => "manage sub-agent role templates",
             SlashCommand::Side | SlashCommand::Btw => {
                 "start a side conversation in an ephemeral fork"
             }
@@ -224,6 +227,7 @@ impl SlashCommand {
             | SlashCommand::Stop
             | SlashCommand::App
             | SlashCommand::Goal
+            | SlashCommand::AgentRoles
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::Plugins
@@ -303,6 +307,15 @@ mod tests {
         assert_eq!(
             SlashCommand::from_str("approve"),
             Ok(SlashCommand::AutoReview)
+        );
+    }
+
+    #[test]
+    fn agents_alias_opens_agent_roles() {
+        assert_eq!(SlashCommand::AgentRoles.command(), "agent-roles");
+        assert_eq!(
+            SlashCommand::from_str("agents"),
+            Ok(SlashCommand::AgentRoles)
         );
     }
 }

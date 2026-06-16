@@ -1687,6 +1687,15 @@ impl App {
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker(app_server).await;
             }
+            AppEvent::OpenAgentRoleTemplates => {
+                self.chat_widget.open_agent_role_templates_popup();
+            }
+            AppEvent::OpenAgentRoleTemplateCreatePrompt => {
+                self.chat_widget.open_agent_role_template_create_prompt();
+            }
+            AppEvent::CreateAgentRoleTemplate { raw_name } => {
+                self.chat_widget.create_agent_role_template(raw_name);
+            }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread_and_discard_side(tui, app_server, thread_id)
                     .await?;
