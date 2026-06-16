@@ -1,0 +1,104 @@
+# Архитектурная концепция sub-agents / multi-agent
+
+Статус документа: текущая карта HEAD по source-of-truth и extension points, подтвержденная локальным поиском по `codex-rs`. Исторический timeline покрыт до `rust-v0.140.0`.
+
+## Термины
+
+- `collab`: ранняя experimental multi-agent поверхность с feature gate `Feature::Collab`, tool handlers старого поколения и lifecycle events `Collab*`.
+- `subagent`: дочерний Codex thread/session, созданный root/parent thread или внутренней подсистемой (`review`, `compact`, memory consolidation, thread spawn). В current protocol источник описывается через `SessionSource::SubAgent(SubAgentSource)`.
+- `multi_agent_v2` / MAv2: новое поколение path-based multi-agent runtime с `Feature::MultiAgentV2`, `AgentPath`, mailbox-style delivery через `InterAgentCommunication`, v2 tool handlers и отдельной model-visible tool surface.
+- `collaboration mode`: режим с `CollaborationMode`/`CollaborationModeMask`, который меняет model/effort/developer instructions и проецируется в TUI/app-server как settings/presets. Это не равно MAv2 tool runtime, но исторически связано с multi-agent workflows и Plan mode.
+- `realtime background_agent`: realtime-specific delegation path, где голосовая/Realtime V2 модель вызывает `background_agent` или `remain_silent`, а core получает скрытый `<realtime_delegation>` context. Это не MAv2 `spawn_agent`, но относится к multi-agent collaboration surfaces и должно развиваться через realtime protocol/core paths.
+- `goal`: persistent long-running objective runtime with app-server APIs, model tools and TUI controls. Goal is adjacent to autonomy and scheduling; it is not a subagent runtime, but it must yield to pending mailbox/user-input work and should not become an alternate multi-agent control plane.
+
+## Текущая карта source-of-truth
+
+- Feature/config source of truth: `codex-rs/core/src/config/mod.rs` для runtime config, `codex-rs/features/src/lib.rs` для feature gates (`Collab`, `CollaborationModes`, `MultiAgentV2`), `codex-rs/features/src/feature_configs.rs` for feature-scoped MAv2 config such as thread caps, wait timeouts and namespace, `codex-rs/protocol/src/config_types.rs` для wire/shared `CollaborationMode`.
+- Tool registry/spec/handlers: `codex-rs/core/src/tools/handlers/multi_agents.rs`, `codex-rs/core/src/tools/handlers/multi_agents/*`, `codex-rs/core/src/tools/handlers/multi_agents_v2.rs`, `codex-rs/core/src/tools/handlers/multi_agents_v2/*`, `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`, `codex-rs/core/src/tools/handlers/multi_agents_common.rs`. Current generations move model-visible specs into handler-adjacent modules and route model-only MAv2 via `ToolExposure::DirectModelOnly`, `tools/src/tool_config.rs`, `core/src/tools/registry.rs`, `core/src/tools/router.rs` and `core/src/tools/spec_plan.rs`. V1 tools can be deferred behind tool search and namespaced separately; MAv2 tool namespace and code-mode namespace exclusions are configurable and must be reflected in rollout-trace classification.
+- Agent control/runtime: `codex-rs/core/src/session/mod.rs`, `codex-rs/core/src/session/session.rs`, `codex-rs/core/src/session/turn_context.rs`, `codex-rs/core/src/thread_manager.rs`, `codex-rs/core/src/agent/control.rs`, `codex-rs/core/src/agent/control/spawn.rs`, `residency.rs`, `execution.rs`, `codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs`, `followup_task.rs`, `send_message.rs`, `wait.rs`, `interrupt_agent.rs`. Исторически old collab `spawn_agent` был переведен на `TurnContext` as source-of-truth for `session_source`, model/provider/reasoning and per-turn config, so fork changes must not reintroduce hidden spawn state in `ModelClient`. Current MAv2 also stores per-thread runtime metadata, role/service-tier choices, spawn metadata visibility policy such as `hide_spawn_agent_metadata`, v2 residency LRU state and active-execution concurrency accounting.
+- Permissions/sandbox source of truth: `codex-rs/protocol/src/protocol.rs` and `codex-rs/protocol/src/models.rs` for shared permission/profile shapes, `codex-rs/core/src/session/turn_context.rs` for active turn permissions, app-server v2 `PermissionProfile` fields on thread/fork/turn params and responses, and rollout `permission_profile` persistence for faithful resume/reconstruction.
+- Environment selection: `EnvironmentManager`, sticky thread environment selection and turn-scoped environment/cwd selection are resolved before or during `TurnContext` creation; multi-agent fork/spawn behavior must inherit the resolved turn/thread context rather than re-reading global environment defaults.
+- Thread lineage/persistence: `codex-rs/protocol/src/protocol.rs` (`SessionSource`, `SubAgentSource`, `MultiAgentVersion`, `parent_thread_id`, rollout/session metadata), `codex-rs/rollout/src/recorder.rs` (`multi_agent_version`, `parent_thread_id`), `codex-rs/rollout/src/policy.rs`, `codex-rs/thread-store/src/store.rs` and app-server thread processors for history/pagination, `codex-rs/tui/src/app/loaded_threads.rs`. Forked rollouts also use `forked_from_thread_id`/compaction metadata to preserve lineage through truncation and resume.
+- Mailbox/message delivery: `codex-rs/protocol/src/protocol.rs` (`InterAgentCommunication`, `TurnInput::InterAgentCommunication`, `RolloutItem::InterAgentCommunication`), `codex-rs/protocol/src/models.rs` (`AgentMessageInputContent::EncryptedContent`, `AgentMessageInputContent::InputText`), `codex-rs/core/src/tools/handlers/multi_agents_v2.rs` encrypted/plaintext delivery paths, `codex-rs/core/src/session/tests.rs` mailbox enqueue/delivery tests.
+- App-server protocol/schema projections: `codex-rs/app-server-protocol/src/protocol/v2/item.rs` (`ThreadItem::CollabAgentToolCall`, `ThreadItem::SubAgentActivity`, `CollabAgentTool`, `SubAgentActivityKind`), `codex-rs/app-server-protocol/src/protocol/thread_history.rs`, `codex-rs/app-server-protocol/src/protocol/event_mapping.rs`, `codex-rs/app-server-protocol/src/protocol/v2/thread.rs` (`thread/settings/update.collaborationMode`), `codex-rs/app-server-protocol/src/protocol/v2/collaboration_mode.rs`, `codex-rs/app-server/src/request_processors/turn_processor.rs` for rejecting direct input to MAv2 sub-agent threads. Thread/fork/archive/unarchive/rollback schema projections include `parent_thread_id`, so UI/API consumers should use protocol lineage instead of inferring parentage from names.
+- TUI projections: `codex-rs/tui/src/multi_agents.rs`, `codex-rs/tui/src/app/agent_navigation.rs`, `codex-rs/tui/src/app/agent_status_feed.rs`, `codex-rs/tui/src/app/loaded_threads.rs`, `codex-rs/tui/src/chatwidget/tool_lifecycle.rs`, `codex-rs/tui/src/chatwidget/plan_implementation.rs`, `codex-rs/tui/src/collaboration_modes.rs`, `codex-rs/tui/src/bottom_pane/footer.rs`. Child-thread MCP/status noise must be routed by thread id and should not be rendered into the parent transcript.
+- Realtime delegation: `codex-rs/codex-api/src/endpoint/realtime_websocket/*` owns realtime tool/session wire shape, `codex-rs/core/src/realtime_conversation.rs` wraps handoffs into hidden delegation context, and `codex-rs/protocol/src/protocol.rs` owns `RealtimeEvent` variants such as `HandoffRequested` and `NoopRequested`.
+- External-agent migration: `codex-rs/app-server/src/config/external_agent_config.rs` and `codex-rs/app-server/src/external_agent_config_api.rs` own migration/detect/import behavior for external agent configs; do not add new external-agent migration ownership back into `codex-core`.
+- Goal runtime: `codex-rs/core/src/goals.rs`, state `thread_goals`, app-server `thread/goal/*`, model goal tools and TUI `/goal` controls own persistent objective behavior. Multi-agent extensions may observe goal scheduling constraints, but should not encode subagent lifecycle inside goal state.
+- Hooks/extensions/rollout trace: `codex-rs/rollout-trace/src/reducer/tool/agents.rs`, `codex-rs/rollout-trace/src/tool_dispatch.rs`, `codex-rs/rollout-trace/README.md`, hook event surfaces for `SubagentStart`/`SubagentStop` in `codex-rs/protocol/src/protocol.rs`, TUI hook browser and core extension paths, plus extension registries/contributor hooks when fork functionality must observe session/thread/turn lifecycle without becoming the runtime owner. Hook inputs can include subagent identity and turn metadata; extension tools can receive conversation history where allowed by the native extension contract. Thread-scoped MCP/tool contributions belong in `codex-rs/ext/extension-api/src/contributors/mcp.rs` and related registry/session wiring, not in global ad hoc tool lists.
+- Trace/debug surfaces are evidence and developer diagnostics, not runtime authority: rollout trace should reconstruct from durable rollout/protocol facts, while current behavior should still be changed in native runtime/tool/protocol modules.
+
+## Lifecycle flows
+
+### Spawn agent
+
+1. Model-visible tool call enters core tool dispatch through the native tool registry/spec.
+2. Старый collab path handles `spawn_agent` in `multi_agents`/old handler and emits `CollabAgentSpawnBegin/End`; spawn config is derived from the current `TurnContext`, including `SessionSource`, model/provider/reasoning and base config.
+3. MAv2 path handles `spawn_agent` in `multi_agents_v2/spawn.rs`, resolves `AgentPath`, applies role/runtime/config metadata, role-defined `service_tier` and spawn metadata visibility policy, creates/loads child thread and records `SessionSource::SubAgent(ThreadSpawn { parent_thread_id, agent_path, ... })`.
+4. App-server projects runtime events into `ThreadItem::CollabAgentToolCall` or `ThreadItem::SubAgentActivity`; TUI records path-based activity for history, agent navigation and agent status feeds.
+
+### Send/follow-up task
+
+1. Старый path used `send_input` with optional `interrupt`.
+2. MAv2 separates task/message delivery through `followup_task` and `send_message`, building `InterAgentCommunication`. Historical `assign_task` is trace/compatibility vocabulary and must map to current `followup_task` behavior rather than becoming a separate fork surface.
+3. Message delivery is mailbox-like: parent-side tool event can be recorded before recipient inference materializes the mailbox item, which rollout-trace handles explicitly. Message content can be encrypted or plaintext through `AgentMessageInputContent`; every consumer must handle both representations.
+4. Realtime handoff is separate: Realtime V2 `background_agent`/`remain_silent` is parsed in `codex-api`, then core converts handoff events into hidden realtime delegation context rather than MAv2 mailbox items.
+
+### Wait/result delivery
+
+1. Old collab `wait` observed agent statuses/events.
+2. MAv2 `wait` reads mailbox/activity and applies configured timeout constraints from `config.multi_agent_v2`; concurrency pressure is based on active execution rather than only resident agents.
+3. Result delivery should be represented through protocol events/items, not ad hoc transcript parsing.
+4. Goal auto-continuation is lower priority than mailbox work; fork changes must preserve that scheduling boundary so inter-agent messages are not delayed behind autonomous goal turns.
+
+### Interrupt/close/resume
+
+1. Old surface used `close_agent`; old collab later gained `resume_agent`.
+2. MAv2 renamed close semantics toward `interrupt_agent`; compatibility code still maps historical `close_agent` in trace classification. Current guardrails reject self-target interruption/close cases that would corrupt the active agent lifecycle.
+3. Resume/restart behavior depends on persisted `SessionSource`, thread lineage, runtime metadata and rollout/session metadata; UI should discover subagent descendants through native thread source edges and avoid reopening inactive v2 descendants just because a parent thread resumes.
+4. App-server direct input to a MAv2 child thread is rejected; follow-ups must go through parent-mediated MAv2 tools so lineage, activity tracking, permissions and mailbox semantics remain intact.
+
+## Developer guidance for fork changes
+
+- Tool behavior: change `codex-rs/core/src/tools/handlers/multi_agents_v2/*` for current MAv2 behavior; touch old `multi_agents/*` only when explicitly preserving old compatibility.
+- Tool schema/names: update handler-local specs such as `multi_agents_spec.rs`, `spec_plan` tests and generated/projection consumers together; do not hardcode one-off tool lists in TUI/app-server. For current MAv2, also update `ToolExposure`/registry/router behavior when a feature is model-only, code-mode-visible or deferred.
+- Runtime metadata and namespace: when adding a fork capability that changes agent runtime selection, tool namespace, service tier, spawn metadata or defaults, update the native MAv2 config/runtime metadata path, rollout persistence and trace classification together. Do not solve this by only changing prompt text or a TUI label.
+- Protocol/schema: update `codex-rs/protocol/src/protocol.rs` for core event/input/session types and `codex-rs/app-server-protocol/src/protocol/v2/*` for v2 wire projections. Regenerate schemas when API shapes change.
+- Message content: when changing inter-agent message payloads, update `AgentMessageInputContent`, app-server schemas/TypeScript fixtures, session reconstruction, rollout policy, rollout-trace normalization and consumers such as Guardian/hooks/realtime/memory/web-search that may read agent-message history.
+- TUI UX: project through `ThreadItem`/app-server notifications into `tui/src/multi_agents.rs`, `app/agent_navigation.rs`, `chatwidget/tool_lifecycle.rs`; avoid bypassing native event projections.
+- Side conversation UX: keep `/side` behavior in `tui/src/app/side.rs` and its replay/deferred-interactive helpers; parent/main-thread status must be restored through existing thread event snapshots rather than custom global flags.
+- Realtime collaboration: change realtime tool names/session schema in `codex-api/src/endpoint/realtime_websocket/*`, core routing in `core/src/realtime_conversation.rs`, and shared event types in `protocol/src/protocol.rs` together. Do not implement realtime delegation by calling MAv2 handlers directly.
+- External-agent migration: change detect/import/config migration in `app-server/src/config/external_agent_config.rs` and API adapter code in `app-server/src/external_agent_config_api.rs`; keep core limited to reusable plugin/config helpers.
+- Hooks/extensions: add observability through `SubagentStart`/`SubagentStop`, turn metadata and extension tool context when external systems need to observe subagent lifecycle. Hooks must observe the native lifecycle; they should not become an alternate spawn/wait/interrupt implementation.
+- MCP/tool contributions: use thread-scoped MCP server/tool contribution paths for per-thread or per-subagent tools. Do not leak child MCP startup warnings or tool contributions into parent transcript/global state unless the native projection says the status is app-scoped.
+- Persistence/resume: update `SessionSource::SubAgent`, `SubAgentSource`, `MultiAgentVersion`, `parent_thread_id`, fork/compaction metadata, rollout recorder/policy, `ThreadStore` history/pagination contracts and loaded thread discovery together if lineage or restart semantics change.
+- Permission/env propagation: if a fork feature changes execution policy, sandbox, network access, cwd, environment id, sticky thread environment or turn-level profile, make it flow through `PermissionProfile`, `TurnContext`, thread/fork/turn app-server params, rollout persistence and TUI cached `ThreadSessionState`; do not add a fork-only permission/environment side channel.
+- Tests: use `core/src/tools/handlers/multi_agents_tests.rs` for runtime/tool behavior, `core/src/session/tests.rs` for mailbox/context/resume behavior, `app-server/tests/suite/v2/*` for protocol projections, `tui/src/chatwidget/tests/*` and snapshots for user-visible TUI changes, `rollout-trace` tests for trace reconstruction.
+
+## Native propagation rule for fork work
+
+Если форк расширяет MAv2, новая capability должна входить в native source-of-truth и автоматически наследоваться всеми surfaces, которые уже читают этот source:
+
+- model-visible tool spec -> handler -> protocol event/rollout item -> app-server `ThreadItem` -> TUI rendering/navigation;
+- `AgentPath`/`SessionSource::SubAgent` lineage -> persistence/resume -> loaded thread discovery -> agent picker;
+- config/feature gates -> schema/runtime loader -> session startup -> tool registry, `ToolExposure`, namespace and usage hints;
+- runtime metadata/service tier/spawn metadata policy -> child thread creation -> persisted thread/session metadata -> resume/prewarm behavior;
+- permission/environment state -> `TurnContext` -> child spawn config -> rollout/session reconstruction -> app-server/TUI session state;
+- mailbox `InterAgentCommunication` / `AgentMessageInputContent` -> wait/result delivery -> rollout-trace reconstruction;
+- thread-scoped MCP/tool contributions -> session tool registry -> child/parent transcript isolation -> app-server/TUI status routing.
+
+Антипаттерны для форка: parallel config, duplicated enums, one-off UI switches, hardcoded tool name lists, direct module-to-module calls that skip protocol/runtime projections.
+
+## Compatibility notes and open questions
+
+- Old tool names include `spawn_agent`, `send_input`, `wait`, `close_agent`, later `resume_agent`; MAv2 introduces/uses `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent` depending on release generation and namespace.
+- `assign_task` appears historically and maps to `followup_task` in current trace compatibility. Do not add new behavior only to one alias.
+- `close_agent` is historical for interruption/close; current MAv2 user-facing semantics should prefer `interrupt_agent` where applicable.
+- `collaborationMode` is still an app-server/TUI settings concept; it should not be treated as the sole switch for MAv2 runtime availability.
+- Collaboration modes evolved from model/effort overrides into structured `CollaborationMode` plus `CollaborationModeMask`; current fork work should preserve that separation so mode presets do not mutate base settings.
+- Old collab lineage introduced `SessionSource::SubAgent(ThreadSpawn { ... })` and later app-server source filtering; subagent discovery should use these lineage fields instead of filename/path heuristics.
+- App-server direct input into current MAv2 child threads is intentionally rejected; product UX should expose parent-mediated follow-up/interrupt flows instead.
+- Agent message history may contain encrypted and plaintext payloads; consumers that need textual content must explicitly handle encrypted content as unavailable rather than lossy-decoding it.
+- `ModelClient` and `ModelClientSession` are transport/model-client concepts, not the place to attach new per-turn multi-agent semantics. Per-turn spawn semantics belong in `TurnContext`; turn-scoped transport state such as sticky routing belongs in `ModelClientSession`.
+- Guardrails were added in layers: spawn depth/count caps, smaller default max sub-agent count, and context-sensitive disabling of collab at max depth. Fork features that spawn agents must use the native spawn path so these guardrails remain effective.
+- Current known gaps: exact product rationale still remains “не установлено локально” where it is not visible from release notes, commit subjects, tests or diffs; PR/GitHub metadata would be needed to strengthen those cases.
