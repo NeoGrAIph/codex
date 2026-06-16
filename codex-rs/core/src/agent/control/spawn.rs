@@ -244,6 +244,7 @@ impl AgentControl {
                 depth,
                 agent_path,
                 agent_role,
+                thread_note,
                 ..
             })) => {
                 let (session_source, agent_metadata) = self.prepare_thread_spawn(
@@ -254,6 +255,7 @@ impl AgentControl {
                     agent_path,
                     agent_role,
                     /*preferred_agent_nickname*/ None,
+                    thread_note.or(options.thread_note.clone()),
                 )?;
                 (Some(session_source), agent_metadata)
             }
@@ -575,6 +577,7 @@ impl AgentControl {
                             agent_path: None,
                             agent_nickname: None,
                             agent_role: None,
+                            thread_note: None,
                         });
                     match Box::pin(self.resume_single_agent_from_rollout(
                         config.clone(),
@@ -642,6 +645,7 @@ impl AgentControl {
                 agent_path,
                 agent_role: _,
                 agent_nickname: _,
+                thread_note,
             }) => {
                 let (resumed_agent_nickname, resumed_agent_role) =
                     if let Some(state_db_ctx) = state_db_ctx.as_ref() {
@@ -660,6 +664,7 @@ impl AgentControl {
                     agent_path,
                     resumed_agent_role,
                     resumed_agent_nickname,
+                    thread_note.or(stored_thread.thread_note),
                 )?
             }
             other => (other, AgentMetadata::default()),

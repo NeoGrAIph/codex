@@ -2640,6 +2640,8 @@ pub enum SubAgentSource {
         agent_nickname: Option<String>,
         #[serde(default, alias = "agent_type")]
         agent_role: Option<String>,
+        #[serde(default)]
+        thread_note: Option<String>,
     },
     MemoryConsolidation,
     Other(String),
@@ -2711,6 +2713,15 @@ impl SessionSource {
         match self {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_path, .. }) => {
                 agent_path.clone()
+            }
+            _ => None,
+        }
+    }
+
+    pub fn get_thread_note(&self) -> Option<String> {
+        match self {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { thread_note, .. }) => {
+                thread_note.clone()
             }
             _ => None,
         }
@@ -2863,6 +2874,9 @@ pub struct SessionMeta {
     /// Optional canonical agent path assigned to an AgentControl-spawned sub-agent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_path: Option<String>,
+    /// Optional short note attached to an AgentControl-spawned sub-agent thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_note: Option<String>,
     pub model_provider: Option<String>,
     /// base_instructions for the session. This *should* always be present when creating a new session,
     /// but may be missing for older sessions. If not present, fall back to rendering the base_instructions
@@ -2891,6 +2905,7 @@ impl Default for SessionMeta {
             agent_nickname: None,
             agent_role: None,
             agent_path: None,
+            thread_note: None,
             model_provider: None,
             base_instructions: None,
             dynamic_tools: None,

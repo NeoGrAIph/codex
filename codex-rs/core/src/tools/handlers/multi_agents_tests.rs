@@ -2,6 +2,8 @@ use super::*;
 use crate::ThreadManager;
 use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
+use crate::config::DEFAULT_AGENT_MAX_THREADS;
+use crate::config::DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS;
 use crate::function_tool::FunctionCallError;
 use crate::init_state_db;
 use crate::session::tests::make_session_and_context;
@@ -43,6 +45,7 @@ use codex_protocol::protocol::FileSystemSandboxEntry;
 use codex_protocol::protocol::FileSystemSandboxPolicy;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::NetworkSandboxPolicy;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
@@ -176,6 +179,7 @@ struct ListedAgentResult {
     agent_name: String,
     agent_status: serde_json::Value,
     last_task_message: Option<String>,
+    thread_note: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1228,6 +1232,249 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
 }
 
 #[tokio::test]
+async fn multi_agent_v2_spawn_applies_cwd_and_thread_note_without_widening_permissions() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let child_cwd = turn
+        .environments
+        .primary()
+        .expect("turn should have a primary environment")
+        .cwd()
+        .as_path()
+        .join("worker-area");
+    tokio::fs::create_dir_all(&child_cwd)
+        .await
+        .expect("child cwd should be created");
+    let expected_cwd =
+        codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path_checked(&child_cwd)
+            .expect("child cwd should be absolute");
+    let parent_workspace_roots = turn.config.effective_workspace_roots();
+    let parent_permission_profile = turn.permission_profile();
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker",
+                "cwd": child_cwd.display().to_string(),
+                "thread_note": "check runtime cwd"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should accept cwd inside workspace roots");
+
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker path should resolve");
+    let child_snapshot = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist")
+        .config_snapshot()
+        .await;
+    assert_eq!(
+        child_snapshot.environments.legacy_fallback_cwd,
+        expected_cwd
+    );
+    assert_eq!(child_snapshot.workspace_roots, parent_workspace_roots);
+    assert_eq!(child_snapshot.permission_profile, parent_permission_profile);
+    assert_eq!(
+        child_snapshot.session_source.get_thread_note().as_deref(),
+        Some("check runtime cwd")
+    );
+
+    let output = ListAgentsHandlerV2
+        .handle(invocation(
+            session,
+            turn,
+            "list_agents",
+            function_payload(json!({})),
+        ))
+        .await
+        .expect("list_agents should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&content).expect("list_agents result should be json");
+    let worker = result
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == "/root/worker")
+        .expect("worker should be listed");
+    assert_eq!(worker.thread_note.as_deref(), Some("check runtime cwd"));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_rejects_cwd_outside_workspace_roots() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let outside = tempfile::tempdir()
+        .expect("outside tempdir should be created")
+        .path()
+        .join("outside");
+    tokio::fs::create_dir_all(&outside)
+        .await
+        .expect("outside cwd should be created");
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker",
+                "cwd": outside.display().to_string()
+            })),
+        ))
+        .await
+        .err()
+        .expect("spawn_agent should reject cwd outside workspace roots");
+
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("expected respond-to-model error");
+    };
+    assert!(message.starts_with("spawn_agent.cwd must be inside the current workspace roots:"));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_rejects_nonexistent_cwd_inside_workspace_roots() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let missing_cwd = turn
+        .environments
+        .primary()
+        .expect("turn should have a primary environment")
+        .cwd()
+        .as_path()
+        .join("missing-worker-area");
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker",
+                "cwd": missing_cwd.display().to_string()
+            })),
+        ))
+        .await
+        .err()
+        .expect("spawn_agent should reject nonexistent cwd");
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(format!(
+            "spawn_agent.cwd must exist and be a directory: {}",
+            missing_cwd.display()
+        ))
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_rejects_thread_note_over_500_chars() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker",
+                "thread_note": "x".repeat(501)
+            })),
+        ))
+        .await
+        .err()
+        .expect("spawn_agent should reject an oversized thread_note");
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("thread_note must be at most 500 characters".to_string())
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_runtime_defaults_use_fork_limits() {
+    let (_session, turn) = make_session_and_context().await;
+
+    assert_eq!(turn.config.agent_max_depth, DEFAULT_AGENT_MAX_DEPTH);
+    assert_eq!(DEFAULT_AGENT_MAX_DEPTH, 2);
+    assert_eq!(DEFAULT_AGENT_MAX_THREADS, Some(12));
+    assert_eq!(
+        turn.config
+            .effective_agent_max_threads(MultiAgentVersion::V2),
+        Some(12)
+    );
+    assert_eq!(
+        turn.config.multi_agent_v2.default_wait_timeout_ms,
+        DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS
+    );
+    assert_eq!(DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS, 300_000);
+}
+
+#[tokio::test]
 async fn multi_agent_v2_spawn_rejects_legacy_fork_context() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
@@ -1381,6 +1628,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
                 agent_path: Some(child_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -1394,6 +1642,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         agent_path: Some(child_path.clone()),
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
     });
 
     SendMessageHandlerV2
@@ -1458,6 +1707,7 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
                 agent_path: Some(child_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -1471,6 +1721,7 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
         agent_path: Some(child_path),
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
     });
 
     let Err(err) = FollowupTaskHandlerV2
@@ -1630,6 +1881,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
                 agent_path: Some(researcher_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -1651,6 +1903,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
                 agent_path: Some(worker_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -1663,6 +1916,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
         agent_path: Some(researcher_path),
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
     });
 
     let output = ListAgentsHandlerV2
@@ -2404,6 +2658,7 @@ async fn spawn_agent_rejects_when_depth_limit_exceeded() {
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
     });
 
     let invocation = invocation(
@@ -2444,6 +2699,7 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
     });
 
     let invocation = invocation(
@@ -2499,6 +2755,7 @@ async fn multi_agent_v2_spawn_agent_ignores_configured_max_depth() {
         agent_path: Some(parent_path),
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
     });
 
     let invocation = invocation(
@@ -2872,6 +3129,7 @@ async fn resume_agent_rejects_when_depth_limit_exceeded() {
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
     });
 
     let invocation = invocation(
@@ -4050,6 +4308,105 @@ async fn multi_agent_v2_interrupt_agent_rejects_root_target_and_id() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_interrupt_agent_rejects_cross_subtree_target() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+
+    let worker_path = AgentPath::try_from("/root/worker").expect("worker path");
+    let sibling_path = AgentPath::try_from("/root/sibling").expect("sibling path");
+    let worker_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect this repo".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(worker_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("worker spawn should succeed")
+        .thread_id;
+    session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect this repo".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(sibling_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("sibling spawn should succeed");
+    session.thread_id = worker_thread_id;
+    turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(worker_path.clone()),
+        agent_nickname: None,
+        agent_role: None,
+        thread_note: None,
+    });
+
+    let err = InterruptAgentHandler
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "interrupt_agent",
+            function_payload(json!({"target": sibling_path.to_string()})),
+        ))
+        .await
+        .err()
+        .expect("interrupt_agent should reject sibling target");
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "agent `/root/worker` cannot interrupt `/root/sibling` because the target is outside its sub-agent tree"
+                .to_string()
+        )
+    );
+    assert!(
+        !manager
+            .captured_ops()
+            .iter()
+            .any(|(id, op)| { *id != worker_thread_id && matches!(op, Op::Interrupt) })
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_id() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
@@ -4083,6 +4440,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_id() {
                 agent_path: Some(child_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -4096,6 +4454,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_id() {
         agent_path: Some(child_path),
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
     });
 
     let err = InterruptAgentHandler
@@ -4151,6 +4510,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_task_name() {
                 agent_path: Some(child_path.clone()),
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -4164,6 +4524,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_task_name() {
         agent_path: Some(child_path.clone()),
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
     });
 
     let err = InterruptAgentHandler

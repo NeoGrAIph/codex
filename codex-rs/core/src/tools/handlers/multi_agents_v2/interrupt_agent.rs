@@ -60,6 +60,7 @@ async fn handle_interrupt_agent(
     let receiver_agent_path = receiver_agent.agent_path.clone().ok_or_else(|| {
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
+    enforce_interrupt_ownership(&turn.session_source, &receiver_agent_path)?;
     let status = session.services.agent_control.get_status(agent_id).await;
     let result = match session
         .services
@@ -105,6 +106,32 @@ struct InterruptAgentArgs {
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct InterruptAgentResult {
     pub(crate) previous_status: AgentStatus,
+}
+
+fn enforce_interrupt_ownership(
+    current_session_source: &codex_protocol::protocol::SessionSource,
+    target_agent_path: &AgentPath,
+) -> Result<(), FunctionCallError> {
+    let current_agent_path = current_session_source
+        .get_agent_path()
+        .unwrap_or_else(AgentPath::root);
+    if current_agent_path.is_root()
+        || agent_path_is_descendant_of(target_agent_path, &current_agent_path)
+    {
+        return Ok(());
+    }
+    Err(FunctionCallError::RespondToModel(format!(
+        "agent `{}` cannot interrupt `{}` because the target is outside its sub-agent tree",
+        current_agent_path.as_str(),
+        target_agent_path.as_str()
+    )))
+}
+
+fn agent_path_is_descendant_of(agent_path: &AgentPath, ancestor: &AgentPath) -> bool {
+    agent_path
+        .as_str()
+        .strip_prefix(ancestor.as_str())
+        .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 impl ToolOutput for InterruptAgentResult {

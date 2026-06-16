@@ -4065,6 +4065,7 @@ async fn emit_subagent_session_started_includes_fork_lineage_from_session_config
             agent_path: None,
             agent_nickname: None,
             agent_role: None,
+            thread_note: None,
         },
     );
 
@@ -5397,6 +5398,7 @@ async fn resumed_subagent_session_keeps_inherited_session_id() {
         agent_path: None,
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
     });
     let (session, rx_event) = make_session_with_history_source_and_agent_control_and_rx(
         InitialHistory::Resumed(ResumedHistory {
@@ -7639,6 +7641,7 @@ async fn build_initial_context_adds_multi_agent_v2_subagent_usage_hint_as_develo
         agent_path: Some(AgentPath::try_from("/root/worker").expect("agent path should parse")),
         agent_nickname: Some("worker".to_string()),
         agent_role: None,
+        thread_note: None,
     });
     session
         .state

@@ -28,6 +28,17 @@
 - Hooks/extensions/rollout trace: `codex-rs/rollout-trace/src/reducer/tool/agents.rs`, `codex-rs/rollout-trace/src/tool_dispatch.rs`, `codex-rs/rollout-trace/README.md`, hook event surfaces for `SubagentStart`/`SubagentStop` in `codex-rs/protocol/src/protocol.rs`, TUI hook browser and core extension paths, plus extension registries/contributor hooks when fork functionality must observe session/thread/turn lifecycle without becoming the runtime owner. Hook inputs can include subagent identity and turn metadata; extension tools can receive conversation history where allowed by the native extension contract. Thread-scoped MCP/tool contributions belong in `codex-rs/ext/extension-api/src/contributors/mcp.rs` and related registry/session wiring, not in global ad hoc tool lists.
 - Trace/debug surfaces are evidence and developer diagnostics, not runtime authority: rollout trace should reconstruct from durable rollout/protocol facts, while current behavior should still be changed in native runtime/tool/protocol modules.
 
+## Fork/140 substrate iteration
+
+`feature/140/subagent-runtime-contract` сохраняет native multi-agent/thread runtime как source of truth и добавляет только минимальные extension points:
+
+- Spawn cwd: MAv2 `spawn_agent.cwd` проверяется в `multi_agents_common.rs` через `Config.effective_workspace_roots()` и применяется к child `Config.cwd` до существующего thread/environment start path.
+- Thread notes: `SubAgentSource::ThreadSpawn.thread_note` и `SessionMeta.thread_note` несут metadata через session source, rollout metadata, live `AgentMetadata` и `list_agents` output; старые записи без поля читаются как `None`.
+- Runtime limits: fork defaults живут в `Config` constants; MAv2 concurrency остаётся root-inclusive, поэтому 13 session slots означают root плюс 12 spawned agents.
+- Ownership: MAv2 `interrupt_agent` выводит caller/target ownership из canonical `AgentPath` в `SessionSource` и `AgentMetadata`; отдельная ownership table не добавляется.
+
+Intentionally unaffected in this iteration: app-server schema/RPC, TUI rendering, sqlite schema migration for notes, MCP allow/deny policy propagation, V1 close ownership parity and wait-agent note projection.
+
 ## Lifecycle flows
 
 ### Spawn agent

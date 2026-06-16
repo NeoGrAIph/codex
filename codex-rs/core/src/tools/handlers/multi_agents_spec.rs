@@ -442,9 +442,13 @@ fn list_agents_output_schema() -> Value {
                         "last_task_message": {
                             "type": ["string", "null"],
                             "description": "Most recent user or inter-agent instruction received by the agent, when available."
+                        },
+                        "thread_note": {
+                            "type": ["string", "null"],
+                            "description": "Short note attached to the agent thread, when available."
                         }
                     },
-                    "required": ["agent_name", "agent_status", "last_task_message"],
+                    "required": ["agent_name", "agent_status", "last_task_message", "thread_note"],
                     "additionalProperties": false
                 },
                 "description": "Live agents visible in the current root thread tree."
@@ -632,6 +636,20 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
             "service_tier".to_string(),
             JsonSchema::string(Some(
                 SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION.to_string(),
+            )),
+        ),
+        (
+            "cwd".to_string(),
+            JsonSchema::string(Some(
+                "Optional absolute working directory for the new agent. It must exist, be a directory, be inside the current workspace roots, and does not widen permissions."
+                    .to_string(),
+            )),
+        ),
+        (
+            "thread_note".to_string(),
+            JsonSchema::string(Some(
+                "Optional short note, up to 500 characters, stored with the spawned thread for later agent listing and resume context."
+                    .to_string(),
             )),
         ),
     ])

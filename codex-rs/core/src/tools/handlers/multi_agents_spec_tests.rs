@@ -83,6 +83,22 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
     assert!(properties.contains_key("message"));
     assert_eq!(
         properties
+            .get("cwd")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(
+            "Optional absolute working directory for the new agent. It must exist, be a directory, be inside the current workspace roots, and does not widen permissions."
+        )
+    );
+    assert_eq!(
+        properties
+            .get("thread_note")
+            .and_then(|schema| schema.description.as_deref()),
+        Some(
+            "Optional short note, up to 500 characters, stored with the spawned thread for later agent listing and resume context."
+        )
+    );
+    assert_eq!(
+        properties
             .get("message")
             .and_then(|schema| schema.encrypted),
         Some(true)
@@ -146,6 +162,8 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
 
     assert!(properties.contains_key("fork_context"));
     assert!(!properties.contains_key("fork_turns"));
+    assert!(!properties.contains_key("cwd"));
+    assert!(!properties.contains_key("thread_note"));
     assert_eq!(
         properties
             .get("message")

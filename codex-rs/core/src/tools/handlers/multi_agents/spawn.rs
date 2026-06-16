@@ -126,12 +126,14 @@ async fn handle_spawn_agent(
             child_depth,
             role_name,
             /*task_name*/ None,
+            /*thread_note*/ None,
         )?),
         SpawnAgentOptions {
             fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
             fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
             parent_thread_id: Some(session.thread_id),
             environments: Some(turn.environments.to_selections()),
+            thread_note: None,
         },
     ))
     .await
