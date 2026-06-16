@@ -18,6 +18,7 @@ use codex_protocol::openai_models::ModelsResponse;
 use crate::amazon_bedrock::AmazonBedrockModelProvider;
 use crate::auth::auth_manager_for_provider;
 use crate::auth::resolve_provider_auth;
+use crate::deepseek;
 use crate::models_endpoint::OpenAiModelsEndpoint;
 
 /// Optional provider-backed features that Codex may expose at runtime.
@@ -218,6 +219,17 @@ impl ModelProvider for ConfiguredModelProvider {
         &self.info
     }
 
+    fn capabilities(&self) -> ProviderCapabilities {
+        if self.info.is_deepseek() {
+            return ProviderCapabilities {
+                namespace_tools: true,
+                image_generation: false,
+                web_search: false,
+            };
+        }
+        ProviderCapabilities::default()
+    }
+
     fn auth_manager(&self) -> Option<Arc<AuthManager>> {
         self.auth_manager.clone()
     }
@@ -285,6 +297,13 @@ impl ModelProvider for ConfiguredModelProvider {
         codex_home: PathBuf,
         config_model_catalog: Option<ModelsResponse>,
     ) -> SharedModelsManager {
+        if self.info.is_deepseek() {
+            return Arc::new(StaticModelsManager::new(
+                self.auth_manager.clone(),
+                deepseek::static_model_catalog(),
+            ));
+        }
+
         match config_model_catalog {
             Some(model_catalog) => Arc::new(StaticModelsManager::new(
                 self.auth_manager.clone(),
@@ -295,14 +314,24 @@ impl ModelProvider for ConfiguredModelProvider {
                     self.info.clone(),
                     self.auth_manager.clone(),
                 ));
+                let cache_scope = (!self.info.is_openai()).then(|| model_cache_scope(&self.info));
                 Arc::new(OpenAiModelsManager::new(
                     codex_home,
                     endpoint,
                     self.auth_manager.clone(),
+                    cache_scope,
                 ))
             }
         }
     }
+}
+
+fn model_cache_scope(provider: &ModelProviderInfo) -> String {
+    format!(
+        "{}:{}",
+        provider.name,
+        provider.base_url.as_deref().unwrap_or_default()
+    )
 }
 
 #[cfg(test)]
@@ -643,6 +672,42 @@ mod tests {
         );
         assert_eq!(catalog.models[0].service_tiers, Vec::new());
         assert_eq!(catalog.models[0].default_service_tier, None);
+    }
+
+    #[tokio::test]
+    async fn deepseek_catalog_does_not_advertise_freeform_apply_patch() {
+        let provider = create_model_provider(
+            ModelProviderInfo::create_deepseek_provider(),
+            /*auth_manager*/ None,
+        );
+        let manager =
+            provider.models_manager(test_codex_home(), /*config_model_catalog*/ None);
+
+        let catalog = manager.raw_model_catalog(RefreshStrategy::Offline).await;
+
+        assert!(
+            catalog
+                .models
+                .iter()
+                .all(|model| model.apply_patch_tool_type.is_none())
+        );
+    }
+
+    #[test]
+    fn deepseek_provider_disables_unsupported_hosted_tools() {
+        let provider = create_model_provider(
+            ModelProviderInfo::create_deepseek_provider(),
+            /*auth_manager*/ None,
+        );
+
+        assert_eq!(
+            provider.capabilities(),
+            ProviderCapabilities {
+                namespace_tools: true,
+                image_generation: false,
+                web_search: false,
+            }
+        );
     }
 
     #[tokio::test]

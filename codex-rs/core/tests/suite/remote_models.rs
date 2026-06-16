@@ -547,6 +547,7 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
         &codex,
         codex_protocol::protocol::ThreadSettingsOverrides {
             model: Some(REMOTE_MODEL_SLUG.to_string()),
+            model_provider: None,
             ..Default::default()
         },
     )
@@ -794,6 +795,7 @@ async fn remote_models_apply_remote_base_instructions() -> Result<()> {
         &codex,
         codex_protocol::protocol::ThreadSettingsOverrides {
             model: Some(model.to_string()),
+            model_provider: None,
             ..Default::default()
         },
     )

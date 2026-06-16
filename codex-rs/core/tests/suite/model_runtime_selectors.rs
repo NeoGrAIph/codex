@@ -117,6 +117,7 @@ async fn response_body_for_remote_model(
         &test.codex,
         ThreadSettingsOverrides {
             model: Some(model_slug),
+            model_provider: None,
             ..Default::default()
         },
     )
@@ -265,6 +266,7 @@ async fn remote_multi_agent_selector_uses_model_selected_before_first_turn() -> 
         &test.codex,
         ThreadSettingsOverrides {
             model: Some(CHILD_MODEL.to_string()),
+            model_provider: None,
             ..Default::default()
         },
     )

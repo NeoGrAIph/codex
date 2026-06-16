@@ -1,5 +1,8 @@
 use super::*;
+use crate::models::model_from_preset;
+use codex_app_server_protocol::Model;
 use codex_config::config_toml::ConfigToml;
+use codex_models_manager::manager::RefreshStrategy;
 use futures::StreamExt;
 
 #[derive(Clone)]
@@ -157,7 +160,7 @@ impl CatalogRequestProcessor {
         &self,
         params: ModelListParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        Self::list_models(self.thread_manager.clone(), params)
+        self.list_models(params)
             .await
             .map(|response| Some(response.into()))
     }
@@ -246,15 +249,71 @@ impl CatalogRequestProcessor {
     }
 
     async fn list_models(
-        thread_manager: Arc<ThreadManager>,
+        &self,
         params: ModelListParams,
     ) -> Result<ModelListResponse, JSONRPCErrorError> {
         let ModelListParams {
             limit,
             cursor,
             include_hidden,
+            include_configured_providers,
         } = params;
-        let models = supported_models(thread_manager, include_hidden.unwrap_or(false)).await;
+        let include_hidden = include_hidden.unwrap_or(false);
+        let models = if include_configured_providers.unwrap_or(false) {
+            self.supported_models_from_configured_providers(include_hidden)
+                .await?
+        } else {
+            supported_models(self.thread_manager.clone(), include_hidden).await
+        };
+        Self::paginate_models(models, limit, cursor)
+    }
+
+    async fn supported_models_from_configured_providers(
+        &self,
+        include_hidden: bool,
+    ) -> Result<Vec<Model>, JSONRPCErrorError> {
+        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        let mut provider_ids = config.model_providers.keys().cloned().collect::<Vec<_>>();
+        provider_ids.sort();
+
+        let mut models = Vec::new();
+        for provider_id in provider_ids {
+            let Some(provider_info) = config.model_providers.get(&provider_id).cloned() else {
+                continue;
+            };
+            let is_active_provider = provider_id == config.model_provider_id;
+            let config_model_catalog = is_active_provider
+                .then(|| config.model_catalog.clone())
+                .flatten();
+            let refresh_strategy = if is_active_provider {
+                RefreshStrategy::OnlineIfUncached
+            } else {
+                RefreshStrategy::Offline
+            };
+            let provider = create_model_provider(provider_info, Some(self.auth_manager.clone()));
+            let manager =
+                provider.models_manager(config.codex_home.to_path_buf(), config_model_catalog);
+            models.extend(
+                manager
+                    .list_models(refresh_strategy)
+                    .await
+                    .into_iter()
+                    .filter(|preset| include_hidden || preset.show_in_picker)
+                    .map(|mut preset| {
+                        preset.model_provider = provider_id.clone();
+                        model_from_preset(preset)
+                    }),
+            );
+        }
+
+        Ok(models)
+    }
+
+    fn paginate_models(
+        models: Vec<Model>,
+        limit: Option<u32>,
+        cursor: Option<String>,
+    ) -> Result<ModelListResponse, JSONRPCErrorError> {
         let total = models.len();
 
         if total == 0 {

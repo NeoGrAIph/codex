@@ -555,6 +555,7 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
         codex_protocol::protocol::ThreadSettingsOverrides {
             approval_policy: Some(AskForApproval::Never),
             model: Some("gpt-5.4".to_string()),
+            model_provider: None,
             effort: Some(Some(ReasoningEffort::Low)),
             collaboration_mode: Some(collaboration_mode),
             ..Default::default()
@@ -756,6 +757,7 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
                 model: Some("o3".to_string()),
+                model_provider: None,
                 effort: Some(Some(ReasoningEffort::High)),
                 summary: Some(ReasoningSummary::Detailed),
                 ..Default::default()

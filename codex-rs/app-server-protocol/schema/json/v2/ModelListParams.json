@@ -8,6 +8,13 @@
         "null"
       ]
     },
+    "includeConfiguredProviders": {
+      "description": "When true, include every configured provider catalog instead of only the active provider.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "includeHidden": {
       "description": "When true, include models that are hidden from the default picker list.",
       "type": [

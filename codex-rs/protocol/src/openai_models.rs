@@ -31,6 +31,10 @@ use crate::config_types::ServiceTier;
 use crate::config_types::Verbosity;
 use crate::protocol::MultiAgentVersion;
 
+fn default_model_provider_id() -> String {
+    "openai".to_string()
+}
+
 const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
 pub const SPEED_TIER_FAST: &str = "fast";
 
@@ -196,6 +200,9 @@ pub struct ModelServiceTier {
 pub struct ModelPreset {
     /// Stable identifier for the preset.
     pub id: String,
+    /// Provider id whose runtime catalog produced this preset.
+    #[serde(default = "default_model_provider_id")]
+    pub model_provider: String,
     /// Model slug (e.g., "gpt-5").
     pub model: String,
     /// Display name shown in UIs.
@@ -556,6 +563,7 @@ impl From<ModelInfo> for ModelPreset {
         let supports_personality = info.supports_personality();
         ModelPreset {
             id: info.slug.clone(),
+            model_provider: default_model_provider_id(),
             model: info.slug.clone(),
             display_name: info.display_name,
             description: info.description.unwrap_or_default(),

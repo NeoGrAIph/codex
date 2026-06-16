@@ -14,4 +14,8 @@ limit?: number | null,
 /**
  * When true, include models that are hidden from the default picker list.
  */
-includeHidden?: boolean | null, };
+includeHidden?: boolean | null,
+/**
+ * When true, include every configured provider catalog instead of only the active provider.
+ */
+includeConfiguredProviders?: boolean | null, };

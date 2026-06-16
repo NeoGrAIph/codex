@@ -2,6 +2,8 @@ use anyhow::Result;
 use codex_config::types::Personality;
 use codex_features::Feature;
 use codex_login::CodexAuth;
+use codex_model_provider_info::DEEPSEEK_PROVIDER_ID;
+use codex_model_provider_info::ModelProviderInfo;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
@@ -21,15 +23,18 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
+use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_image_generation_call;
 use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_chat_completions_sse_once;
 use core_test_support::responses::mount_models_once;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_completed;
 use core_test_support::responses::start_mock_server;
+use core_test_support::responses::start_websocket_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_selections;
@@ -37,6 +42,7 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
+use serde_json::json;
 use std::path::Path;
 use std::path::PathBuf;
 use wiremock::MockServer;
@@ -65,6 +71,27 @@ fn read_only_user_turn(test: &TestCodex, items: Vec<UserInput>, model: String) -
             ..Default::default()
         },
     }
+}
+
+fn chat_completions_done_response(id: &str) -> String {
+    format!(
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({
+            "id": id,
+            "choices": [
+                {
+                    "delta": {
+                        "content": "done"
+                    }
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2
+            }
+        })
+    )
 }
 
 fn image_generation_artifact_path(codex_home: &Path, session_id: &str, call_id: &str) -> PathBuf {
@@ -143,6 +170,182 @@ fn test_model_info(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_and_model_change_uses_chat_completions_next_turn() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = MockServer::start().await;
+    let chat_mock =
+        mount_chat_completions_sse_once(&server, chat_completions_done_response("chat-1")).await;
+    let base_url = format!("{}/v1", server.uri());
+    let test = test_codex()
+        .with_config(move |config| {
+            let mut deepseek_provider = ModelProviderInfo::create_deepseek_provider();
+            deepseek_provider.base_url = Some(base_url);
+            deepseek_provider.env_key = Some("PATH".to_string());
+            deepseek_provider.request_max_retries = Some(0);
+            deepseek_provider.stream_max_retries = Some(0);
+            deepseek_provider.stream_idle_timeout_ms = Some(2_000);
+            config
+                .model_providers
+                .insert(DEEPSEEK_PROVIDER_ID.to_string(), deepseek_provider);
+        })
+        .build(&server)
+        .await?;
+
+    core_test_support::submit_thread_settings(
+        &test.codex,
+        codex_protocol::protocol::ThreadSettingsOverrides {
+            model: Some("deepseek-v4-flash".to_string()),
+            model_provider: Some(DEEPSEEK_PROVIDER_ID.to_string()),
+            effort: Some(Some(ReasoningEffort::High)),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let submission_id = test
+        .codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "use deepseek".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    loop {
+        let event = test.codex.next_event().await?;
+        if event.id != submission_id {
+            continue;
+        }
+        match event.msg {
+            EventMsg::TurnComplete(_) => break,
+            EventMsg::Error(error) => panic!("DeepSeek turn failed: {}", error.message),
+            _ => {}
+        }
+    }
+
+    let request = chat_mock.single_request();
+    let body = request.body_json();
+
+    assert_eq!(request.path(), "/v1/chat/completions");
+    assert_eq!(body["model"], "deepseek-v4-flash");
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["reasoning_effort"], "high");
+    assert_eq!(body["thinking"], json!({"type": "enabled"}));
+    assert!(
+        body["messages"]
+            .as_array()
+            .expect("messages should be an array")
+            .iter()
+            .any(|message| message["role"] == "user"
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("use deepseek")))
+    );
+    assert!(
+        body["tools"]
+            .as_array()
+            .expect("tools should be an array")
+            .iter()
+            .all(|tool| tool["type"] == "function")
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_change_before_first_turn_discards_startup_prewarm() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let websocket_server = start_websocket_server(vec![vec![vec![
+        ev_response_created("warm-1"),
+        ev_completed("warm-1"),
+    ]]])
+    .await;
+    let chat_server = MockServer::start().await;
+    let chat_mock = mount_chat_completions_sse_once(
+        &chat_server,
+        chat_completions_done_response("chat-after-prewarm"),
+    )
+    .await;
+    let chat_base_url = format!("{}/v1", chat_server.uri());
+    let mut builder = test_codex().with_config(move |config| {
+        let mut deepseek_provider = ModelProviderInfo::create_deepseek_provider();
+        deepseek_provider.base_url = Some(chat_base_url);
+        deepseek_provider.env_key = Some("PATH".to_string());
+        deepseek_provider.request_max_retries = Some(0);
+        deepseek_provider.stream_max_retries = Some(0);
+        deepseek_provider.stream_idle_timeout_ms = Some(2_000);
+        config
+            .model_providers
+            .insert(DEEPSEEK_PROVIDER_ID.to_string(), deepseek_provider);
+    });
+    let test = builder
+        .build_with_websocket_server(&websocket_server)
+        .await?;
+
+    let warmup = websocket_server.wait_for_request(0, 0).await;
+    let warmup_body = warmup.body_json();
+    assert_eq!(warmup_body["type"].as_str(), Some("response.create"));
+    assert_eq!(warmup_body["generate"].as_bool(), Some(false));
+
+    core_test_support::submit_thread_settings(
+        &test.codex,
+        codex_protocol::protocol::ThreadSettingsOverrides {
+            model: Some("deepseek-v4-flash".to_string()),
+            model_provider: Some(DEEPSEEK_PROVIDER_ID.to_string()),
+            effort: Some(Some(ReasoningEffort::High)),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let submission_id = test
+        .codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "first turn after provider switch".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    loop {
+        let event = test.codex.next_event().await?;
+        if event.id != submission_id {
+            continue;
+        }
+        match event.msg {
+            EventMsg::TurnComplete(_) => break,
+            EventMsg::Error(error) => panic!("DeepSeek turn failed: {}", error.message),
+            _ => {}
+        }
+    }
+
+    let chat_request = chat_mock.single_request();
+    let chat_body = chat_request.body_json();
+    assert_eq!(chat_request.path(), "/v1/chat/completions");
+    assert_eq!(chat_body["model"], "deepseek-v4-flash");
+
+    let websocket_connection = websocket_server.single_connection();
+    assert_eq!(
+        websocket_connection.len(),
+        1,
+        "startup OpenAI websocket should only receive the warmup request"
+    );
+    websocket_server.shutdown().await;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn model_change_appends_model_instructions_developer_message() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -173,6 +376,7 @@ async fn model_change_appends_model_instructions_developer_message() -> Result<(
         &test.codex,
         codex_protocol::protocol::ThreadSettingsOverrides {
             model: Some(next_model.to_string()),
+            model_provider: None,
             ..Default::default()
         },
     )
@@ -245,6 +449,7 @@ async fn model_and_personality_change_only_appends_model_instructions() -> Resul
         &test.codex,
         codex_protocol::protocol::ThreadSettingsOverrides {
             model: Some(next_model.to_string()),
+            model_provider: None,
             personality: Some(Personality::Pragmatic),
             ..Default::default()
         },
@@ -1056,6 +1261,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
         &test.codex,
         codex_protocol::protocol::ThreadSettingsOverrides {
             model: Some(smaller_model_slug.to_string()),
+            model_provider: None,
             ..Default::default()
         },
     )

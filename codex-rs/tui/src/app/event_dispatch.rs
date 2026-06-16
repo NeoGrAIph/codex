@@ -803,6 +803,16 @@ impl App {
                 self.sync_active_thread_service_tier_to_cached_session()
                     .await;
             }
+            AppEvent::UpdateModelSelection {
+                model_provider,
+                model,
+            } => {
+                self.chat_widget.set_model(&model);
+                self.sync_active_thread_model_selection_setting(app_server, model_provider, model)
+                    .await;
+                self.sync_active_thread_service_tier_to_cached_session()
+                    .await;
+            }
             AppEvent::UpdatePersonality(personality) => {
                 self.on_update_personality(personality);
                 self.sync_active_thread_personality_setting(app_server, personality)
@@ -1351,6 +1361,47 @@ impl App {
                         tracing::error!(
                             error = %error,
                             "failed to persist model selection"
+                        );
+                        self.chat_widget
+                            .add_error_message(format!("Failed to save default model: {error}"));
+                    }
+                }
+            }
+            AppEvent::PersistProviderModelSelection {
+                model_provider,
+                model,
+                effort,
+            } => {
+                match crate::config_update::write_config_batch(
+                    app_server.request_handle(),
+                    crate::config_update::build_provider_model_selection_edits(
+                        model_provider.as_str(),
+                        model.as_str(),
+                        effort.as_ref(),
+                    ),
+                )
+                .await
+                {
+                    Ok(_) => {
+                        let effort_label = effort
+                            .as_ref()
+                            .map(std::string::ToString::to_string)
+                            .unwrap_or_else(|| "default".to_string());
+                        tracing::info!(
+                            "Selected provider: {model_provider}, selected model: {model}, selected effort: {effort_label}"
+                        );
+                        let mut message = format!("Model changed to {model_provider}/{model}");
+                        if let Some(label) = Self::reasoning_label_for(&model, effort.as_ref()) {
+                            message.push(' ');
+                            message.push_str(&label);
+                        }
+                        self.chat_widget.add_info_message(message, /*hint*/ None);
+                    }
+                    Err(err) => {
+                        let error = format_config_error(&err);
+                        tracing::error!(
+                            error = %error,
+                            "failed to persist provider model selection"
                         );
                         self.chat_widget
                             .add_error_message(format!("Failed to save default model: {error}"));
