@@ -411,6 +411,8 @@ pub struct StoredThread {
     pub agent_role: Option<String>,
     /// Optional canonical path for thread-spawn sub-agents.
     pub agent_path: Option<String>,
+    /// Optional short note attached to a thread-spawn sub-agent.
+    pub thread_note: Option<String>,
     /// Optional Git metadata captured for the thread.
     pub git_info: Option<GitInfo>,
     /// Approval mode captured for the thread.
@@ -532,6 +534,13 @@ pub struct ThreadMetadataPatch {
         with = "optional_option"
     )]
     pub agent_path: ClearableField<String>,
+    /// Optional short note attached to a thread-spawn sub-agent.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_option"
+    )]
+    pub thread_note: ClearableField<String>,
     /// Working directory.
     pub cwd: Option<PathBuf>,
     /// CLI version that created the thread.
@@ -599,6 +608,9 @@ impl ThreadMetadataPatch {
         if next.agent_path.is_some() {
             self.agent_path = next.agent_path;
         }
+        if next.thread_note.is_some() {
+            self.thread_note = next.thread_note;
+        }
         if next.cwd.is_some() {
             self.cwd = next.cwd;
         }
@@ -642,6 +654,7 @@ impl ThreadMetadataPatch {
             && self.agent_nickname.is_none()
             && self.agent_role.is_none()
             && self.agent_path.is_none()
+            && self.thread_note.is_none()
             && self.cwd.is_none()
             && self.cli_version.is_none()
             && self.approval_mode.is_none()

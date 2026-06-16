@@ -91,6 +91,8 @@ async fn handle_spawn_agent(
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+    apply_spawn_agent_cwd_override(&mut config, args.cwd.as_deref())?;
+    let thread_note = normalize_thread_note(args.thread_note)?;
 
     let spawn_source = thread_spawn_source(
         session.thread_id,
@@ -98,6 +100,7 @@ async fn handle_spawn_agent(
         child_depth,
         role_name,
         Some(args.task_name.clone()),
+        thread_note.clone(),
     )?;
     let new_agent_path = spawn_source.get_agent_path().ok_or_else(|| {
         FunctionCallError::RespondToModel(
@@ -129,6 +132,7 @@ async fn handle_spawn_agent(
                 fork_mode,
                 parent_thread_id: Some(session.thread_id),
                 environments: Some(turn.environments.to_selections()),
+                thread_note,
             },
         ),
     )
@@ -193,6 +197,8 @@ struct SpawnAgentArgs {
     service_tier: Option<String>,
     fork_turns: Option<String>,
     fork_context: Option<bool>,
+    cwd: Option<String>,
+    thread_note: Option<String>,
 }
 
 impl SpawnAgentArgs {

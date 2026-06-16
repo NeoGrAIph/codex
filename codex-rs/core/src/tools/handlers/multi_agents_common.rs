@@ -22,6 +22,7 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -30,6 +31,7 @@ use std::collections::HashMap;
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
 pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
+pub(crate) const MAX_THREAD_NOTE_CHARS: usize = 500;
 
 pub(crate) fn function_arguments(payload: ToolPayload) -> Result<String, FunctionCallError> {
     match payload {
@@ -140,6 +142,7 @@ pub(crate) fn thread_spawn_source(
     depth: i32,
     agent_role: Option<&str>,
     task_name: Option<String>,
+    thread_note: Option<String>,
 ) -> Result<SessionSource, FunctionCallError> {
     let agent_path = task_name
         .as_deref()
@@ -157,7 +160,26 @@ pub(crate) fn thread_spawn_source(
         agent_path,
         agent_nickname: None,
         agent_role: agent_role.map(str::to_string),
+        thread_note,
     }))
+}
+
+pub(crate) fn normalize_thread_note(
+    thread_note: Option<String>,
+) -> Result<Option<String>, FunctionCallError> {
+    let Some(thread_note) = thread_note else {
+        return Ok(None);
+    };
+    let note = thread_note.trim().to_string();
+    if note.is_empty() {
+        return Ok(None);
+    }
+    if note.chars().count() > MAX_THREAD_NOTE_CHARS {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "thread_note must be at most {MAX_THREAD_NOTE_CHARS} characters"
+        )));
+    }
+    Ok(Some(note))
 }
 
 pub(crate) fn parse_collab_input(
@@ -271,6 +293,50 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
     config
         .permissions
         .set_permission_profile(turn.permission_profile())
+        .map_err(|err| {
+            FunctionCallError::RespondToModel(format!("permission_profile is invalid: {err}"))
+        })?;
+    Ok(())
+}
+
+pub(crate) fn apply_spawn_agent_cwd_override(
+    config: &mut Config,
+    cwd: Option<&str>,
+) -> Result<(), FunctionCallError> {
+    let Some(cwd) = cwd.map(str::trim).filter(|cwd| !cwd.is_empty()) else {
+        return Ok(());
+    };
+    let requested_cwd = AbsolutePathBuf::from_absolute_path_checked(cwd).map_err(|err| {
+        FunctionCallError::RespondToModel(format!(
+            "spawn_agent.cwd must be an absolute path: {err}"
+        ))
+    })?;
+    let workspace_roots = config.effective_workspace_roots();
+    if !workspace_roots
+        .iter()
+        .any(|root| requested_cwd.as_path().starts_with(root.as_path()))
+    {
+        let roots = workspace_roots
+            .iter()
+            .map(|root| root.as_path().display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(FunctionCallError::RespondToModel(format!(
+            "spawn_agent.cwd must be inside the current workspace roots: {roots}"
+        )));
+    }
+    if !requested_cwd.as_path().is_dir() {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "spawn_agent.cwd must exist and be a directory: {}",
+            requested_cwd.as_path().display()
+        )));
+    }
+    config.cwd = requested_cwd;
+    config.permissions.set_workspace_roots(workspace_roots);
+    let permission_profile = config.permissions.permission_profile().clone();
+    config
+        .permissions
+        .set_permission_profile(permission_profile)
         .map_err(|err| {
             FunctionCallError::RespondToModel(format!("permission_profile is invalid: {err}"))
         })?;

@@ -65,6 +65,7 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) fork_mode: Option<SpawnAgentForkMode>,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
+    pub(crate) thread_note: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -79,6 +80,7 @@ pub(crate) struct ListedAgent {
     pub(crate) agent_name: String,
     pub(crate) agent_status: AgentStatus,
     pub(crate) last_task_message: Option<String>,
+    pub(crate) thread_note: Option<String>,
 }
 
 /// Control-plane handle for multi-agent operations.
@@ -360,6 +362,7 @@ impl AgentControl {
                 agent_name: root_path.to_string(),
                 agent_status: root_thread.agent_status().await,
                 last_task_message: Some(ROOT_LAST_TASK_MESSAGE.to_string()),
+                thread_note: None,
             });
         }
 
@@ -387,6 +390,7 @@ impl AgentControl {
                 agent_name,
                 agent_status: thread.agent_status().await,
                 last_task_message,
+                thread_note: metadata.thread_note.clone(),
             });
         }
 
@@ -483,6 +487,7 @@ impl AgentControl {
         agent_path: Option<AgentPath>,
         agent_role: Option<String>,
         preferred_agent_nickname: Option<String>,
+        thread_note: Option<String>,
     ) -> CodexResult<(SessionSource, AgentMetadata)> {
         if depth == 1 {
             self.state.register_root_thread(parent_thread_id);
@@ -502,12 +507,14 @@ impl AgentControl {
             agent_path: agent_path.clone(),
             agent_nickname: agent_nickname.clone(),
             agent_role: agent_role.clone(),
+            thread_note: thread_note.clone(),
         });
         let agent_metadata = AgentMetadata {
             agent_id: None,
             agent_path,
             agent_nickname,
             agent_role,
+            thread_note,
             last_task_message: None,
         };
         Ok((session_source, agent_metadata))

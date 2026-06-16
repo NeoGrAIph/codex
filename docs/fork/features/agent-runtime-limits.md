@@ -41,3 +41,11 @@ Status: `partial`. Native release имеет defaults/config for `DEFAULT_AGENT_
 ## Porting/current-state notes
 
 Новые лимиты должны быть согласованы с текущей моделью sub-agent lifecycle и системным лимитом активных agents. Если upstream уже изменил лимиты, fork должен документировать только intentional divergence.
+
+## Fork/140 implementation status
+
+Первая итерация задаёт fork defaults в native config constants: `DEFAULT_AGENT_MAX_THREADS = Some(12)`, `DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION = 13` (root плюс 12 spawned agents), `DEFAULT_AGENT_MAX_DEPTH = 2`, `DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS = 300_000`. Max wait window остаётся upstream hard max `3_600_000`, config overrides продолжают работать через существующий `MultiAgentV2Config`.
+
+## Doc changelog
+
+- 2026-06-17: Зафиксированы fork/140 runtime limits: 12 spawned agents, MAv2 concurrency 13 including root, spawn depth 2, default wait 300s.

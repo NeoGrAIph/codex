@@ -35,3 +35,11 @@ Status: `partial`. Native release имеет `TurnEnvironmentSelection`, `TurnSt
 ## Porting/current-state notes
 
 При переносе на `fork/140` нужно учитывать upstream PathUri/environment path changes и проверять cwd через native environment/sandbox path contract, а не через ad hoc string path.
+
+## Fork/140 implementation status
+
+Первая итерация добавляет `spawn_agent.cwd` в MAv2 tool schema/handler, валидирует только existing absolute directory внутри текущих workspace roots, применяет cwd через native child `Config`/`TurnEnvironmentSelections`, сохраняет исходный permission profile/workspace roots без auto-trust и fail-fast возвращает ошибку модели для cwd вне workspace roots, nonexistent path или file path. Не реализовано в этой итерации: отдельный app-server RPC surface для cwd, replay-time restore failure policy для устаревшего cwd и расширенная TUI-индикация child cwd.
+
+## Doc changelog
+
+- 2026-06-17: Зафиксирован fork/140 first iteration: MAv2 `spawn_agent.cwd`, workspace-root and existing-directory validation, no permission widening, known resume/TUI gaps.

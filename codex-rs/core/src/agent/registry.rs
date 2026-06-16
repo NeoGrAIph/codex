@@ -38,6 +38,7 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_path: Option<AgentPath>,
     pub(crate) agent_nickname: Option<String>,
     pub(crate) agent_role: Option<String>,
+    pub(crate) thread_note: Option<String>,
     pub(crate) last_task_message: Option<String>,
 }
 

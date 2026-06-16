@@ -70,6 +70,7 @@ impl ThreadMetadataSync {
             agent_nickname: Some(params.source.get_nickname()),
             agent_role: Some(params.source.get_agent_role()),
             agent_path: Some(params.source.get_agent_path().map(Into::into)),
+            thread_note: Some(params.source.get_thread_note()),
             cwd: Some(cwd.clone()),
             cli_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             git_info: git_info.map(git_info_patch_from_observation),
@@ -205,6 +206,7 @@ impl ThreadMetadataSync {
                     update.agent_nickname = Some(meta_line.meta.agent_nickname.clone());
                     update.agent_role = Some(meta_line.meta.agent_role.clone());
                     update.agent_path = Some(meta_line.meta.agent_path.clone());
+                    update.thread_note = Some(meta_line.meta.thread_note.clone());
                     if let Some(model_provider) = meta_line.meta.model_provider.clone()
                         && !model_provider.is_empty()
                     {
@@ -352,6 +354,7 @@ fn update_has_metadata_facts(update: &ThreadMetadataPatch) -> bool {
         || update.agent_nickname.is_some()
         || update.agent_role.is_some()
         || update.agent_path.is_some()
+        || update.thread_note.is_some()
         || update.cwd.is_some()
         || update.cli_version.is_some()
         || update.approval_mode.is_some()
@@ -419,6 +422,24 @@ mod tests {
 
         sync.mark_pending_update_applied(&update);
         assert!(sync.take_pending_update().is_none());
+    }
+
+    #[test]
+    fn resume_history_restores_thread_note_from_session_metadata() {
+        let thread_id = ThreadId::new();
+        let sync = ThreadMetadataSync::for_resume(&resume_params(
+            thread_id,
+            vec![RolloutItem::SessionMeta(session_meta_with_note(
+                thread_id,
+                "continue the workspace audit",
+            ))],
+        ));
+
+        let update = sync.take_pending_update().expect("pending metadata update");
+        assert_eq!(
+            update.patch.thread_note,
+            Some(Some("continue the workspace audit".to_string()))
+        );
     }
 
     #[test]
@@ -545,11 +566,16 @@ mod tests {
     }
 
     fn session_meta(thread_id: ThreadId) -> SessionMetaLine {
+        session_meta_with_note(thread_id, "")
+    }
+
+    fn session_meta_with_note(thread_id: ThreadId, thread_note: &str) -> SessionMetaLine {
         SessionMetaLine {
             meta: SessionMeta {
                 id: thread_id,
                 timestamp: "2025-01-03T12:00:00Z".to_string(),
                 source: SessionSource::Exec,
+                thread_note: (!thread_note.is_empty()).then(|| thread_note.to_string()),
                 ..Default::default()
             },
             git: None,

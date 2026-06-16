@@ -348,6 +348,7 @@ async fn stored_thread_from_sqlite_metadata(
         agent_nickname: metadata.agent_nickname,
         agent_role: metadata.agent_role,
         agent_path: metadata.agent_path,
+        thread_note: None,
         git_info: git_info_from_parts(
             metadata.git_sha,
             metadata.git_branch,
@@ -414,6 +415,7 @@ fn stored_thread_from_meta_line(
         agent_nickname: meta_line.meta.agent_nickname,
         agent_role: meta_line.meta.agent_role,
         agent_path: meta_line.meta.agent_path,
+        thread_note: meta_line.meta.thread_note,
         git_info: meta_line.git,
         approval_mode: AskForApproval::OnRequest,
         permission_profile: PermissionProfile::read_only(),

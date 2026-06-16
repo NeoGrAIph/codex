@@ -44,3 +44,11 @@ Status: `partial`. Native release имеет protected metadata paths (`.git`, `
 ## Porting/current-state notes
 
 Это security-sensitive функционал. При переносе нужно обязательно проверять both positive and negative cases: разрешенный sub-agent action работает, запрещенный action fail-fast с диагностикой.
+
+## Fork/140 implementation status
+
+Первая итерация не вводит новую policy metadata model и не меняет MCP allow/deny enforcement. Она добавляет native ownership guard для MAv2 `interrupt_agent`: root может interrupt non-root agents, а sub-agent может interrupt только targets внутри своего canonical `agent_path` subtree; absolute sibling/root обходы fail-fast. Durable role-template policy metadata, app-server schema fields и close-agent legacy parity остаются gap для следующего этапа.
+
+## Doc changelog
+
+- 2026-06-17: Зафиксирован fork/140 first iteration: MAv2 cross-subtree interrupt denial через `AgentControl` metadata/`SessionSource`, без parallel ownership store.

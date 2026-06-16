@@ -41,3 +41,11 @@ Status: `partial`, но собственно note surface отсутствует
 ## Porting/current-state notes
 
 В новых ветках нужно проверять, есть ли upstream-native thread metadata/note surface. Если есть, fork-note должен встраиваться туда. Старые sessions должны оставаться читаемыми при отсутствии note.
+
+## Fork/140 implementation status
+
+Первая итерация добавляет metadata-only `thread_note` в `SubAgentSource::ThreadSpawn`, `SessionMeta`, thread-store read model/patch и live `AgentMetadata`, нормализует `spawn_agent.thread_note` до непустой строки максимум 500 символов и показывает note через MAv2 `list_agents`. Старые sessions остаются читаемыми через `serde(default)`. Не реализовано в этой итерации: `set_thread_note`, app-server `threadNote`/notification surface, TUI rendering, sqlite column migration и wait-agent projection.
+
+## Doc changelog
+
+- 2026-06-17: Зафиксирован fork/140 metadata-only substrate: spawn-time `thread_note`, rollout/session metadata, live list projection, старые rollout records без note читаются как `None`.
