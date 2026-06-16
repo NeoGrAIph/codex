@@ -471,6 +471,7 @@ mod thread_processor_behavior_tests {
             thread_source: Some(codex_protocol::protocol::ThreadSource::User),
             agent_nickname: None,
             agent_role: None,
+            thread_note: None,
             agent_path: None,
             git_info: None,
             approval_mode: AskForApproval::OnRequest,
@@ -1052,6 +1053,7 @@ mod thread_processor_behavior_tests {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             }),
             thread_source: Some(codex_protocol::protocol::ThreadSource::Subagent),
             agent_nickname: Some("atlas".to_string()),
@@ -1191,6 +1193,7 @@ mod thread_processor_behavior_tests {
                 agent_path: None,
                 agent_nickname: None,
                 agent_role: None,
+                thread_note: None,
             }))?;
 
         let summary = summary_from_state_db_metadata(

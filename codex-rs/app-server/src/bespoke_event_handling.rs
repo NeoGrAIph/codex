@@ -2221,6 +2221,7 @@ mod tests {
             thread_source: None,
             agent_nickname: None,
             agent_role: None,
+            thread_note: None,
             agent_path: None,
             git_info: None,
             approval_mode: AskForApproval::OnRequest,
