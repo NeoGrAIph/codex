@@ -8382,6 +8382,10 @@
         "model": {
           "type": "string"
         },
+        "modelProvider": {
+          "default": "openai",
+          "type": "string"
+        },
         "serviceTiers": {
           "default": [],
           "items": {
@@ -8446,6 +8450,13 @@
           "description": "Opaque pagination cursor returned by a previous call.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "includeConfiguredProviders": {
+          "description": "When true, include every configured provider catalog instead of only the active provider.",
+          "type": [
+            "boolean",
             "null"
           ]
         },

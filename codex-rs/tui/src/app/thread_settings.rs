@@ -23,6 +23,19 @@ impl App {
         self.send_thread_settings_update(app_server, params).await;
     }
 
+    pub(super) async fn sync_active_thread_model_selection_setting(
+        &mut self,
+        app_server: &mut AppServerSession,
+        model_provider: String,
+        model: String,
+    ) {
+        let Some(params) = self.active_thread_model_selection_update_params(model_provider, model)
+        else {
+            return;
+        };
+        self.send_thread_settings_update(app_server, params).await;
+    }
+
     pub(super) fn active_thread_model_setting_update_params(
         &self,
         model: String,
@@ -30,6 +43,21 @@ impl App {
         let thread_id = self.active_thread_id?;
         Some(ThreadSettingsUpdateParams {
             thread_id: thread_id.to_string(),
+            model: Some(model),
+            collaboration_mode: Some(self.chat_widget.effective_collaboration_mode()),
+            ..ThreadSettingsUpdateParams::default()
+        })
+    }
+
+    pub(super) fn active_thread_model_selection_update_params(
+        &self,
+        model_provider: String,
+        model: String,
+    ) -> Option<ThreadSettingsUpdateParams> {
+        let thread_id = self.active_thread_id?;
+        Some(ThreadSettingsUpdateParams {
+            thread_id: thread_id.to_string(),
+            model_provider: Some(model_provider),
             model: Some(model),
             collaboration_mode: Some(self.chat_widget.effective_collaboration_mode()),
             ..ThreadSettingsUpdateParams::default()
@@ -200,6 +228,7 @@ fn thread_settings_update_has_changes(params: &ThreadSettingsUpdateParams) -> bo
         || params.approvals_reviewer.is_some()
         || params.sandbox_policy.is_some()
         || params.permissions.is_some()
+        || params.model_provider.is_some()
         || params.model.is_some()
         || params.service_tier.is_some()
         || params.effort.is_some()

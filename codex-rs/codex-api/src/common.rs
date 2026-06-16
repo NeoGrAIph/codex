@@ -1,6 +1,10 @@
 use crate::error::ApiError;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::ModelVerification;
@@ -131,6 +135,266 @@ pub struct Reasoning {
     pub context: Option<ReasoningContext>,
 }
 
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ChatCompletionsApiRequest {
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<Value>,
+    pub tool_choice: String,
+    pub parallel_tool_calls: bool,
+    pub stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<DeepSeekReasoningEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<DeepSeekThinking>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<ChatStreamOptions>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ChatStreamOptions {
+    pub include_usage: bool,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct DeepSeekThinking {
+    pub r#type: DeepSeekThinkingType,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum DeepSeekThinkingType {
+    Enabled,
+}
+
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DeepSeekReasoningEffort {
+    High,
+    Max,
+}
+
+impl From<ReasoningEffortConfig> for DeepSeekReasoningEffort {
+    fn from(value: ReasoningEffortConfig) -> Self {
+        match value {
+            ReasoningEffortConfig::None
+            | ReasoningEffortConfig::Minimal
+            | ReasoningEffortConfig::Low
+            | ReasoningEffortConfig::Medium
+            | ReasoningEffortConfig::High
+            | ReasoningEffortConfig::Custom(_) => Self::High,
+            ReasoningEffortConfig::XHigh => Self::Max,
+        }
+    }
+}
+
+impl ChatCompletionsApiRequest {
+    pub fn new(
+        model: String,
+        instructions: String,
+        input: Vec<ResponseItem>,
+        tools: Vec<Value>,
+        parallel_tool_calls: bool,
+        reasoning: Option<Reasoning>,
+    ) -> Result<Self, ApiError> {
+        let messages = chat_messages_from_response_items(instructions, input)?;
+        let reasoning_effort = reasoning
+            .and_then(|reasoning| reasoning.effort)
+            .map(DeepSeekReasoningEffort::from);
+        Ok(Self {
+            model,
+            messages,
+            tools,
+            tool_choice: "auto".to_string(),
+            parallel_tool_calls,
+            stream: true,
+            reasoning_effort,
+            thinking: Some(DeepSeekThinking {
+                r#type: DeepSeekThinkingType::Enabled,
+            }),
+            stream_options: Some(ChatStreamOptions {
+                include_usage: true,
+            }),
+        })
+    }
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ChatMessage {
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ChatToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ChatToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub function: ChatToolCallFunction,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ChatToolCallFunction {
+    pub name: String,
+    pub arguments: String,
+}
+
+fn chat_messages_from_response_items(
+    instructions: String,
+    input: Vec<ResponseItem>,
+) -> Result<Vec<ChatMessage>, ApiError> {
+    let mut messages = Vec::new();
+    if !instructions.trim().is_empty() {
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: Some(instructions),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+
+    let mut pending_reasoning: Option<String> = None;
+    for item in input {
+        match item {
+            ResponseItem::Message { role, content, .. } => messages.push(ChatMessage {
+                role,
+                content: Some(content_items_to_chat_text(&content)?),
+                reasoning_content: pending_reasoning.take(),
+                tool_calls: None,
+                tool_call_id: None,
+            }),
+            ResponseItem::Reasoning { content, .. } => {
+                pending_reasoning = reasoning_content_to_chat_text(content);
+            }
+            ResponseItem::FunctionCall {
+                name,
+                arguments,
+                call_id,
+                ..
+            } => messages.push(ChatMessage {
+                role: "assistant".to_string(),
+                content: Some(String::new()),
+                reasoning_content: pending_reasoning.take(),
+                tool_calls: Some(vec![ChatToolCall {
+                    id: call_id,
+                    r#type: "function".to_string(),
+                    function: ChatToolCallFunction { name, arguments },
+                }]),
+                tool_call_id: None,
+            }),
+            ResponseItem::FunctionCallOutput { call_id, output } => messages.push(ChatMessage {
+                role: "tool".to_string(),
+                content: Some(function_call_output_to_chat_text(&output.body)?),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: Some(call_id),
+            }),
+            unsupported => {
+                return Err(ApiError::InvalidRequest {
+                    message: format!(
+                        "chat_completions providers do not support {} history items",
+                        chat_unsupported_response_item_kind(&unsupported)
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(messages)
+}
+
+fn chat_unsupported_response_item_kind(item: &ResponseItem) -> &'static str {
+    match item {
+        ResponseItem::AgentMessage { .. } => "agent_message",
+        ResponseItem::LocalShellCall { .. } => "local_shell_call",
+        ResponseItem::ToolSearchCall { .. } => "tool_search_call",
+        ResponseItem::ToolSearchOutput { .. } => "tool_search_output",
+        ResponseItem::CustomToolCall { .. } => "custom_tool_call",
+        ResponseItem::CustomToolCallOutput { .. } => "custom_tool_call_output",
+        ResponseItem::WebSearchCall { .. } => "web_search_call",
+        ResponseItem::ImageGenerationCall { .. } => "image_generation_call",
+        ResponseItem::Compaction { .. } => "compaction",
+        ResponseItem::CompactionTrigger => "compaction_trigger",
+        ResponseItem::ContextCompaction { .. } => "context_compaction",
+        ResponseItem::Other => "other",
+        ResponseItem::Message { .. }
+        | ResponseItem::Reasoning { .. }
+        | ResponseItem::FunctionCall { .. }
+        | ResponseItem::FunctionCallOutput { .. } => "supported",
+    }
+}
+
+fn content_items_to_chat_text(content: &[ContentItem]) -> Result<String, ApiError> {
+    let mut text = String::new();
+    for item in content {
+        match item {
+            ContentItem::InputText { text: value } | ContentItem::OutputText { text: value } => {
+                text.push_str(value);
+            }
+            ContentItem::InputImage { .. } => {
+                return Err(ApiError::Stream(
+                    "chat_completions providers do not support image input".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(text)
+}
+
+fn reasoning_content_to_chat_text(content: Option<Vec<ReasoningItemContent>>) -> Option<String> {
+    let mut text = String::new();
+    for item in content.unwrap_or_default() {
+        match item {
+            ReasoningItemContent::ReasoningText { text: value }
+            | ReasoningItemContent::Text { text: value } => text.push_str(&value),
+        }
+    }
+    (!text.is_empty()).then_some(text)
+}
+
+fn function_call_output_to_chat_text(output: &FunctionCallOutputBody) -> Result<String, ApiError> {
+    match output {
+        FunctionCallOutputBody::Text(text) => Ok(text.clone()),
+        FunctionCallOutputBody::ContentItems(items) => {
+            function_call_output_content_items_to_chat_text(items)
+        }
+    }
+}
+
+fn function_call_output_content_items_to_chat_text(
+    items: &[FunctionCallOutputContentItem],
+) -> Result<String, ApiError> {
+    let mut text_segments = Vec::new();
+    for item in items {
+        match item {
+            FunctionCallOutputContentItem::InputText { text } => {
+                text_segments.push(text.as_str());
+            }
+            FunctionCallOutputContentItem::InputImage { .. } => {
+                return Err(ApiError::InvalidRequest {
+                    message: "chat_completions providers do not support image function_call_output content".to_string(),
+                });
+            }
+            FunctionCallOutputContentItem::EncryptedContent { .. } => {
+                return Err(ApiError::InvalidRequest {
+                    message: "chat_completions providers do not support encrypted function_call_output content".to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(text_segments.join("\n"))
+}
+
 #[derive(Debug, Serialize, Default, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TextFormatType {
@@ -176,6 +440,101 @@ impl From<VerbosityConfig> for OpenAiVerbosity {
             VerbosityConfig::Medium => OpenAiVerbosity::Medium,
             VerbosityConfig::High => OpenAiVerbosity::High,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use codex_protocol::models::FunctionCallOutputPayload;
+    use codex_protocol::models::LocalShellAction;
+    use codex_protocol::models::LocalShellExecAction;
+    use codex_protocol::models::LocalShellStatus;
+
+    use super::*;
+
+    fn assert_chat_request_rejects_history_item(item: ResponseItem, expected_kind: &str) {
+        let err = ChatCompletionsApiRequest::new(
+            "deepseek-v4-flash".to_string(),
+            String::new(),
+            vec![item],
+            Vec::new(),
+            /*parallel_tool_calls*/ false,
+            /*reasoning*/ None,
+        )
+        .expect_err("unsupported history item should fail request construction");
+
+        match err {
+            ApiError::InvalidRequest { message } => {
+                assert!(
+                    message.contains(expected_kind),
+                    "expected error to mention {expected_kind}, got {message:?}"
+                );
+            }
+            other => panic!("expected invalid request error, got {other:?}"),
+        }
+    }
+
+    fn assert_chat_request_rejects_function_call_output(
+        body: FunctionCallOutputBody,
+        expected_content_kind: &str,
+    ) {
+        assert_chat_request_rejects_history_item(
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: FunctionCallOutputPayload {
+                    body,
+                    success: None,
+                },
+            },
+            expected_content_kind,
+        );
+    }
+
+    #[test]
+    fn chat_completions_rejects_local_shell_history_item() {
+        assert_chat_request_rejects_history_item(
+            ResponseItem::LocalShellCall {
+                id: None,
+                call_id: Some("call-1".to_string()),
+                status: LocalShellStatus::Completed,
+                action: LocalShellAction::Exec(LocalShellExecAction {
+                    command: vec!["echo".to_string(), "hello".to_string()],
+                    timeout_ms: None,
+                    working_directory: None,
+                    env: None,
+                    user: None,
+                }),
+            },
+            "local_shell_call",
+        );
+    }
+
+    #[test]
+    fn chat_completions_rejects_unknown_history_item() {
+        assert_chat_request_rejects_history_item(ResponseItem::Other, "other");
+    }
+
+    #[test]
+    fn chat_completions_rejects_image_function_call_output_content() {
+        assert_chat_request_rejects_function_call_output(
+            FunctionCallOutputBody::ContentItems(vec![FunctionCallOutputContentItem::InputImage {
+                image_url: "https://example.test/image.png".to_string(),
+                detail: None,
+            }]),
+            "image function_call_output content",
+        );
+    }
+
+    #[test]
+    fn chat_completions_rejects_encrypted_function_call_output_content() {
+        assert_chat_request_rejects_function_call_output(
+            FunctionCallOutputBody::ContentItems(vec![
+                FunctionCallOutputContentItem::EncryptedContent {
+                    encrypted_content: "ciphertext".to_string(),
+                },
+            ]),
+            "encrypted function_call_output content",
+        );
     }
 }
 

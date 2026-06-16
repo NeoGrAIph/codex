@@ -2591,6 +2591,7 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
     chat.thread_id = Some(ThreadId::new());
     let preset = |slug: &str, show_in_picker: bool| ModelPreset {
         id: slug.to_string(),
+        model_provider: "openai".to_string(),
         model: slug.to_string(),
         display_name: slug.to_string(),
         description: format!("{slug} description"),
@@ -2702,7 +2703,11 @@ async fn model_reasoning_selection_popup_applies_custom_effort() {
     let selected_effort_events = std::iter::from_fn(|| rx.try_recv().ok())
         .filter_map(|event| match event {
             AppEvent::UpdateReasoningEffort(effort) => Some((None, effort)),
-            AppEvent::PersistModelSelection { model, effort } => Some((Some(model), effort)),
+            AppEvent::PersistProviderModelSelection {
+                model_provider,
+                model,
+                effort,
+            } => Some((Some((model_provider, model)), effort)),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -2710,7 +2715,10 @@ async fn model_reasoning_selection_popup_applies_custom_effort() {
         selected_effort_events,
         vec![
             (None, Some(custom_effort.clone())),
-            (Some("gpt-5.4".to_string()), Some(custom_effort)),
+            (
+                Some(("openai".to_string(), "gpt-5.4".to_string())),
+                Some(custom_effort),
+            ),
         ]
     );
 }
@@ -2867,6 +2875,7 @@ async fn single_reasoning_option_skips_selection() {
     }];
     let preset = ModelPreset {
         id: "model-with-single-reasoning".to_string(),
+        model_provider: "openai".to_string(),
         model: "model-with-single-reasoning".to_string(),
         display_name: "model-with-single-reasoning".to_string(),
         description: "".to_string(),

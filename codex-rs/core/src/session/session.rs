@@ -226,6 +226,26 @@ impl SessionConfiguration {
         if let Some(collaboration_mode) = updates.collaboration_mode.clone() {
             next_configuration.collaboration_mode = collaboration_mode;
         }
+        if let Some(model_provider) = updates.model_provider.clone() {
+            let Some(provider) = self
+                .original_config_do_not_use
+                .model_providers
+                .get(&model_provider)
+                .cloned()
+            else {
+                return Err(ConstraintError::InvalidValue {
+                    field_name: "model_provider",
+                    candidate: model_provider,
+                    allowed: "configured model provider id".to_string(),
+                    requirement_source: codex_config::RequirementSource::Unknown,
+                });
+            };
+            let mut config = (*next_configuration.original_config_do_not_use).clone();
+            config.model_provider_id = model_provider;
+            config.model_provider = provider.clone();
+            next_configuration.provider = provider;
+            next_configuration.original_config_do_not_use = Arc::new(config);
+        }
         if let Some(summary) = updates.reasoning_summary {
             next_configuration.model_reasoning_summary = Some(summary);
         }
@@ -420,6 +440,7 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) active_permission_profile: Option<ActivePermissionProfile>,
     pub(crate) windows_sandbox_level: Option<WindowsSandboxLevel>,
     pub(crate) collaboration_mode: Option<CollaborationMode>,
+    pub(crate) model_provider: Option<String>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) service_tier: Option<Option<String>>,
     pub(crate) final_output_json_schema: Option<Option<Value>>,
@@ -999,6 +1020,7 @@ impl Session {
                 auth_manager: Arc::clone(&auth_manager),
                 session_telemetry,
                 models_manager: Arc::clone(&models_manager),
+                initial_model_provider_id: config.model_provider_id.clone(),
                 tool_approvals: Mutex::new(ApprovalStore::default()),
                 guardian_rejections: Mutex::new(HashMap::new()),
                 guardian_rejection_circuit_breaker: Mutex::new(Default::default()),

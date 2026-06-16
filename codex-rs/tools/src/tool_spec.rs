@@ -2,6 +2,7 @@ use crate::FreeformTool;
 use crate::JsonSchema;
 use crate::LoadableToolSpec;
 use crate::ResponsesApiNamespace;
+use crate::ResponsesApiNamespaceTool;
 use crate::ResponsesApiTool;
 use codex_protocol::config_types::WebSearchContextSize;
 use codex_protocol::config_types::WebSearchFilters as ConfigWebSearchFilters;
@@ -86,6 +87,44 @@ pub fn create_tools_json_for_responses_api(
     }
 
     Ok(tools_json)
+}
+
+pub fn create_tools_json_for_chat_completions_api(
+    tools: &[ToolSpec],
+) -> Result<Vec<Value>, String> {
+    let mut tools_json = Vec::new();
+
+    for tool in tools {
+        match tool {
+            ToolSpec::Function(tool) => tools_json.push(chat_function_tool_json(tool)?),
+            ToolSpec::Namespace(namespace) => {
+                for tool in &namespace.tools {
+                    match tool {
+                        ResponsesApiNamespaceTool::Function(tool) => {
+                            tools_json.push(chat_function_tool_json(tool)?);
+                        }
+                    }
+                }
+            }
+            ToolSpec::ToolSearch { .. }
+            | ToolSpec::ImageGeneration { .. }
+            | ToolSpec::WebSearch { .. }
+            | ToolSpec::Freeform(_) => {
+                return Err(format!(
+                    "{} is not supported by chat_completions providers",
+                    tool.name()
+                ));
+            }
+        }
+    }
+
+    Ok(tools_json)
+}
+
+fn chat_function_tool_json(tool: &ResponsesApiTool) -> Result<Value, String> {
+    serde_json::to_value(tool)
+        .map(|function| serde_json::json!({ "type": "function", "function": function }))
+        .map_err(|err| err.to_string())
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

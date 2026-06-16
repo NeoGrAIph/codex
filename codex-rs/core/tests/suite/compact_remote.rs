@@ -3398,6 +3398,7 @@ async fn snapshot_request_shape_remote_pre_turn_compaction_strips_incoming_model
         &codex,
         codex_protocol::protocol::ThreadSettingsOverrides {
             model: Some(next_model.to_string()),
+            model_provider: None,
             ..Default::default()
         },
     )

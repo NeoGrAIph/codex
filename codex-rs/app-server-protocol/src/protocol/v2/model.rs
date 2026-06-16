@@ -50,6 +50,9 @@ pub struct ModelListParams {
     /// When true, include models that are hidden from the default picker list.
     #[ts(optional = nullable)]
     pub include_hidden: Option<bool>,
+    /// When true, include every configured provider catalog instead of only the active provider.
+    #[ts(optional = nullable)]
+    pub include_configured_providers: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -81,6 +84,8 @@ pub struct ModelServiceTier {
 #[ts(export_to = "v2/")]
 pub struct Model {
     pub id: String,
+    #[serde(default = "default_model_provider")]
+    pub model_provider: String,
     pub model: String,
     pub upgrade: Option<String>,
     pub upgrade_info: Option<ModelUpgradeInfo>,
@@ -104,6 +109,10 @@ pub struct Model {
     pub default_service_tier: Option<String>,
     // Only one model should be marked as default.
     pub is_default: bool,
+}
+
+fn default_model_provider() -> String {
+    "openai".to_string()
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

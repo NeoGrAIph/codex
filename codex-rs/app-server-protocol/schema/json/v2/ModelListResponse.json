@@ -79,6 +79,10 @@
         "model": {
           "type": "string"
         },
+        "modelProvider": {
+          "default": "openai",
+          "type": "string"
+        },
         "serviceTiers": {
           "default": [],
           "items": {

@@ -1441,6 +1441,7 @@ impl Session {
             next_cwd,
             codex_home,
             session_source,
+            provider_changed,
         ) = {
             let mut state = self.state.lock().await;
             let updated = match state.session_configuration.apply(&updates) {
@@ -1460,6 +1461,11 @@ impl Session {
             let updated_permission_profile = updated.permission_profile();
             let permission_profile_changed =
                 previous_permission_profile != updated_permission_profile;
+            let provider_changed = state
+                .session_configuration
+                .original_config_do_not_use
+                .model_provider_id
+                != updated.original_config_do_not_use.model_provider_id;
             let next_cwd = updated.cwd().clone();
             let codex_home = updated.codex_home.clone();
             let session_source = updated.session_source.clone();
@@ -1472,6 +1478,7 @@ impl Session {
                 next_cwd,
                 codex_home,
                 session_source,
+                provider_changed,
             )
         };
 
@@ -1485,6 +1492,10 @@ impl Session {
         if permission_profile_changed {
             self.refresh_managed_network_proxy_for_current_permission_profile()
                 .await;
+        }
+        if provider_changed && let Some(startup_prewarm) = self.take_session_startup_prewarm().await
+        {
+            startup_prewarm.abort().await;
         }
 
         Ok(())

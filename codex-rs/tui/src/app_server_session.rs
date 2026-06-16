@@ -268,6 +268,7 @@ impl AppServerSession {
                     cursor: None,
                     limit: None,
                     include_hidden: Some(true),
+                    include_configured_providers: Some(true),
                 },
             })
             .await
@@ -1199,6 +1200,7 @@ fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
 
     ModelPreset {
         id: model.id,
+        model_provider: model.model_provider,
         model: model.model,
         display_name: model.display_name,
         description: model.description,

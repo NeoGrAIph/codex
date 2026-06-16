@@ -513,6 +513,7 @@ async fn snapshot_model_visible_layout_resume_override_matches_rollout_model() -
         codex_protocol::protocol::ThreadSettingsOverrides {
             environments: Some(local_selections(resume_override_cwd)),
             model: Some("gpt-5.2".to_string()),
+            model_provider: None,
             ..Default::default()
         },
     )

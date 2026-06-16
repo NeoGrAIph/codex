@@ -142,8 +142,13 @@ pub(crate) async fn run_turn(
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
 ) -> Option<String> {
-    let mut client_session =
-        prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
+    let mut client_session = prewarmed_client_session
+        .filter(|session| session.matches_provider(&turn_context.provider))
+        .unwrap_or_else(|| {
+            sess.services
+                .model_client
+                .new_session_for_provider(turn_context.provider.clone())
+        });
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
     // new user message are recorded. Estimate pending incoming items (context
     // diffs/full reinjection + user input) and trigger compaction preemptively

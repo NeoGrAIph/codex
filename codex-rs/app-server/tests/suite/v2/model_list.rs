@@ -7,6 +7,7 @@ use app_test_support::TestAppServer;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use app_test_support::write_models_cache;
+use app_test_support::write_models_cache_with_models;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::Model;
@@ -17,6 +18,7 @@ use codex_app_server_protocol::ModelUpgradeInfo;
 use codex_app_server_protocol::ReasoningEffortOption;
 use codex_app_server_protocol::RequestId;
 use codex_config::types::AuthCredentialsStoreMode;
+use codex_model_provider_info::DEEPSEEK_PROVIDER_ID;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelsResponse;
@@ -33,6 +35,7 @@ const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 fn model_from_preset(preset: &ModelPreset) -> Model {
     Model {
         id: preset.id.clone(),
+        model_provider: preset.model_provider.clone(),
         model: preset.model.clone(),
         upgrade: preset.upgrade.as_ref().map(|upgrade| upgrade.id.clone()),
         upgrade_info: preset.upgrade.as_ref().map(|upgrade| ModelUpgradeInfo {
@@ -105,6 +108,7 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             limit: Some(100),
             cursor: None,
             include_hidden: None,
+            include_configured_providers: None,
         })
         .await?;
 
@@ -139,6 +143,7 @@ async fn list_models_includes_hidden_models() -> Result<()> {
             limit: Some(100),
             cursor: None,
             include_hidden: Some(true),
+            include_configured_providers: None,
         })
         .await?;
 
@@ -225,6 +230,7 @@ openai_base_url = "{server_uri}/v1"
             limit: Some(100),
             cursor: None,
             include_hidden: None,
+            include_configured_providers: None,
         })
         .await?;
 
@@ -270,6 +276,128 @@ openai_base_url = "{server_uri}/v1"
 }
 
 #[tokio::test]
+async fn list_models_can_include_configured_provider_catalogs() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_models_cache(codex_home.path())?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_list_models_request(ModelListParams {
+            limit: Some(100),
+            cursor: None,
+            include_hidden: None,
+            include_configured_providers: Some(true),
+        })
+        .await?;
+
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    let ModelListResponse {
+        data: items,
+        next_cursor,
+    } = to_response::<ModelListResponse>(response)?;
+
+    assert!(
+        items
+            .iter()
+            .any(|item| item.model_provider == DEEPSEEK_PROVIDER_ID
+                && item.model.starts_with("deepseek-v4"))
+    );
+    assert!(next_cursor.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_models_does_not_reuse_active_provider_cache_for_inactive_provider() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let cached_active_model: ModelInfo = serde_json::from_value(json!({
+        "slug": "active-cache-only",
+        "display_name": "Active Cache Only",
+        "description": "Model seeded into the active provider global cache",
+        "default_reasoning_level": "medium",
+        "supported_reasoning_levels": [
+            {"effort": "medium", "description": "Medium"}
+        ],
+        "shell_type": "shell_command",
+        "visibility": "list",
+        "minimal_client_version": [0, 1, 0],
+        "supported_in_api": true,
+        "priority": 0,
+        "upgrade": null,
+        "base_instructions": "base instructions",
+        "supports_reasoning_summaries": false,
+        "support_verbosity": false,
+        "default_verbosity": null,
+        "apply_patch_tool_type": null,
+        "truncation_policy": {"mode": "bytes", "limit": 10_000},
+        "supports_parallel_tool_calls": false,
+        "supports_image_detail_original": false,
+        "context_window": 272_000,
+        "max_context_window": 272_000,
+        "experimental_supported_tools": [],
+    }))?;
+    write_models_cache_with_models(codex_home.path(), vec![cached_active_model])?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        r#"
+model = "gpt-5.4"
+approval_policy = "never"
+sandbox_mode = "read-only"
+
+[model_providers.inactive]
+name = "Inactive Provider"
+base_url = "https://inactive.example/v1"
+env_key = "INACTIVE_API_KEY"
+wire_api = "responses"
+"#,
+    )?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_list_models_request(ModelListParams {
+            limit: Some(100),
+            cursor: None,
+            include_hidden: Some(true),
+            include_configured_providers: Some(true),
+        })
+        .await?;
+
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    let ModelListResponse {
+        data: items,
+        next_cursor,
+    } = to_response::<ModelListResponse>(response)?;
+
+    assert!(
+        items
+            .iter()
+            .any(|item| item.model_provider == "openai" && item.model == "active-cache-only"),
+        "seeded active provider cache should remain visible for active OpenAI"
+    );
+    assert!(
+        !items
+            .iter()
+            .any(|item| item.model_provider == "inactive" && item.model == "active-cache-only"),
+        "inactive provider must not inherit the active provider cache"
+    );
+    assert!(next_cursor.is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn list_models_pagination_works() -> Result<()> {
     let codex_home = TempDir::new()?;
     write_models_cache(codex_home.path())?;
@@ -287,6 +415,7 @@ async fn list_models_pagination_works() -> Result<()> {
                 limit: Some(1),
                 cursor: cursor.clone(),
                 include_hidden: None,
+                include_configured_providers: None,
             })
             .await?;
 
@@ -331,6 +460,7 @@ async fn list_models_rejects_invalid_cursor() -> Result<()> {
             limit: None,
             cursor: Some("invalid".to_string()),
             include_hidden: None,
+            include_configured_providers: None,
         })
         .await?;
 

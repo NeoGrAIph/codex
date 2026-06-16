@@ -207,6 +207,7 @@ pub(crate) struct ThreadManagerState {
     thread_created_tx: broadcast::Sender<ThreadId>,
     auth_manager: Arc<AuthManager>,
     models_manager: SharedModelsManager,
+    model_provider_id: String,
     environment_manager: Arc<EnvironmentManager>,
     skills_manager: Arc<SkillsManager>,
     plugins_manager: Arc<PluginsManager>,
@@ -292,6 +293,7 @@ impl ThreadManager {
                 threads: Arc::new(RwLock::new(HashMap::new())),
                 thread_created_tx,
                 models_manager: build_models_manager(config, auth_manager.clone()),
+                model_provider_id: config.model_provider_id.clone(),
                 environment_manager,
                 skills_manager,
                 plugins_manager,
@@ -395,6 +397,7 @@ impl ThreadManager {
                 thread_created_tx,
                 models_manager: create_model_provider(provider, Some(auth_manager.clone()))
                     .models_manager(codex_home, /*config_model_catalog*/ None),
+                model_provider_id: OPENAI_PROVIDER_ID.to_string(),
                 environment_manager,
                 skills_manager,
                 plugins_manager,
@@ -478,10 +481,17 @@ impl ThreadManager {
     }
 
     pub async fn list_models(&self, refresh_strategy: RefreshStrategy) -> Vec<ModelPreset> {
+        let provider_id = self.state.model_provider_id.clone();
         self.state
             .models_manager
             .list_models(refresh_strategy)
             .await
+            .into_iter()
+            .map(|mut preset| {
+                preset.model_provider = provider_id.clone();
+                preset
+            })
+            .collect()
     }
 
     pub fn list_collaboration_modes(&self) -> Vec<CollaborationModeMask> {

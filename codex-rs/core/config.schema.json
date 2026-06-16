@@ -4371,6 +4371,13 @@
             "responses"
           ],
           "type": "string"
+        },
+        {
+          "description": "The OpenAI-compatible Chat Completions API exposed at `/chat/completions`.",
+          "enum": [
+            "chat_completions"
+          ],
+          "type": "string"
         }
       ]
     },

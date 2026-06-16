@@ -14,6 +14,7 @@ use crate::test_support::models_manager_with_provider;
 use crate::tools::format_exec_output_str;
 use codex_config::ConfigLayerStack;
 use codex_config::ConfigLayerStackOrdering;
+use codex_config::ConstraintError;
 use codex_config::LoaderOverrides;
 use codex_config::NetworkConstraints;
 use codex_config::NetworkDomainPermissionToml;
@@ -26,7 +27,9 @@ use core_test_support::test_codex::local_selections;
 
 use codex_features::Feature;
 use codex_login::CodexAuth;
+use codex_model_provider_info::DEEPSEEK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
 use codex_models_manager::bundled_models_response;
 use codex_models_manager::model_info;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
@@ -3899,6 +3902,72 @@ async fn session_settings_legacy_fast_service_tier_update_uses_priority_request_
     );
 }
 
+#[tokio::test]
+async fn session_settings_model_provider_update_switches_runtime_provider() {
+    let mut session_configuration = make_session_configuration_for_tests().await;
+    let deepseek_provider = ModelProviderInfo::create_deepseek_provider();
+    let mut config = (*session_configuration.original_config_do_not_use).clone();
+    config
+        .model_providers
+        .insert(DEEPSEEK_PROVIDER_ID.to_string(), deepseek_provider.clone());
+    session_configuration.original_config_do_not_use = Arc::new(config);
+
+    let updated = session_configuration
+        .apply(&SessionSettingsUpdate {
+            model_provider: Some(DEEPSEEK_PROVIDER_ID.to_string()),
+            collaboration_mode: Some(CollaborationMode {
+                mode: ModeKind::Default,
+                settings: Settings {
+                    model: "deepseek-v4-flash".to_string(),
+                    reasoning_effort: None,
+                    developer_instructions: None,
+                },
+            }),
+            ..Default::default()
+        })
+        .expect("configured provider update should apply");
+
+    assert_eq!(
+        updated.original_config_do_not_use.model_provider_id,
+        DEEPSEEK_PROVIDER_ID
+    );
+    assert_eq!(updated.provider, deepseek_provider);
+    assert_eq!(updated.provider.wire_api, WireApi::ChatCompletions);
+    assert_eq!(
+        updated.collaboration_mode.settings.model,
+        "deepseek-v4-flash"
+    );
+}
+
+#[tokio::test]
+async fn session_settings_model_provider_update_rejects_unknown_provider() {
+    let session_configuration = make_session_configuration_for_tests().await;
+
+    let Err(err) = session_configuration.apply(&SessionSettingsUpdate {
+        model_provider: Some("unknown-provider".to_string()),
+        collaboration_mode: Some(CollaborationMode {
+            mode: ModeKind::Default,
+            settings: Settings {
+                model: "deepseek-v4-flash".to_string(),
+                reasoning_effort: None,
+                developer_instructions: None,
+            },
+        }),
+        ..Default::default()
+    }) else {
+        panic!("unknown provider should fail fast");
+    };
+
+    assert!(matches!(
+        err,
+        ConstraintError::InvalidValue {
+            field_name,
+            candidate,
+            ..
+        } if field_name == "model_provider" && candidate == "unknown-provider"
+    ));
+}
+
 pub(crate) async fn make_session_configuration_for_tests() -> SessionConfiguration {
     let codex_home = tempfile::tempdir().expect("create temp dir");
     let config = build_test_config(codex_home.path()).await;
@@ -4966,6 +5035,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         auth_manager: auth_manager.clone(),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
+        initial_model_provider_id: config.model_provider_id.clone(),
         tool_approvals: Mutex::new(ApprovalStore::default()),
         guardian_rejections: Mutex::new(std::collections::HashMap::new()),
         guardian_rejection_circuit_breaker: Mutex::new(Default::default()),
@@ -6971,6 +7041,7 @@ where
         auth_manager: Arc::clone(&auth_manager),
         session_telemetry: session_telemetry.clone(),
         models_manager: Arc::clone(&models_manager),
+        initial_model_provider_id: config.model_provider_id.clone(),
         tool_approvals: Mutex::new(ApprovalStore::default()),
         guardian_rejections: Mutex::new(std::collections::HashMap::new()),
         guardian_rejection_circuit_breaker: Mutex::new(Default::default()),

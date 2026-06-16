@@ -12,6 +12,7 @@ use codex_protocol::openai_models::ModelVisibility;
 use codex_protocol::openai_models::ModelsResponse;
 use std::fmt;
 use std::future::Future;
+use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -23,6 +24,7 @@ use tracing::error;
 use tracing::info;
 
 const MODEL_CACHE_FILE: &str = "models_cache.json";
+const SCOPED_MODEL_CACHE_DIR: &str = "models_cache";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
 
 /// Remote endpoint used by the OpenAI-compatible model manager.
@@ -216,8 +218,9 @@ impl OpenAiModelsManager {
         codex_home: PathBuf,
         endpoint_client: Arc<dyn ModelsEndpointClient>,
         auth_manager: Option<Arc<AuthManager>>,
+        cache_scope: Option<String>,
     ) -> Self {
-        let cache_path = codex_home.join(MODEL_CACHE_FILE);
+        let cache_path = model_cache_path(&codex_home, cache_scope.as_deref());
         let cache_manager = ModelsCacheManager::new(cache_path, DEFAULT_MODEL_CACHE_TTL);
         let remote_models = load_remote_models_from_file().unwrap_or_default();
         Self {
@@ -227,6 +230,34 @@ impl OpenAiModelsManager {
             endpoint_client,
             auth_manager,
         }
+    }
+}
+
+fn model_cache_path(codex_home: &Path, cache_scope: Option<&str>) -> PathBuf {
+    match cache_scope {
+        Some(scope) => codex_home
+            .join(SCOPED_MODEL_CACHE_DIR)
+            .join(format!("{}.json", sanitize_cache_scope(scope))),
+        None => codex_home.join(MODEL_CACHE_FILE),
+    }
+}
+
+fn sanitize_cache_scope(scope: &str) -> String {
+    let mut sanitized: String = scope
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    sanitized.truncate(128);
+    if sanitized.trim_matches('_').is_empty() {
+        "provider".to_string()
+    } else {
+        sanitized
     }
 }
 
@@ -386,8 +417,6 @@ impl OpenAiModelsManager {
             codex_otel::start_global_timer("codex.remote_models.load_cache.duration_ms", &[]);
         let client_version = crate::client_version_to_whole();
         info!(client_version, "models cache: evaluating cache eligibility");
-        // TODO(celia-oai): Include provider identity in cache eligibility so switching
-        // providers does not reuse a fresh models_cache.json entry from another provider.
         let cache = match self.cache_manager.load_fresh(&client_version).await {
             Some(cache) => cache,
             None => {

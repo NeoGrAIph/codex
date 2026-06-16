@@ -755,9 +755,24 @@ impl Session {
                 .set_permission_profile(session_configuration.permission_profile());
         }
 
-        let model_info = self
-            .services
-            .models_manager
+        let models_manager = if session_configuration
+            .original_config_do_not_use
+            .model_provider_id
+            == self.services.initial_model_provider_id
+        {
+            self.services.models_manager.clone()
+        } else {
+            create_model_provider(
+                session_configuration.provider.clone(),
+                Some(self.services.auth_manager.clone()),
+            )
+            .models_manager(
+                session_configuration.codex_home().to_path_buf(),
+                per_turn_config.model_catalog.clone(),
+            )
+        };
+
+        let model_info = models_manager
             .get_model_info(
                 session_configuration.collaboration_mode.model(),
                 &per_turn_config.to_models_manager_config(),
@@ -801,7 +816,7 @@ impl Session {
             self.services.main_execve_wrapper_exe.as_ref(),
             per_turn_config,
             model_info,
-            &self.services.models_manager,
+            &models_manager,
             self.services
                 .network_proxy
                 .load_full()
