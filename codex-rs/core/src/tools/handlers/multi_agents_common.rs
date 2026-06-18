@@ -20,6 +20,8 @@ use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabAgentStatusEntry;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentActionPolicySnapshot;
+use codex_protocol::protocol::SubAgentActionPolicySource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::normalize_thread_note_value;
 use codex_protocol::user_input::UserInput;
@@ -145,6 +147,7 @@ pub(crate) fn thread_spawn_source(
     agent_role: Option<&str>,
     task_name: Option<String>,
     thread_note: Option<String>,
+    action_policy: Option<SubAgentActionPolicySnapshot>,
 ) -> Result<SessionSource, FunctionCallError> {
     let agent_path = task_name
         .as_deref()
@@ -163,7 +166,19 @@ pub(crate) fn thread_spawn_source(
         agent_nickname: None,
         agent_role: agent_role.map(str::to_string),
         thread_note,
+        action_policy,
     }))
+}
+
+pub(crate) fn subagent_action_policy_snapshot(
+    role_name: Option<&str>,
+) -> SubAgentActionPolicySnapshot {
+    let source = if role_name.is_some() {
+        SubAgentActionPolicySource::RoleAppliedConfig
+    } else {
+        SubAgentActionPolicySource::Default
+    };
+    SubAgentActionPolicySnapshot::new(source)
 }
 
 pub(crate) fn normalize_thread_note(

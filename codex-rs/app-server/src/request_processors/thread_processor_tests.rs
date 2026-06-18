@@ -135,6 +135,9 @@ mod thread_processor_behavior_tests {
     use codex_protocol::permissions::NetworkSandboxPolicy;
     use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentActionPolicyMode;
+    use codex_protocol::protocol::SubAgentActionPolicySnapshot;
+    use codex_protocol::protocol::SubAgentActionPolicySource;
     use codex_protocol::protocol::SubAgentSource;
     use codex_protocol::protocol::TurnEnvironmentSelections;
     use codex_state::ThreadMetadataBuilder;
@@ -1054,6 +1057,7 @@ mod thread_processor_behavior_tests {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             }),
             thread_source: Some(codex_protocol::protocol::ThreadSource::Subagent),
             agent_nickname: Some("atlas".to_string()),
@@ -1194,6 +1198,9 @@ mod thread_processor_behavior_tests {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: Some(SubAgentActionPolicySnapshot::new(
+                    SubAgentActionPolicySource::RoleAppliedConfig,
+                )),
             }))?;
 
         let summary = summary_from_state_db_metadata(
@@ -1220,6 +1227,19 @@ mod thread_processor_behavior_tests {
 
         assert_eq!(thread.agent_nickname, Some("atlas".to_string()));
         assert_eq!(thread.agent_role, Some("explorer".to_string()));
+        let codex_app_server_protocol::SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            action_policy: Some(action_policy),
+            ..
+        }) = thread.source
+        else {
+            panic!("action policy snapshot should be preserved");
+        };
+        assert_eq!(action_policy.version, 1);
+        assert_eq!(action_policy.mode, SubAgentActionPolicyMode::Default);
+        assert_eq!(
+            action_policy.source,
+            SubAgentActionPolicySource::RoleAppliedConfig
+        );
         Ok(())
     }
 

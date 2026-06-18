@@ -607,6 +607,7 @@ async fn apply_thread_note_to_rollout(
         agent_path,
         agent_nickname,
         agent_role,
+        action_policy,
         ..
     }) = session_meta.meta.source
     {
@@ -617,6 +618,7 @@ async fn apply_thread_note_to_rollout(
             agent_nickname,
             agent_role,
             thread_note,
+            action_policy,
         });
     }
 

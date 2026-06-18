@@ -53,6 +53,8 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentActionPolicyMode;
+use codex_protocol::protocol::SubAgentActionPolicySource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
@@ -318,6 +320,16 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
         .await;
     assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
     assert_eq!(snapshot.model_provider_id, "ollama");
+    let action_policy = snapshot
+        .session_source
+        .get_subagent_action_policy()
+        .expect("spawned role agent should carry an action policy snapshot");
+    assert_eq!(action_policy.version, 1);
+    assert_eq!(action_policy.mode, SubAgentActionPolicyMode::Default);
+    assert_eq!(
+        action_policy.source,
+        SubAgentActionPolicySource::RoleAppliedConfig
+    );
 }
 
 #[tokio::test]
@@ -1412,6 +1424,7 @@ async fn thread_manager_agent_message_send_allows_subtree_owner_descendant() {
                 agent_nickname: Some("Pathless".to_string()),
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
             thread_source: None,
             dynamic_tools: Vec::new(),
@@ -1644,6 +1657,7 @@ async fn thread_manager_agent_followup_allows_subtree_owner_descendant() {
                 agent_nickname: Some("Pathless".to_string()),
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
             thread_source: None,
             dynamic_tools: Vec::new(),
@@ -1835,6 +1849,13 @@ async fn multi_agent_v2_spawn_applies_cwd_and_thread_note_without_widening_permi
         child_snapshot.session_source.get_thread_note().as_deref(),
         Some("check runtime cwd")
     );
+    let action_policy = child_snapshot
+        .session_source
+        .get_subagent_action_policy()
+        .expect("spawned agent should carry an action policy snapshot");
+    assert_eq!(action_policy.version, 1);
+    assert_eq!(action_policy.mode, SubAgentActionPolicyMode::Default);
+    assert_eq!(action_policy.source, SubAgentActionPolicySource::Default);
 
     let output = ListAgentsHandlerV2
         .handle(invocation(
@@ -2269,6 +2290,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -2283,6 +2305,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         agent_nickname: None,
         agent_role: None,
         thread_note: None,
+        action_policy: None,
     });
 
     SendMessageHandlerV2
@@ -2348,6 +2371,7 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -2362,6 +2386,7 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
         agent_nickname: None,
         agent_role: None,
         thread_note: None,
+        action_policy: None,
     });
 
     let Err(err) = FollowupTaskHandlerV2
@@ -2522,6 +2547,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -2544,6 +2570,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -2557,6 +2584,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
         agent_nickname: None,
         agent_role: None,
         thread_note: None,
+        action_policy: None,
     });
 
     let output = ListAgentsHandlerV2
@@ -3462,6 +3490,7 @@ async fn spawn_agent_rejects_when_depth_limit_exceeded() {
         agent_nickname: None,
         agent_role: None,
         thread_note: None,
+        action_policy: None,
     });
 
     let invocation = invocation(
@@ -3503,6 +3532,7 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
         agent_nickname: None,
         agent_role: None,
         thread_note: None,
+        action_policy: None,
     });
 
     let invocation = invocation(
@@ -3559,6 +3589,7 @@ async fn multi_agent_v2_spawn_agent_ignores_configured_max_depth() {
         agent_nickname: None,
         agent_role: None,
         thread_note: None,
+        action_policy: None,
     });
 
     let invocation = invocation(
@@ -3933,6 +3964,7 @@ async fn resume_agent_rejects_when_depth_limit_exceeded() {
         agent_nickname: None,
         agent_role: None,
         thread_note: None,
+        action_policy: None,
     });
 
     let invocation = invocation(
@@ -5156,6 +5188,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_cross_subtree_target() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -5179,6 +5212,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_cross_subtree_target() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -5192,6 +5226,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_cross_subtree_target() {
         agent_nickname: None,
         agent_role: None,
         thread_note: None,
+        action_policy: None,
     });
 
     let err = InterruptAgentHandler
@@ -5255,6 +5290,7 @@ async fn multi_agent_v2_interrupt_agent_allows_descendant_target() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -5278,6 +5314,7 @@ async fn multi_agent_v2_interrupt_agent_allows_descendant_target() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -5292,6 +5329,7 @@ async fn multi_agent_v2_interrupt_agent_allows_descendant_target() {
         agent_nickname: None,
         agent_role: None,
         thread_note: None,
+        action_policy: None,
     });
 
     let output = InterruptAgentHandler
@@ -5351,6 +5389,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_id() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -5365,6 +5404,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_id() {
         agent_nickname: None,
         agent_role: None,
         thread_note: None,
+        action_policy: None,
     });
 
     let err = InterruptAgentHandler
@@ -5421,6 +5461,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_task_name() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -5435,6 +5476,7 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_task_name() {
         agent_nickname: None,
         agent_role: None,
         thread_note: None,
+        action_policy: None,
     });
 
     let err = InterruptAgentHandler

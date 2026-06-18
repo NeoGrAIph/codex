@@ -5,7 +5,7 @@
 - Code name: `subagent-policy-and-ownership`
 - Status: переносимая security/ownership возможность.
 - Goal: не дать sub-agent обходить allow/deny policies, trust boundaries и ownership своего subtree.
-- Scope in: current `fork/140` MAv2 interrupt ownership guard, workbench/app-server close-one ownership guard, canonical `AgentPath` subtree checks, root/non-root/self/cross-subtree diagnostics and focused ownership tests. Historical/future scope still includes durable policy metadata propagation, MCP allowlist/denylist, trust gating and read-only `.agents`, but those surfaces are not claimed by the first `fork/140` slices.
+- Scope in: current `fork/140` MAv2 interrupt ownership guard, workbench/app-server close-one ownership guard, canonical `AgentPath` subtree checks, root/non-root/self/cross-subtree diagnostics and focused ownership tests. `feature/140/agent-policy-control-plane` adds the first durable action-policy snapshot substrate for spawned agents. Historical/future scope still includes enforced `read_only`, allow/deny action policy, MCP allowlist/denylist, trust gating and read-only `.agents`, but those surfaces are not claimed by this substrate slice.
 - Scope out: пользовательские role templates и cwd, кроме мест пересечения.
 
 ## Как работает для пользователя
@@ -39,7 +39,7 @@ Sub-agent получает права в рамках контекста, из �
 
 ## Native coverage in rust-v0.140.0
 
-Status: `partial`. Native release имеет protected metadata paths (`.git`, `.agents`, `.codex`), workspace-write protected subpaths, MCP `ToolFilter` with `enabled_tools`/`disabled_tools`, requirements/identity filtering for MCP servers, root-tree scoped `AgentControl`, subagent metadata and close handler. Текущий `fork/140` добавляет path-based ownership для MAv2 `interrupt_agent` и для workbench/app-server `close one` через `ThreadManager::close_agent_from_workbench`. Не хватает durable policy metadata propagation, role-template `read_only`/`allow_list`/`deny_list` as subagent contract, V1 legacy close tool parity and app-server protocol/schema fields for policy metadata state.
+Status: `partial`. Native release имеет protected metadata paths (`.git`, `.agents`, `.codex`), workspace-write protected subpaths, MCP `ToolFilter` with `enabled_tools`/`disabled_tools`, requirements/identity filtering for MCP servers, root-tree scoped `AgentControl`, subagent metadata and close handler. Текущий `fork/140` добавляет path-based ownership для MAv2 `interrupt_agent` и для workbench/app-server `close one` через `ThreadManager::close_agent_from_workbench`; `feature/140/agent-policy-control-plane` добавляет durable `action_policy` snapshot в `SubAgentSource::ThreadSpawn`, но пока без новых enforcement semantics. Не хватает role-template `read_only`/`allow_list`/`deny_list` as enforced subagent contract, V1 legacy close tool parity and write/management API for policy state.
 
 ## Porting/current-state notes
 
@@ -47,7 +47,7 @@ Status: `partial`. Native release имеет protected metadata paths (`.git`, `
 
 ## Fork/140 implementation status
 
-Первые `fork/140` slices не вводят новую policy metadata model и не меняют MCP allow/deny enforcement. Они добавляют native ownership guard для MAv2 `interrupt_agent` и workbench/app-server `close one`: root может управлять non-root agents, а sub-agent может interrupt/close только targets внутри своего canonical `agent_path` subtree; descendant target разрешён, а sibling/root/self/pathless/root обходы fail-fast. Durable role-template policy metadata, app-server schema fields for policy metadata и V1 close-agent legacy parity остаются gap для следующего этапа.
+Первые `fork/140` slices не меняли MCP allow/deny enforcement. Они добавляют native ownership guard для MAv2 `interrupt_agent` и workbench/app-server `close one`: root может управлять non-root agents, а sub-agent может interrupt/close только targets внутри своего canonical `agent_path` subtree; descendant target разрешён, а sibling/root/self/pathless/root обходы fail-fast. `feature/140/agent-policy-control-plane` добавляет persisted action-policy snapshot как extension point; реальные role-template `read_only`/allow/deny semantics и V1 close-agent legacy parity остаются отдельными enforcement slices.
 
 ## Doc changelog
 
@@ -55,3 +55,5 @@ Status: `partial`. Native release имеет protected metadata paths (`.git`, `
 - 2026-06-18: Focused MAv2 ownership verification passed for cross-subtree, root target and self-target interrupt denial.
 - 2026-06-18: Добавлен positive descendant ownership test: non-root agent can interrupt a descendant inside its own `AgentPath` subtree while sibling/root/self targets remain denied.
 - 2026-06-18: Workbench/app-server `close one` добавлен в ownership scope: `ThreadManager::close_agent_from_workbench` enforces author/target `AgentPath` descendant ownership before delegating to native `AgentControl::close_agent`.
+- 2026-06-18: `feature/140/agent-policy-control-plane` scope narrowed to durable projection-only `SubAgentActionPolicySnapshot` before any `read_only`/allow/deny enforcement, чтобы не создавать ложный security contract.
+- 2026-06-18: `feature/140/agent-policy-control-plane` реализовал projection-only `SubAgentSource::ThreadSpawn.action_policy`, сохраняемый через spawn, resume/tree-resume, thread-note metadata update и app-server thread projections.

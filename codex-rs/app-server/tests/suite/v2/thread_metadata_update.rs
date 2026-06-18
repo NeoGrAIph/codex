@@ -26,6 +26,9 @@ use codex_git_utils::GitSha;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::GitInfo as RolloutGitInfo;
 use codex_protocol::protocol::SessionSource as CoreSessionSource;
+use codex_protocol::protocol::SubAgentActionPolicyMode;
+use codex_protocol::protocol::SubAgentActionPolicySnapshot;
+use codex_protocol::protocol::SubAgentActionPolicySource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_rollout::state_db::reconcile_rollout;
 use codex_state::StateRuntime;
@@ -46,6 +49,18 @@ fn thread_note_from_source(source: &codex_app_server_protocol::SessionSource) ->
             thread_note,
             ..
         }) => thread_note.clone(),
+        _ => None,
+    }
+}
+
+fn action_policy_from_source(
+    source: &codex_app_server_protocol::SessionSource,
+) -> Option<SubAgentActionPolicySnapshot> {
+    match source {
+        codex_app_server_protocol::SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            action_policy,
+            ..
+        }) => action_policy.clone(),
         _ => None,
     }
 }
@@ -167,6 +182,9 @@ async fn thread_metadata_update_patches_thread_note_through_source_metadata() ->
             agent_nickname: None,
             agent_role: None,
             thread_note: None,
+            action_policy: Some(SubAgentActionPolicySnapshot::new(
+                SubAgentActionPolicySource::RoleAppliedConfig,
+            )),
         }),
     )?;
 
@@ -206,6 +224,17 @@ async fn thread_metadata_update_patches_thread_note_through_source_metadata() ->
         thread_note_from_source(&updated.source).as_deref(),
         Some("Inspect parser state")
     );
+    let updated_action_policy =
+        action_policy_from_source(&updated.source).expect("action policy should be preserved");
+    assert_eq!(updated_action_policy.version, 1);
+    assert_eq!(
+        updated_action_policy.mode,
+        SubAgentActionPolicyMode::Default
+    );
+    assert_eq!(
+        updated_action_policy.source,
+        SubAgentActionPolicySource::RoleAppliedConfig
+    );
     assert_eq!(updated.thread_note.as_deref(), Some("Inspect parser state"));
 
     let clear_id = mcp
@@ -235,6 +264,12 @@ async fn thread_metadata_update_patches_thread_note_through_source_metadata() ->
     assert_eq!(clear_notification.thread_id, thread_id);
     assert_eq!(clear_notification.thread_note, None);
     assert_eq!(thread_note_from_source(&cleared.source), None);
+    assert_eq!(
+        action_policy_from_source(&cleared.source),
+        Some(SubAgentActionPolicySnapshot::new(
+            SubAgentActionPolicySource::RoleAppliedConfig
+        ))
+    );
     assert_eq!(cleared.thread_note, None);
 
     let read_id = mcp
@@ -250,6 +285,12 @@ async fn thread_metadata_update_patches_thread_note_through_source_metadata() ->
     .await??;
     let ThreadReadResponse { thread: read, .. } = to_response::<ThreadReadResponse>(read_resp)?;
     assert_eq!(thread_note_from_source(&read.source), None);
+    assert_eq!(
+        action_policy_from_source(&read.source),
+        Some(SubAgentActionPolicySnapshot::new(
+            SubAgentActionPolicySource::RoleAppliedConfig
+        ))
+    );
     assert_eq!(read.thread_note, None);
 
     Ok(())

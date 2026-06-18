@@ -2642,9 +2642,48 @@ pub enum SubAgentSource {
         agent_role: Option<String>,
         #[serde(default)]
         thread_note: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        action_policy: Option<SubAgentActionPolicySnapshot>,
     },
     MemoryConsolidation,
     Other(String),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub struct SubAgentActionPolicySnapshot {
+    pub version: u32,
+    pub mode: SubAgentActionPolicyMode,
+    pub source: SubAgentActionPolicySource,
+}
+
+impl SubAgentActionPolicySnapshot {
+    pub const VERSION: u32 = 1;
+
+    pub fn new(source: SubAgentActionPolicySource) -> Self {
+        Self {
+            version: Self::VERSION,
+            mode: SubAgentActionPolicyMode::Default,
+            source,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum SubAgentActionPolicyMode {
+    Default,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum SubAgentActionPolicySource {
+    Default,
+    RoleAppliedConfig,
 }
 
 impl fmt::Display for SessionSource {
@@ -2722,6 +2761,15 @@ impl SessionSource {
         match self {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn { thread_note, .. }) => {
                 thread_note.clone()
+            }
+            _ => None,
+        }
+    }
+
+    pub fn get_subagent_action_policy(&self) -> Option<SubAgentActionPolicySnapshot> {
+        match self {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { action_policy, .. }) => {
+                action_policy.clone()
             }
             _ => None,
         }

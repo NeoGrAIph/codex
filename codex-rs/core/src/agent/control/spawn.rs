@@ -245,6 +245,7 @@ impl AgentControl {
                 agent_path,
                 agent_role,
                 thread_note,
+                action_policy,
                 ..
             })) => {
                 let (session_source, agent_metadata) = self.prepare_thread_spawn(
@@ -256,6 +257,7 @@ impl AgentControl {
                     agent_role,
                     /*preferred_agent_nickname*/ None,
                     thread_note.or(options.thread_note.clone()),
+                    action_policy,
                 )?;
                 (Some(session_source), agent_metadata)
             }
@@ -578,6 +580,7 @@ impl AgentControl {
                             agent_nickname: None,
                             agent_role: None,
                             thread_note: None,
+                            action_policy: None,
                         });
                     match Box::pin(self.resume_single_agent_from_rollout(
                         config.clone(),
@@ -627,6 +630,7 @@ impl AgentControl {
             rollout_path: stored_thread.rollout_path,
         });
         let parent_thread_id = stored_thread.parent_thread_id;
+        let persisted_action_policy = stored_thread.source.get_subagent_action_policy();
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
                 &initial_history,
@@ -646,6 +650,7 @@ impl AgentControl {
                 agent_role: _,
                 agent_nickname: _,
                 thread_note,
+                action_policy,
             }) => {
                 let (resumed_agent_nickname, resumed_agent_role) =
                     if let Some(state_db_ctx) = state_db_ctx.as_ref() {
@@ -665,6 +670,7 @@ impl AgentControl {
                     resumed_agent_role,
                     resumed_agent_nickname,
                     thread_note.or(stored_thread.thread_note),
+                    persisted_action_policy.or(action_policy),
                 )?
             }
             other => (other, AgentMetadata::default()),

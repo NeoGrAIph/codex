@@ -137,6 +137,7 @@ mod tests {
             agent_nickname: None,
             agent_role: None,
             thread_note: None,
+            action_policy: None,
         });
 
         assert!(source_kind_matches(

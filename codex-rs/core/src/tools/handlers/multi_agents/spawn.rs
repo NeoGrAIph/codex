@@ -116,6 +116,7 @@ async fn handle_spawn_agent(
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+    let action_policy = subagent_action_policy_snapshot(role_name);
 
     let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
         config,
@@ -127,6 +128,7 @@ async fn handle_spawn_agent(
             role_name,
             /*task_name*/ None,
             /*thread_note*/ None,
+            Some(action_policy),
         )?),
         SpawnAgentOptions {
             fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),

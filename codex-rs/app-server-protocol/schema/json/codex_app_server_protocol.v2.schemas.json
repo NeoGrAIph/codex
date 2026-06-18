@@ -13717,6 +13717,40 @@
       ],
       "type": "object"
     },
+    "SubAgentActionPolicyMode": {
+      "enum": [
+        "default"
+      ],
+      "type": "string"
+    },
+    "SubAgentActionPolicySnapshot": {
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/SubAgentActionPolicyMode"
+        },
+        "source": {
+          "$ref": "#/definitions/SubAgentActionPolicySource"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "mode",
+        "source",
+        "version"
+      ],
+      "type": "object"
+    },
+    "SubAgentActionPolicySource": {
+      "enum": [
+        "default",
+        "role_applied_config"
+      ],
+      "type": "string"
+    },
     "SubAgentActivityKind": {
       "enum": [
         "started",
@@ -13740,6 +13774,16 @@
           "properties": {
             "thread_spawn": {
               "properties": {
+                "action_policy": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/SubAgentActionPolicySnapshot"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "agent_nickname": {
                   "default": null,
                   "type": [

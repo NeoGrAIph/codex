@@ -93,6 +93,7 @@ async fn handle_spawn_agent(
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
     apply_spawn_agent_cwd_override(&mut config, args.cwd.as_deref())?;
     let thread_note = normalize_thread_note(args.thread_note)?;
+    let action_policy = subagent_action_policy_snapshot(role_name);
 
     let spawn_source = thread_spawn_source(
         session.thread_id,
@@ -101,6 +102,7 @@ async fn handle_spawn_agent(
         role_name,
         Some(args.task_name.clone()),
         thread_note.clone(),
+        Some(action_policy),
     )?;
     let new_agent_path = spawn_source.get_agent_path().ok_or_else(|| {
         FunctionCallError::RespondToModel(

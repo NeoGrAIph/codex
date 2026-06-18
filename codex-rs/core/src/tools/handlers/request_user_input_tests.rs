@@ -21,6 +21,7 @@ async fn multi_agent_v2_request_user_input_rejects_subagent_threads() {
         agent_nickname: None,
         agent_role: None,
         thread_note: None,
+        action_policy: None,
     });
 
     let result = RequestUserInputHandler {

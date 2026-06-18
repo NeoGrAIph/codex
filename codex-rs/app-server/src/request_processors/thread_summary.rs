@@ -164,6 +164,7 @@ pub(super) fn with_thread_spawn_agent_metadata(
                 agent_nickname: existing_agent_nickname,
                 agent_role: existing_agent_role,
                 thread_note: existing_thread_note,
+                action_policy,
             },
         ) => codex_protocol::protocol::SessionSource::SubAgent(
             codex_protocol::protocol::SubAgentSource::ThreadSpawn {
@@ -175,6 +176,7 @@ pub(super) fn with_thread_spawn_agent_metadata(
                 agent_nickname: agent_nickname.or(existing_agent_nickname),
                 agent_role: agent_role.or(existing_agent_role),
                 thread_note: thread_note.or(existing_thread_note),
+                action_policy,
             },
         ),
         _ => source,

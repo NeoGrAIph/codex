@@ -22,6 +22,9 @@ use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentActionPolicyMode;
+use codex_protocol::protocol::SubAgentActionPolicySnapshot;
+use codex_protocol::protocol::SubAgentActionPolicySource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
@@ -558,6 +561,7 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             SpawnAgentOptions {
                 parent_thread_id: Some(parent_thread_id),
@@ -651,6 +655,7 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -668,6 +673,7 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
                 agent_nickname: None,
                 agent_role: Some("reviewer".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -740,6 +746,7 @@ async fn encrypted_inter_agent_communication_clears_existing_last_task_message()
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             SpawnAgentOptions {
                 parent_thread_id: Some(parent_thread_id),
@@ -920,6 +927,7 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -990,6 +998,7 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -1133,6 +1142,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id),
@@ -1204,6 +1214,7 @@ async fn spawn_agent_fork_flushes_parent_rollout_before_loading_history() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -1322,6 +1333,7 @@ async fn spawn_agent_fork_last_n_turns_keeps_only_recent_turns() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -1434,6 +1446,7 @@ async fn spawn_agent_fork_last_n_turns_drops_parent_startup_prefix_when_under_li
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id),
@@ -1545,6 +1558,7 @@ async fn spawn_agent_fork_last_n_turns_strips_parent_usage_hints() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id),
@@ -1667,6 +1681,7 @@ async fn spawn_agent_v2_default_limit_allows_twelve_spawned_agents() {
                     agent_nickname: None,
                     agent_role: None,
                     thread_note: None,
+                    action_policy: None,
                 })),
             )
             .await
@@ -1685,6 +1700,7 @@ async fn spawn_agent_v2_default_limit_allows_twelve_spawned_agents() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -1894,6 +1910,7 @@ async fn spawn_child_completion_notifies_parent_history() {
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -1937,6 +1954,7 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -1954,6 +1972,7 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2053,6 +2072,7 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
             agent_nickname: None,
             agent_role: Some("explorer".to_string()),
             thread_note: None,
+            action_policy: None,
         })),
         tester_path.to_string(),
         Some(tester_path.clone()),
@@ -2140,6 +2160,7 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
             agent_nickname: None,
             agent_role: Some("explorer".to_string()),
             thread_note: None,
+            action_policy: None,
         })),
         child_thread_id.to_string(),
         /*child_agent_path*/ None,
@@ -2184,6 +2205,7 @@ async fn spawn_thread_subagent_gets_random_nickname_in_session_source() {
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2239,6 +2261,7 @@ async fn spawn_thread_subagent_uses_role_specific_nickname_candidates() {
                 agent_nickname: None,
                 agent_role: Some("researcher".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2298,6 +2321,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2368,6 +2392,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             }),
         )
         .await
@@ -2388,6 +2413,7 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
         agent_nickname: resumed_nickname,
         agent_role: resumed_role,
         thread_note: None,
+        action_policy: None,
         ..
     }) = resumed_snapshot.session_source
     else {
@@ -2474,6 +2500,7 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2494,6 +2521,7 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2510,6 +2538,7 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2526,6 +2555,7 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2542,6 +2572,7 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
                 agent_nickname: None,
                 agent_role: Some("reviewer".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2614,6 +2645,7 @@ async fn list_agent_subtree_thread_ids_finds_live_descendants_of_unloaded_root()
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2629,6 +2661,7 @@ async fn list_agent_subtree_thread_ids_finds_live_descendants_of_unloaded_root()
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2665,6 +2698,7 @@ async fn shutdown_agent_tree_closes_live_descendants() {
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2681,6 +2715,7 @@ async fn shutdown_agent_tree_closes_live_descendants() {
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2752,6 +2787,7 @@ async fn shutdown_agent_tree_closes_descendants_when_started_at_child() {
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2768,6 +2804,7 @@ async fn shutdown_agent_tree_closes_descendants_when_started_at_child() {
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2845,6 +2882,7 @@ async fn resume_agent_from_rollout_does_not_reopen_closed_descendants() {
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2861,6 +2899,7 @@ async fn resume_agent_from_rollout_does_not_reopen_closed_descendants() {
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2942,6 +2981,7 @@ async fn resume_closed_child_reopens_open_descendants() {
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2958,6 +2998,7 @@ async fn resume_closed_child_reopens_open_descendants() {
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -2999,6 +3040,7 @@ async fn resume_closed_child_reopens_open_descendants() {
                 agent_nickname: None,
                 agent_role: None,
                 thread_note: None,
+                action_policy: None,
             }),
         )
         .await
@@ -3042,6 +3084,7 @@ async fn resume_agent_from_rollout_reopens_open_descendants_after_manager_shutdo
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -3058,6 +3101,7 @@ async fn resume_agent_from_rollout_reopens_open_descendants_after_manager_shutdo
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -3135,6 +3179,7 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -3151,6 +3196,7 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -3190,6 +3236,9 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
             agent_nickname: None,
             agent_role: Some("worker".to_string()),
             thread_note: None,
+            action_policy: Some(SubAgentActionPolicySnapshot::new(
+                SubAgentActionPolicySource::RoleAppliedConfig,
+            )),
         }))
         .expect("stale session source should serialize");
     state_db
@@ -3237,6 +3286,7 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
     let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: resumed_parent_thread_id,
         depth: resumed_depth,
+        action_policy,
         ..
     }) = resumed_grandchild_snapshot.session_source
     else {
@@ -3244,6 +3294,13 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
     };
     assert_eq!(resumed_parent_thread_id, child_thread_id);
     assert_eq!(resumed_depth, 2);
+    let action_policy = action_policy.expect("action policy snapshot should survive resume");
+    assert_eq!(action_policy.version, 1);
+    assert_eq!(action_policy.mode, SubAgentActionPolicyMode::Default);
+    assert_eq!(
+        action_policy.source,
+        SubAgentActionPolicySource::RoleAppliedConfig
+    );
 
     let _ = harness
         .control
@@ -3269,6 +3326,7 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
                 agent_nickname: None,
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
@@ -3285,6 +3343,7 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
                 agent_nickname: None,
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
+                action_policy: None,
             })),
         )
         .await
