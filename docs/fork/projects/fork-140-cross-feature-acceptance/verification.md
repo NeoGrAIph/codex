@@ -7,6 +7,7 @@
 - `just test -p codex-app-server mcp_server_refresh_exposes_added_tools_on_next_turn`
 - `cargo insta pending-snapshots --workspace-root .`
 - `git diff --check`
+- 12-agent runtime smoke: spawn 12 read-only sub-agents, require every agent to report `fork/140` and clean `git status --short`.
 
 ## Verification log
 
@@ -17,6 +18,7 @@
 | 2026-06-18 | `just test -p codex-app-server mcp_server_refresh_exposes_added_tools_on_next_turn` | passed | App-server MCP refresh to next-turn tool projection. |
 | 2026-06-18 | `cargo insta pending-snapshots --workspace-root .` | passed: no pending snapshots | No pending TUI snapshot artifacts. |
 | 2026-06-18 | `git diff --check` | passed | Whitespace and patch hygiene. |
+| 2026-06-18 | 12 read-only sub-agents: Jason, Mendel, Descartes, Kuhn, Parfit, Herschel, Lovelace, Godel, James, Popper, Boyle, Darwin | passed: 12/12 | Practical runtime smoke: all agents started concurrently enough to satisfy the fork limit expectation and each reported branch `fork/140` with a clean worktree. |
 
 ## Remaining accepted gaps
 
