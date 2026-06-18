@@ -3898,6 +3898,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
                         agent_nickname: Some("Robie".to_string()),
                         agent_role: Some("explorer".to_string()),
                         thread_note: Some("Investigate parser state".to_string()),
+                        action_policy: None,
                     },
                 ),
                 thread_note: Some("Investigate parser state".to_string()),

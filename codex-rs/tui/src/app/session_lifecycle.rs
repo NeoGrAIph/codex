@@ -71,10 +71,6 @@ impl App {
             return;
         }
 
-        let summary_line = {
-            let ordered_threads = self.agent_navigation.ordered_threads();
-            agent_picker_summary_line(&ordered_threads, self.primary_thread_id)
-        };
         let ordered_thread_ids = self
             .agent_navigation
             .ordered_threads()
@@ -105,60 +101,37 @@ impl App {
             }
         }
 
-        let mut initial_selected_idx = None;
-        let items: Vec<SelectionItem> = self
-            .agent_navigation
-            .ordered_threads()
+        let read_model = AgentWorkbenchReadModel::build(
+            &self.agent_navigation,
+            self.primary_thread_id,
+            self.active_thread_id,
+            AgentWorkbenchDetailSummaries {
+                prompt_context_by_thread_id: &prompt_context_by_thread_id,
+                recent_activity_by_thread_id: &recent_activity_by_thread_id,
+                token_usage_by_thread_id: &token_usage_by_thread_id,
+                plan_progress_by_thread_id: &plan_progress_by_thread_id,
+            },
+        );
+        let AgentWorkbenchReadModel {
+            summary_line,
+            rows,
+            initial_selected_idx,
+        } = read_model;
+        let items: Vec<SelectionItem> = rows
             .into_iter()
-            .enumerate()
-            .map(|(idx, (thread_id, entry))| {
-                if self.active_thread_id == Some(thread_id) {
-                    initial_selected_idx = Some(idx);
-                }
-                let id = thread_id;
-                let is_primary = self.primary_thread_id == Some(thread_id);
-                let name = format_agent_picker_item_name(
-                    entry.agent_nickname.as_deref(),
-                    entry.agent_role.as_deref(),
-                    is_primary,
-                );
-                let uuid = thread_id.to_string();
-                let is_current = self.active_thread_id == Some(thread_id);
-                let recent_activity = recent_activity_by_thread_id
-                    .get(&thread_id)
-                    .map(Vec::as_slice)
-                    .unwrap_or_default();
-                let prompt_context = prompt_context_by_thread_id
-                    .get(&thread_id)
-                    .map(Vec::as_slice)
-                    .unwrap_or_default();
-                let token_usage_summary =
-                    token_usage_by_thread_id.get(&thread_id).map(String::as_str);
-                let plan_progress_summary = plan_progress_by_thread_id
-                    .get(&thread_id)
-                    .map(String::as_str);
+            .map(|row| {
+                let id = row.thread_id;
                 SelectionItem {
-                    name: name.clone(),
-                    name_prefix_spans: agent_picker_status_dot_spans(entry.status),
-                    description: Some(agent_picker_item_description(thread_id, entry, is_primary)),
-                    selected_description: Some(agent_picker_selected_description(
-                        thread_id,
-                        entry,
-                        is_primary,
-                        is_current,
-                        AgentPickerSelectedDescriptionContext {
-                            prompt_context,
-                            recent_activity,
-                            token_usage_summary,
-                            plan_progress_summary,
-                        },
-                    )),
-                    is_current,
+                    name: row.name,
+                    name_prefix_spans: row.name_prefix_spans,
+                    description: Some(row.description),
+                    selected_description: Some(row.selected_description),
+                    is_current: row.is_current,
                     actions: vec![Box::new(move |tx| {
                         tx.send(AppEvent::SelectAgentThread(id));
                     })],
                     dismiss_on_select: true,
-                    search_value: Some(format!("{name} {uuid}")),
+                    search_value: Some(row.search_value),
                     ..Default::default()
                 }
             })
