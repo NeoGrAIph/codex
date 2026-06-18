@@ -1,0 +1,12 @@
+---
+source: tui/src/app/tests.rs
+expression: rendered.clone()
+---
+  Close this agent?
+  Robie [explorer] · /root/worker · current status: running
+
+› 1. Cancel         Keep the agent available.
+  2. x Close agent  Current status: running. Mark this spawn edge closed and shut down the live
+                    target and descendants.
+
+  Press enter to confirm or esc to go back

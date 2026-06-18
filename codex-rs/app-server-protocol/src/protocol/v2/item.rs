@@ -1052,6 +1052,9 @@ pub enum CollabAgentStatus {
 pub struct CollabAgentState {
     pub status: CollabAgentStatus,
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub thread_note: Option<String>,
 }
 
 impl From<CoreAgentStatus> for CollabAgentState {
@@ -1060,32 +1063,46 @@ impl From<CoreAgentStatus> for CollabAgentState {
             CoreAgentStatus::PendingInit => Self {
                 status: CollabAgentStatus::PendingInit,
                 message: None,
+                thread_note: None,
             },
             CoreAgentStatus::Running => Self {
                 status: CollabAgentStatus::Running,
                 message: None,
+                thread_note: None,
             },
             CoreAgentStatus::Interrupted => Self {
                 status: CollabAgentStatus::Interrupted,
                 message: None,
+                thread_note: None,
             },
             CoreAgentStatus::Completed(message) => Self {
                 status: CollabAgentStatus::Completed,
                 message,
+                thread_note: None,
             },
             CoreAgentStatus::Errored(message) => Self {
                 status: CollabAgentStatus::Errored,
                 message: Some(message),
+                thread_note: None,
             },
             CoreAgentStatus::Shutdown => Self {
                 status: CollabAgentStatus::Shutdown,
                 message: None,
+                thread_note: None,
             },
             CoreAgentStatus::NotFound => Self {
                 status: CollabAgentStatus::NotFound,
                 message: None,
+                thread_note: None,
             },
         }
+    }
+}
+
+impl CollabAgentState {
+    pub(crate) fn with_thread_note(mut self, thread_note: Option<String>) -> Self {
+        self.thread_note = thread_note;
+        self
     }
 }
 

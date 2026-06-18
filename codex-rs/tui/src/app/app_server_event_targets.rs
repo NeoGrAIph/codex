@@ -55,6 +55,9 @@ pub(super) fn server_notification_thread_target(
         ServerNotification::ThreadNameUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }
+        ServerNotification::ThreadNoteUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::ThreadTokenUsageUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }
@@ -194,6 +197,7 @@ mod tests {
     use codex_app_server_protocol::McpServerStartupState;
     use codex_app_server_protocol::McpServerStatusUpdatedNotification;
     use codex_app_server_protocol::ServerNotification;
+    use codex_app_server_protocol::ThreadNoteUpdatedNotification;
     use codex_app_server_protocol::ThreadSettings;
     use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
     use codex_app_server_protocol::WarningNotification;
@@ -228,6 +232,20 @@ mod tests {
             },
             personality: None,
         }
+    }
+
+    #[test]
+    fn thread_note_updated_targets_thread() {
+        let thread_id = ThreadId::new();
+        let notification = ServerNotification::ThreadNoteUpdated(ThreadNoteUpdatedNotification {
+            thread_id: thread_id.to_string(),
+            thread_note: Some("Inspect parser state".to_string()),
+        });
+
+        assert_eq!(
+            server_notification_thread_target(&notification),
+            ServerNotificationThreadTarget::Thread(thread_id)
+        );
     }
 
     #[test]

@@ -71,7 +71,10 @@ pub(crate) fn builtins_for_input(flags: BuiltinCommandFlags) -> Vec<(&'static st
     built_in_slash_commands()
         .into_iter()
         .filter(|(_, cmd)| flags.allow_elevate_sandbox || *cmd != SlashCommand::ElevateSandbox)
-        .filter(|(_, cmd)| flags.collaboration_modes_enabled || *cmd != SlashCommand::Plan)
+        .filter(|(_, cmd)| {
+            flags.collaboration_modes_enabled
+                || !matches!(cmd, SlashCommand::Plan | SlashCommand::Interactive)
+        })
         .filter(|(_, cmd)| flags.connectors_enabled || *cmd != SlashCommand::Apps)
         .filter(|(_, cmd)| flags.plugins_command_enabled || *cmd != SlashCommand::Plugins)
         .filter(|(_, cmd)| flags.token_activity_command_enabled || *cmd != SlashCommand::Usage)
@@ -265,6 +268,14 @@ mod tests {
         let mut flags = all_enabled_flags();
         flags.goal_command_enabled = false;
         assert_eq!(find_builtin_command("goal", flags), None);
+    }
+
+    #[test]
+    fn collaboration_mode_commands_are_hidden_when_disabled() {
+        let mut flags = all_enabled_flags();
+        flags.collaboration_modes_enabled = false;
+        assert_eq!(find_builtin_command("plan", flags), None);
+        assert_eq!(find_builtin_command("interactive", flags), None);
     }
 
     #[test]

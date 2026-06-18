@@ -1,0 +1,10 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup.clone()
+---
+▌ Set API key for deepseek
+▌ Stored in encrypted Codex managed secrets.
+▌
+▌ *******************
+
+Press enter to confirm or esc to go back

@@ -1635,6 +1635,74 @@ async fn spawn_agent_respects_max_threads_limit() {
 }
 
 #[tokio::test]
+async fn spawn_agent_v2_default_limit_allows_twelve_spawned_agents() {
+    let (_home, config) = test_config_with_cli_overrides(vec![(
+        "features.multi_agent_v2.enabled".to_string(),
+        TomlValue::Boolean(true),
+    )])
+    .await;
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        std::sync::Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let control = manager.agent_control();
+    let root_thread = manager
+        .start_thread(config.clone())
+        .await
+        .expect("root thread should start");
+
+    let mut spawned_thread_ids = Vec::new();
+    for index in 0..12 {
+        let agent_path = AgentPath::try_from(format!("/root/worker_{index}")).expect("agent path");
+        let thread_id = control
+            .spawn_agent(
+                config.clone(),
+                text_input("hello"),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root_thread.thread_id,
+                    depth: 1,
+                    agent_path: Some(agent_path),
+                    agent_nickname: None,
+                    agent_role: None,
+                    thread_note: None,
+                })),
+            )
+            .await
+            .expect("spawn_agent should allow twelve default v2 spawned agents");
+        spawned_thread_ids.push(thread_id);
+    }
+
+    let err = control
+        .spawn_agent(
+            config,
+            text_input("hello again"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root_thread.thread_id,
+                depth: 1,
+                agent_path: Some(AgentPath::try_from("/root/worker_over_limit").expect("path")),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+            })),
+        )
+        .await
+        .expect_err("spawn_agent should reject the thirteenth default v2 spawned agent");
+    let CodexErr::AgentLimitReached { max_threads } = err else {
+        panic!("expected CodexErr::AgentLimitReached");
+    };
+    assert_eq!(max_threads, 12);
+
+    for thread_id in spawned_thread_ids {
+        let _ = control
+            .shutdown_live_agent(thread_id)
+            .await
+            .expect("shutdown agent");
+    }
+}
+
+#[tokio::test]
 async fn spawn_agent_releases_slot_after_shutdown() {
     let max_threads = 1usize;
     let (_home, config) = test_config_with_cli_overrides(vec![(
@@ -2153,6 +2221,8 @@ async fn spawn_thread_subagent_uses_role_specific_nickname_candidates() {
             description: Some("Research role".to_string()),
             config_file: None,
             nickname_candidates: Some(vec!["Atlas".to_string()]),
+            metadata_sources: Default::default(),
+            runtime_config_sources: Default::default(),
         },
     );
     let (parent_thread_id, _parent_thread) = harness.start_thread().await;

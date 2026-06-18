@@ -49,6 +49,7 @@ codex-hooks = { workspace = true }
 codex-otel = { workspace = true }
 codex-plugin = { workspace = true }
 codex-shell-command = { workspace = true }
+codex-secrets = { workspace = true }
 codex-skills-extension = { workspace = true }
 codex-utils-cli = { workspace = true }
 codex-utils-pty = { workspace = true }
@@ -63,6 +64,7 @@ codex-memories-write = { workspace = true }
 codex-mcp = { workspace = true }
 codex-mcp-extension = { workspace = true }
 codex-model-provider = { workspace = true }
+codex-model-provider-info = { workspace = true }
 codex-models-manager = { workspace = true }
 codex-protocol = { workspace = true }
 codex-app-server-protocol = { workspace = true }
@@ -110,7 +112,6 @@ axum = { workspace = true, default-features = false, features = [
     "tokio",
 ] }
 base64 = { workspace = true }
-codex-model-provider-info = { workspace = true }
 codex-utils-cargo-bin = { workspace = true }
 core_test_support = { workspace = true }
 flate2 = { workspace = true }

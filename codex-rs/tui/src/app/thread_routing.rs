@@ -861,6 +861,20 @@ impl App {
             self.apply_thread_settings_to_cached_session(thread_id, &notification.thread_settings)
                 .await;
         }
+        if let ServerNotification::ThreadNoteUpdated(notification) = &notification {
+            self.agent_navigation.update_thread_detail(
+                thread_id,
+                AgentPickerThreadDetail {
+                    agent_path: None,
+                    prompt_preview: None,
+                    thread_note: notification.thread_note.clone(),
+                    cwd: None,
+                    model_provider: None,
+                    created_at: None,
+                    updated_at: None,
+                },
+            );
+        }
         let inferred_session = self
             .infer_session_for_thread_notification(thread_id, &notification)
             .await;
@@ -980,6 +994,14 @@ impl App {
             notification.thread.agent_nickname.clone(),
             notification.thread.agent_role.clone(),
             /*is_closed*/ false,
+        );
+        self.update_agent_picker_thread_detail_from_thread(thread_id, &notification.thread);
+        self.update_agent_picker_thread_session_detail(thread_id, &session);
+        self.agent_navigation.set_status(
+            thread_id,
+            crate::multi_agents::AgentPickerThreadStatus::from_thread_status(
+                &notification.thread.status,
+            ),
         );
         Some(session)
     }
@@ -1418,6 +1440,7 @@ impl App {
         match event {
             ThreadBufferedEvent::Notification(notification) => {
                 self.cache_collab_receiver_threads_for_notification(&notification);
+                self.cache_agent_picker_status_for_notification(&notification);
                 self.chat_widget
                     .handle_server_notification(notification, /*replay_kind*/ None);
             }
@@ -1440,6 +1463,23 @@ impl App {
         if needs_refresh {
             self.refresh_status_line();
         }
+    }
+
+    fn cache_agent_picker_status_for_notification(&mut self, notification: &ServerNotification) {
+        let ServerNotification::ThreadStatusChanged(notification) = notification else {
+            return;
+        };
+        let Ok(thread_id) = ThreadId::from_string(&notification.thread_id) else {
+            tracing::warn!(
+                thread_id = notification.thread_id,
+                "ignoring status update with invalid thread id during agent picker caching"
+            );
+            return;
+        };
+        let status =
+            crate::multi_agents::AgentPickerThreadStatus::from_thread_status(&notification.status);
+        self.agent_navigation.set_status(thread_id, status);
+        self.sync_active_agent_label();
     }
 
     pub(super) fn handle_thread_event_replay(&mut self, event: ThreadBufferedEvent) {

@@ -40,6 +40,7 @@ pub(crate) struct CustomPromptView {
     textarea_state: RefCell<TextAreaState>,
     paste_burst: PasteBurst,
     completion: Option<ViewCompletion>,
+    sensitive: bool,
 }
 
 impl CustomPromptView {
@@ -65,7 +66,20 @@ impl CustomPromptView {
             textarea_state: RefCell::new(TextAreaState::default()),
             paste_burst: PasteBurst::default(),
             completion: None,
+            sensitive: false,
         }
+    }
+
+    pub(crate) fn new_sensitive(
+        title: String,
+        placeholder: String,
+        initial_text: String,
+        context_label: Option<String>,
+        on_submit: PromptSubmitted,
+    ) -> Self {
+        let mut view = Self::new(title, placeholder, initial_text, context_label, on_submit);
+        view.sensitive = true;
+        view
     }
 
     fn handle_key_event_at(&mut self, key_event: KeyEvent, now: Instant) {
@@ -231,8 +245,18 @@ impl Renderable for CustomPromptView {
                     width: input_area.width.saturating_sub(2),
                     height: text_area_height,
                 };
-                let mut state = self.textarea_state.borrow_mut();
-                StatefulWidgetRef::render_ref(&(&self.textarea), textarea_rect, buf, &mut state);
+                if self.sensitive && !self.textarea.text().is_empty() {
+                    let masked = "*".repeat(self.textarea.text().chars().count());
+                    Paragraph::new(Line::from(masked)).render(textarea_rect, buf);
+                } else {
+                    let mut state = self.textarea_state.borrow_mut();
+                    StatefulWidgetRef::render_ref(
+                        &(&self.textarea),
+                        textarea_rect,
+                        buf,
+                        &mut state,
+                    );
+                }
                 if self.textarea.text().is_empty() {
                     Paragraph::new(Line::from(self.placeholder.clone().dim()))
                         .render(textarea_rect, buf);
@@ -267,6 +291,9 @@ impl Renderable for CustomPromptView {
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         if area.height < 2 || area.width <= 2 {
+            return None;
+        }
+        if self.sensitive {
             return None;
         }
         let text_area_height = self.input_height(area.width).saturating_sub(1);

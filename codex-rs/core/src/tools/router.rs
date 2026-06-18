@@ -34,6 +34,29 @@ pub struct ToolCall {
 pub struct ToolRouter {
     registry: ToolRegistry,
     model_visible_specs: Vec<ToolSpec>,
+    tool_selection_diagnostics: ToolSelectionDiagnostics,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ToolSelectionDiagnostics {
+    pub(crate) unmatched_allowed_tools: Vec<String>,
+    pub(crate) catalog_entries: Vec<ToolSelectionCatalogEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ToolSelectionCatalogEntry {
+    pub(crate) name: String,
+    pub(crate) selected: bool,
+    pub(crate) exposure: ToolSelectionCatalogExposure,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ToolSelectionCatalogExposure {
+    Direct,
+    Deferred,
+    DirectModelOnly,
+    Hidden,
+    Hosted,
 }
 
 pub(crate) struct ToolRouterParams<'a> {
@@ -49,15 +72,33 @@ impl ToolRouter {
         build_tool_router(turn_context, params)
     }
 
+    #[cfg(test)]
     pub(crate) fn from_parts(registry: ToolRegistry, model_visible_specs: Vec<ToolSpec>) -> Self {
         Self {
             registry,
             model_visible_specs,
+            tool_selection_diagnostics: ToolSelectionDiagnostics::default(),
+        }
+    }
+
+    pub(crate) fn from_parts_with_diagnostics(
+        registry: ToolRegistry,
+        model_visible_specs: Vec<ToolSpec>,
+        tool_selection_diagnostics: ToolSelectionDiagnostics,
+    ) -> Self {
+        Self {
+            registry,
+            model_visible_specs,
+            tool_selection_diagnostics,
         }
     }
 
     pub fn model_visible_specs(&self) -> Vec<ToolSpec> {
         self.model_visible_specs.clone()
+    }
+
+    pub(crate) fn tool_selection_diagnostics(&self) -> &ToolSelectionDiagnostics {
+        &self.tool_selection_diagnostics
     }
 
     #[cfg(test)]

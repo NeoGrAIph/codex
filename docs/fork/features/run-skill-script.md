@@ -3,7 +3,7 @@
 ## Feature passport
 
 - Code name: `run-skill-script`
-- Status: первая итерация переноса на `fork/140` реализована в `feature/140/tools-mcp-skills`.
+- Status: первая итерация переноса на `fork/140` реализована и локально проверена.
 - Goal: дать agents инструмент запуска helper scripts из enabled skills через native unified exec path.
 - Scope in: `run_skill_script` spec/handler, enabled skill resolution, local `scripts/` path validation, unified exec delegation, docs, focused tests.
 - Scope out: новая система skills, plugin installation, remote/non-local skill filesystem execution, отдельные permission knobs, app-server protocol/schema changes.
@@ -53,4 +53,5 @@ Current upstream skills/plugin architecture не имеет dedicated script exe
 
 ## Doc changelog
 
+- 2026-06-18: Актуализирован verification evidence для `fork/140`: `cargo check -p codex-core` и focused `codex-core` MCP/run_skill pass 15/15.
 - 2026-06-17: Зафиксирована первая `fork/140` итерация: `run_skill_script` validates enabled local skill scripts, rejects non-primary/remote environments, preserves Bash hook lifecycle on the outer tool dispatch and delegates execution to unified exec.

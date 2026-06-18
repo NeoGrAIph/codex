@@ -58,6 +58,12 @@ pub(super) async fn read_thread(
             if thread.name.is_some() {
                 rollout_thread.name = thread.name;
             }
+            rollout_thread.source = thread.source;
+            rollout_thread.thread_source = thread.thread_source;
+            rollout_thread.agent_nickname = thread.agent_nickname;
+            rollout_thread.agent_role = thread.agent_role;
+            rollout_thread.agent_path = thread.agent_path;
+            rollout_thread.thread_note = thread.thread_note;
             rollout_thread.git_info = thread.git_info;
             rollout_thread.permission_profile = permission_profile_from_metadata_value(
                 &metadata_sandbox_policy,
@@ -323,6 +329,10 @@ async fn stored_thread_from_sqlite_metadata(
         .unwrap_or_default();
     let permission_profile =
         permission_profile_from_metadata_value(&metadata.sandbox_policy, metadata.cwd.as_path());
+    let source = parse_session_source(&metadata.source);
+    let thread_note = source
+        .get_thread_note()
+        .or_else(|| session_meta.and_then(|meta| meta.thread_note));
     StoredThread {
         thread_id: metadata.id,
         extra_config: None,
@@ -343,12 +353,12 @@ async fn stored_thread_from_sqlite_metadata(
         archived_at: metadata.archived_at,
         cwd: metadata.cwd,
         cli_version: metadata.cli_version,
-        source: parse_session_source(&metadata.source),
+        source,
         thread_source: metadata.thread_source,
         agent_nickname: metadata.agent_nickname,
         agent_role: metadata.agent_role,
         agent_path: metadata.agent_path,
-        thread_note: None,
+        thread_note,
         git_info: git_info_from_parts(
             metadata.git_sha,
             metadata.git_branch,

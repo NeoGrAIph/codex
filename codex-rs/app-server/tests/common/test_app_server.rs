@@ -12,6 +12,7 @@ use tokio::process::ChildStdin;
 use tokio::process::ChildStdout;
 
 use anyhow::Context;
+use codex_app_server_protocol::AgentRoleToolSelectionCatalogReadParams;
 use codex_app_server_protocol::AppsListParams;
 use codex_app_server_protocol::CancelLoginAccountParams;
 use codex_app_server_protocol::ClientInfo;
@@ -56,7 +57,11 @@ use codex_app_server_protocol::McpResourceReadParams;
 use codex_app_server_protocol::McpServerToolCallParams;
 use codex_app_server_protocol::MockExperimentalMethodParams;
 use codex_app_server_protocol::ModelListParams;
+use codex_app_server_protocol::ModelProviderAuthRemoveParams;
+use codex_app_server_protocol::ModelProviderAuthWriteParams;
 use codex_app_server_protocol::ModelProviderCapabilitiesReadParams;
+use codex_app_server_protocol::ModelProviderConfigWriteParams;
+use codex_app_server_protocol::ModelProviderListParams;
 use codex_app_server_protocol::PermissionProfileListParams;
 use codex_app_server_protocol::PluginInstallParams;
 use codex_app_server_protocol::PluginInstalledParams;
@@ -127,6 +132,8 @@ pub struct TestAppServer {
 pub const DEFAULT_CLIENT_NAME: &str = "codex-app-server-tests";
 pub const DISABLE_PLUGIN_STARTUP_TASKS_ARG: &str = "--disable-plugin-startup-tasks-for-tests";
 const DISABLE_MANAGED_CONFIG_ENV_VAR: &str = "CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG";
+const FIXED_SECRETS_KEYRING_PASSPHRASE_ENV_VAR: &str =
+    "CODEX_SECRETS_FIXED_KEYRING_PASSPHRASE_FOR_TESTS";
 
 impl TestAppServer {
     pub async fn wait_for_exit(&mut self) -> std::io::Result<ExitStatus> {
@@ -226,6 +233,10 @@ impl TestAppServer {
         cmd.env(
             "CODEX_APP_SERVER_MANAGED_CONFIG_PATH",
             codex_home.join("managed_config.toml"),
+        );
+        cmd.env(
+            FIXED_SECRETS_KEYRING_PASSPHRASE_ENV_VAR,
+            "codex-app-server-tests-local-secrets-key",
         );
         cmd.env_remove(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR);
         cmd.args(args);
@@ -614,6 +625,48 @@ impl TestAppServer {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("modelProvider/capabilities/read", params)
             .await
+    }
+
+    pub async fn send_model_provider_list_request(
+        &mut self,
+        params: ModelProviderListParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("modelProvider/list", params).await
+    }
+
+    pub async fn send_agent_role_tool_selection_catalog_read_request(
+        &mut self,
+        params: AgentRoleToolSelectionCatalogReadParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agentRole/toolSelectionCatalog/read", params)
+            .await
+    }
+
+    pub async fn send_model_provider_config_write_request(
+        &mut self,
+        params: ModelProviderConfigWriteParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("modelProvider/config/write", params)
+            .await
+    }
+
+    pub async fn send_model_provider_auth_write_request(
+        &mut self,
+        params: ModelProviderAuthWriteParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("modelProvider/auth/write", params).await
+    }
+
+    pub async fn send_model_provider_auth_remove_request(
+        &mut self,
+        params: ModelProviderAuthRemoveParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("modelProvider/auth/remove", params).await
     }
 
     /// Send an `experimentalFeature/list` JSON-RPC request.

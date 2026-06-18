@@ -422,6 +422,7 @@ mod tests {
             cwd: test_path_buf("/tmp/read").abs(),
             cli_version: "0.0.0".to_string(),
             source: codex_app_server_protocol::SessionSource::Unknown,
+            thread_note: None,
             thread_source: None,
             agent_nickname: None,
             agent_role: None,

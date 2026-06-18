@@ -66,6 +66,7 @@ async fn handle_resume_agent(
                 receiver_thread_id,
                 receiver_agent_nickname: receiver_agent.agent_nickname.clone(),
                 receiver_agent_role: receiver_agent.agent_role.clone(),
+                receiver_agent_thread_note: receiver_agent.thread_note.clone(),
             }
             .into(),
         )
@@ -122,6 +123,7 @@ async fn handle_resume_agent(
                 receiver_thread_id,
                 receiver_agent_nickname: receiver_agent.agent_nickname,
                 receiver_agent_role: receiver_agent.agent_role,
+                receiver_agent_thread_note: receiver_agent.thread_note,
                 status: status.clone(),
             }
             .into(),

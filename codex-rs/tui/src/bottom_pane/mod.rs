@@ -118,6 +118,8 @@ pub(crate) use list_selection_view::SideContentWidth;
 pub(crate) use list_selection_view::popup_content_width;
 pub(crate) use list_selection_view::side_by_side_layout_widths;
 pub(crate) use memories_settings_view::MemoriesSettingsView;
+pub(crate) use multi_select_picker::MultiSelectItem;
+pub(crate) use multi_select_picker::MultiSelectPicker;
 use slash_commands::ServiceTierCommand;
 mod feedback_view;
 mod hooks_browser_view;

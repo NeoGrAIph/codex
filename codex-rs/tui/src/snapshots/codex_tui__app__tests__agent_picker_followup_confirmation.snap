@@ -1,0 +1,12 @@
+---
+source: tui/src/app/tests.rs
+expression: rendered.clone()
+---
+  Start a follow-up turn?
+  Robie [explorer] · /root/worker
+
+› 1. Cancel             Do not start a follow-up turn.
+  2. > Start follow-up  Queue an encrypted follow-up and start this agent when capacity is
+                        available.
+
+  Press enter to confirm or esc to go back

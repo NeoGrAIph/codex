@@ -45,6 +45,7 @@ use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTask
 use crate::tools::handlers::multi_agents_v2::InterruptAgentHandler;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
+use crate::tools::handlers::multi_agents_v2::SetThreadNoteHandler as SetThreadNoteHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
@@ -57,6 +58,9 @@ use crate::tools::registry::ToolRegistry;
 use crate::tools::registry::override_tool_exposure;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
+use crate::tools::router::ToolSelectionCatalogEntry;
+use crate::tools::router::ToolSelectionCatalogExposure;
+use crate::tools::router::ToolSelectionDiagnostics;
 use codex_features::Feature;
 use codex_login::AuthManager;
 use codex_mcp::ToolInfo;
@@ -98,7 +102,7 @@ const IMAGEGEN_TOOL_NAME: &str = "imagegen";
 
 type PlannedRuntime = Arc<dyn CoreToolRuntime>;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct PlannedTools {
     runtimes: Vec<PlannedRuntime>,
     hosted_specs: Vec<ToolSpec>,
@@ -157,15 +161,20 @@ pub(crate) fn build_tool_router(
     turn_context: &TurnContext,
     params: ToolRouterParams<'_>,
 ) -> ToolRouter {
-    let (model_visible_specs, registry) = build_tool_specs_and_registry(turn_context, params);
-    ToolRouter::from_parts(registry, model_visible_specs)
+    let (model_visible_specs, registry, tool_selection_diagnostics) =
+        build_tool_specs_and_registry(turn_context, params);
+    ToolRouter::from_parts_with_diagnostics(
+        registry,
+        model_visible_specs,
+        tool_selection_diagnostics,
+    )
 }
 
 #[instrument(level = "trace", skip_all)]
 fn build_tool_specs_and_registry(
     turn_context: &TurnContext,
     params: ToolRouterParams<'_>,
-) -> (Vec<ToolSpec>, ToolRegistry) {
+) -> (Vec<ToolSpec>, ToolRegistry, ToolSelectionDiagnostics) {
     let ToolRouterParams {
         mcp_tools,
         deferred_mcp_tools,
@@ -187,16 +196,133 @@ fn build_tool_specs_and_registry(
     };
     let mut planned_tools = PlannedTools::default();
     add_tool_sources(&context, &mut planned_tools);
+    let mut catalog_tools = planned_tools.clone();
+    append_tool_search_executor(&context, &mut catalog_tools);
+    prepend_code_mode_executors(&context, &mut catalog_tools);
+    let catalog_entries = tool_selection_catalog_entries(
+        turn_context.config.tool_selection.allowed.as_ref(),
+        &catalog_tools,
+    );
+
+    apply_tool_selection_policy(turn_context, &mut planned_tools);
     append_tool_search_executor(&context, &mut planned_tools);
     prepend_code_mode_executors(&context, &mut planned_tools);
-    build_model_visible_specs_and_registry(turn_context, planned_tools)
+    let tool_selection_diagnostics =
+        tool_selection_diagnostics(turn_context, &planned_tools, catalog_entries);
+    apply_tool_selection_policy(turn_context, &mut planned_tools);
+    build_model_visible_specs_and_registry(turn_context, planned_tools, tool_selection_diagnostics)
+}
+
+fn apply_tool_selection_policy(turn_context: &TurnContext, planned_tools: &mut PlannedTools) {
+    let Some(allowed_tools) = turn_context.config.tool_selection.allowed.as_ref() else {
+        return;
+    };
+
+    planned_tools
+        .runtimes
+        .retain(|runtime| allowed_tools.contains(&runtime.tool_name()));
+    planned_tools
+        .hosted_specs
+        .retain(|spec| allowed_tools.contains(&ToolName::plain(spec.name())));
+}
+
+fn tool_selection_diagnostics(
+    turn_context: &TurnContext,
+    planned_tools: &PlannedTools,
+    catalog_entries: Vec<ToolSelectionCatalogEntry>,
+) -> ToolSelectionDiagnostics {
+    let allowed_tools = turn_context.config.tool_selection.allowed.as_ref();
+
+    ToolSelectionDiagnostics {
+        unmatched_allowed_tools: allowed_tools
+            .map(|allowed_tools| stale_tool_selection_entries(allowed_tools, planned_tools))
+            .unwrap_or_default(),
+        catalog_entries,
+    }
+}
+
+fn tool_selection_catalog_entries(
+    allowed_tools: Option<&HashSet<ToolName>>,
+    planned_tools: &PlannedTools,
+) -> Vec<ToolSelectionCatalogEntry> {
+    let mut entries = BTreeMap::new();
+    for runtime in planned_tools.runtimes() {
+        let tool_name = runtime.tool_name();
+        let name = format_tool_selection_name(&tool_name);
+        entries
+            .entry(name.clone())
+            .or_insert(ToolSelectionCatalogEntry {
+                selected: allowed_tools
+                    .is_none_or(|allowed_tools| allowed_tools.contains(&tool_name)),
+                name,
+                exposure: catalog_exposure(runtime.exposure()),
+            });
+    }
+    for spec in &planned_tools.hosted_specs {
+        let tool_name = ToolName::plain(spec.name());
+        let name = format_tool_selection_name(&tool_name);
+        entries
+            .entry(name.clone())
+            .or_insert(ToolSelectionCatalogEntry {
+                selected: allowed_tools
+                    .is_none_or(|allowed_tools| allowed_tools.contains(&tool_name)),
+                name,
+                exposure: ToolSelectionCatalogExposure::Hosted,
+            });
+    }
+    entries.into_values().collect()
+}
+
+fn catalog_exposure(exposure: ToolExposure) -> ToolSelectionCatalogExposure {
+    match exposure {
+        ToolExposure::Direct => ToolSelectionCatalogExposure::Direct,
+        ToolExposure::Deferred => ToolSelectionCatalogExposure::Deferred,
+        ToolExposure::DirectModelOnly => ToolSelectionCatalogExposure::DirectModelOnly,
+        ToolExposure::Hidden => ToolSelectionCatalogExposure::Hidden,
+    }
+}
+
+fn stale_tool_selection_entries(
+    allowed_tools: &HashSet<ToolName>,
+    planned_tools: &PlannedTools,
+) -> Vec<String> {
+    let available_tools = available_tool_selection_names(planned_tools);
+    let mut stale_tools = allowed_tools
+        .iter()
+        .filter(|tool_name| !available_tools.contains(*tool_name))
+        .map(format_tool_selection_name)
+        .collect::<Vec<_>>();
+    stale_tools.sort();
+    stale_tools
+}
+
+fn available_tool_selection_names(planned_tools: &PlannedTools) -> HashSet<ToolName> {
+    planned_tools
+        .runtimes()
+        .iter()
+        .map(|runtime| runtime.tool_name())
+        .chain(
+            planned_tools
+                .hosted_specs
+                .iter()
+                .map(|spec| ToolName::plain(spec.name())),
+        )
+        .collect()
+}
+
+fn format_tool_selection_name(tool_name: &ToolName) -> String {
+    match tool_name.namespace.as_deref() {
+        Some(namespace) => format!("{namespace}/{}", tool_name.name),
+        None => tool_name.name.clone(),
+    }
 }
 
 #[instrument(level = "trace", skip_all)]
 fn build_model_visible_specs_and_registry(
     turn_context: &TurnContext,
     planned_tools: PlannedTools,
-) -> (Vec<ToolSpec>, ToolRegistry) {
+    tool_selection_diagnostics: ToolSelectionDiagnostics,
+) -> (Vec<ToolSpec>, ToolRegistry, ToolSelectionDiagnostics) {
     let PlannedTools {
         runtimes,
         hosted_specs,
@@ -230,7 +356,7 @@ fn build_model_visible_specs_and_registry(
         })
         .collect();
 
-    (model_visible_specs, registry)
+    (model_visible_specs, registry, tool_selection_diagnostics)
 }
 
 fn spec_for_model_request(
@@ -757,6 +883,10 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
             ));
             planned_tools.add_arc(override_tool_exposure(
                 multi_agent_v2_handler(ListAgentsHandlerV2, tool_namespace),
+                exposure,
+            ));
+            planned_tools.add_arc(override_tool_exposure(
+                multi_agent_v2_handler(SetThreadNoteHandlerV2, tool_namespace),
                 exposure,
             ));
         } else {

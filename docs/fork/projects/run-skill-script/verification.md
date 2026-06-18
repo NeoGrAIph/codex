@@ -3,8 +3,17 @@
 ## Required checks
 
 - `cargo check -p codex-core`: verifies spec/handler wiring and unified exec delegation compile.
-- `just test -p codex-core run_skill_script`: verifies tool planning, handler unit coverage, hook payload behavior and real helper execution through unified exec.
+- `just test -p codex-core run_skill_script_rejects_symlink_escape_from_scripts_dir script_rejects_path_traversal command_quotes_script_arguments run_skill_script_rejects_non_primary_environment_id run_skill_script_rejects_remote_primary_environment run_skill_script_rejects_missing_skill run_skill_script_rejects_disabled_skill pre_tool_use_payload_uses_resolved_script_command hook_rewrite_updates_delegated_command post_tool_use_payload_uses_unified_exec_output run_skill_script_executes_enabled_skill_helper_through_unified_exec`: verifies tool planning, handler unit coverage, hook payload behavior and real helper execution through unified exec.
 - `git diff --check`: verifies no whitespace errors.
+
+## Verification log
+
+| Date | Command | Result | Notes |
+| --- | --- | --- | --- |
+| 2026-06-18 | `cargo check -p codex-core` | passed | Подтверждает compile path для spec/handler wiring и unified exec delegation. |
+| 2026-06-18 | `just test -p codex-core mcp_and_tool_search_follow_direct_and_deferred_tool_exposure groups_tools_by_server_with_canonical_names limits_tools_per_server_and_reports_truncation run_skill_script environment_count_controls_environment_backed_tools environment_id_is_only_present_for_multiple_environments run_skill_script_executes_enabled_skill_helper_through_unified_exec` | 15/15 passed | Совместный focused pass для MCP discovery и `run_skill_script`; `run_skill_script` assertions покрывают environment gating, path validation, hooks, command rewrite и real helper execution. |
+| 2026-06-18 | `just test -p codex-core run_skill_script_rejects_symlink_escape_from_scripts_dir`; `just test -p codex-core run_skill_script_rejects_symlink_escape_from_scripts_dir script_rejects_path_traversal command_quotes_script_arguments run_skill_script_rejects_non_primary_environment_id run_skill_script_rejects_remote_primary_environment` | passed: 1/1 and 5/5 | Focused Unix-only regression for canonical script containment: a symlink under `scripts/` that resolves outside the scripts directory fails before exec delegation; existing traversal, quoting and environment rejection coverage still passes. |
+| 2026-06-18 | `just test -p codex-core mcp_and_tool_search_follow_direct_and_deferred_tool_exposure groups_tools_by_server_with_canonical_names limits_tools_per_server_and_reports_truncation run_skill_script_rejects_symlink_escape_from_scripts_dir script_rejects_path_traversal command_quotes_script_arguments run_skill_script_rejects_non_primary_environment_id run_skill_script_rejects_remote_primary_environment run_skill_script_rejects_missing_skill run_skill_script_rejects_disabled_skill pre_tool_use_payload_uses_resolved_script_command hook_rewrite_updates_delegated_command post_tool_use_payload_uses_unified_exec_output run_skill_script_executes_enabled_skill_helper_through_unified_exec environment_count_controls_environment_backed_tools environment_id_is_only_present_for_multiple_environments` | 16/16 passed | Current-state smoke confirms `run_skill_script` still uses native unified exec, rejects traversal/symlink escapes and non-primary/remote environments, and preserves Bash hook payload/rewrite behavior. |
 
 ## Scenarios
 
@@ -15,6 +24,7 @@
 | Remote primary environment | Handler rejects execution before host-path validation can be reused against another filesystem. | `run_skill_script_rejects_remote_primary_environment` |
 | Missing or disabled skill | Handler rejects before exec delegation. | `run_skill_script_rejects_missing_skill`, `run_skill_script_rejects_disabled_skill` |
 | Path traversal | `../` script paths are rejected before exec delegation. | `script_rejects_path_traversal` |
+| Symlink escape | On Unix, a script symlink under `scripts/` that resolves outside the scripts directory is rejected before exec delegation. | `run_skill_script_rejects_symlink_escape_from_scripts_dir` |
 | Shell quoting | Script path and args are quoted before being passed to `exec_command`. | `command_quotes_script_arguments` |
 | PreToolUse hook payload | Outer `run_skill_script` registry dispatch exposes Bash `{ "command": ... }`. | `pre_tool_use_payload_uses_resolved_script_command` |
 | PreToolUse hook rewrite | Hook-updated Bash command becomes the delegated exec command. | `hook_rewrite_updates_delegated_command` |

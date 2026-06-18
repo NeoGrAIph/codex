@@ -1,16 +1,19 @@
 use anyhow::Result;
 use app_test_support::TestAppServer;
 use app_test_support::create_fake_rollout;
+use app_test_support::create_fake_rollout_with_source;
 use app_test_support::create_mock_responses_server_repeating_assistant;
 use app_test_support::rollout_path;
 use app_test_support::to_response;
 use codex_app_server_protocol::GitInfo;
 use codex_app_server_protocol::JSONRPCError;
+use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadMetadataGitInfoUpdateParams;
 use codex_app_server_protocol::ThreadMetadataUpdateParams;
 use codex_app_server_protocol::ThreadMetadataUpdateResponse;
+use codex_app_server_protocol::ThreadNoteUpdatedNotification;
 use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadResumeParams;
@@ -22,6 +25,8 @@ use codex_core::ARCHIVED_SESSIONS_SUBDIR;
 use codex_git_utils::GitSha;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::GitInfo as RolloutGitInfo;
+use codex_protocol::protocol::SessionSource as CoreSessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_rollout::state_db::reconcile_rollout;
 use codex_state::StateRuntime;
 use pretty_assertions::assert_eq;
@@ -34,6 +39,16 @@ use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
+
+fn thread_note_from_source(source: &codex_app_server_protocol::SessionSource) -> Option<String> {
+    match source {
+        codex_app_server_protocol::SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            thread_note,
+            ..
+        }) => thread_note.clone(),
+        _ => None,
+    }
+}
 
 #[tokio::test]
 async fn thread_metadata_update_patches_git_branch_and_returns_updated_thread() -> Result<()> {
@@ -65,6 +80,7 @@ async fn thread_metadata_update_patches_git_branch_and_returns_updated_thread() 
                 branch: Some(Some("feature/sidebar-pr".to_string())),
                 origin_url: None,
             }),
+            thread_note: None,
         })
         .await?;
     let update_resp: JSONRPCResponse = timeout(
@@ -131,6 +147,155 @@ async fn thread_metadata_update_patches_git_branch_and_returns_updated_thread() 
 }
 
 #[tokio::test]
+async fn thread_metadata_update_patches_thread_note_through_source_metadata() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let parent_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")?;
+    let thread_id = create_fake_rollout_with_source(
+        codex_home.path(),
+        "2025-01-05T13-00-00",
+        "2025-01-05T13:00:00Z",
+        "Sub-agent thread preview",
+        Some("mock_provider"),
+        /*git_info*/ None,
+        CoreSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+            thread_note: None,
+        }),
+    )?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let update_id = mcp
+        .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
+            thread_id: thread_id.clone(),
+            git_info: None,
+            thread_note: Some(Some("  Inspect parser state  ".to_string())),
+        })
+        .await?;
+    let update_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(update_id)),
+    )
+    .await??;
+    let ThreadMetadataUpdateResponse { thread: updated } =
+        to_response::<ThreadMetadataUpdateResponse>(update_resp)?;
+    let notification: JSONRPCNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/note/updated"),
+    )
+    .await??;
+    let notification: ThreadNoteUpdatedNotification = serde_json::from_value(
+        notification
+            .params
+            .expect("thread/note/updated should include params"),
+    )?;
+    assert_eq!(notification.thread_id, thread_id);
+    assert_eq!(
+        notification.thread_note.as_deref(),
+        Some("Inspect parser state")
+    );
+    assert_eq!(
+        thread_note_from_source(&updated.source).as_deref(),
+        Some("Inspect parser state")
+    );
+    assert_eq!(updated.thread_note.as_deref(), Some("Inspect parser state"));
+
+    let clear_id = mcp
+        .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
+            thread_id: thread_id.clone(),
+            git_info: None,
+            thread_note: Some(None),
+        })
+        .await?;
+    let clear_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(clear_id)),
+    )
+    .await??;
+    let ThreadMetadataUpdateResponse { thread: cleared } =
+        to_response::<ThreadMetadataUpdateResponse>(clear_resp)?;
+    let clear_notification: JSONRPCNotification = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("thread/note/updated"),
+    )
+    .await??;
+    let clear_notification: ThreadNoteUpdatedNotification = serde_json::from_value(
+        clear_notification
+            .params
+            .expect("thread/note/updated should include params"),
+    )?;
+    assert_eq!(clear_notification.thread_id, thread_id);
+    assert_eq!(clear_notification.thread_note, None);
+    assert_eq!(thread_note_from_source(&cleared.source), None);
+    assert_eq!(cleared.thread_note, None);
+
+    let read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id,
+            include_turns: false,
+        })
+        .await?;
+    let read_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(read_id)),
+    )
+    .await??;
+    let ThreadReadResponse { thread: read, .. } = to_response::<ThreadReadResponse>(read_resp)?;
+    assert_eq!(thread_note_from_source(&read.source), None);
+    assert_eq!(read.thread_note, None);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_metadata_update_rejects_thread_note_over_500_chars() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+
+    let thread_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T14-00-00",
+        "2025-01-05T14:00:00Z",
+        "Thread preview",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let update_id = mcp
+        .send_thread_metadata_update_request(ThreadMetadataUpdateParams {
+            thread_id,
+            git_info: None,
+            thread_note: Some(Some("x".repeat(501))),
+        })
+        .await?;
+    let update_err: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(update_id)),
+    )
+    .await??;
+
+    assert_eq!(update_err.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        update_err.error.message,
+        "thread_note must be at most 500 characters"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_metadata_update_rejects_empty_git_info_patch() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
@@ -160,6 +325,7 @@ async fn thread_metadata_update_rejects_empty_git_info_patch() -> Result<()> {
                 branch: None,
                 origin_url: None,
             }),
+            thread_note: None,
         })
         .await?;
     let update_err: JSONRPCError = timeout(
@@ -207,6 +373,7 @@ async fn thread_metadata_update_rejects_ephemeral_thread() -> Result<()> {
                 branch: Some(Some("feature/ephemeral".to_string())),
                 origin_url: None,
             }),
+            thread_note: None,
         })
         .await?;
     let update_err: JSONRPCError = timeout(
@@ -255,6 +422,7 @@ async fn thread_metadata_update_repairs_missing_sqlite_row_for_stored_thread() -
                 branch: Some(Some("feature/stored-thread".to_string())),
                 origin_url: None,
             }),
+            thread_note: None,
         })
         .await?;
     let update_resp: JSONRPCResponse = timeout(
@@ -335,6 +503,7 @@ async fn thread_metadata_update_repairs_loaded_thread_without_resetting_summary(
                 branch: Some(Some("feature/loaded-thread".to_string())),
                 origin_url: None,
             }),
+            thread_note: None,
         })
         .await?;
     let update_resp: JSONRPCResponse = timeout(
@@ -398,6 +567,7 @@ async fn thread_metadata_update_repairs_missing_sqlite_row_for_archived_thread()
                 branch: Some(Some("feature/archived-thread".to_string())),
                 origin_url: None,
             }),
+            thread_note: None,
         })
         .await?;
     let update_resp: JSONRPCResponse = timeout(
@@ -454,6 +624,7 @@ async fn thread_metadata_update_can_clear_stored_git_fields() -> Result<()> {
                 branch: Some(None),
                 origin_url: Some(None),
             }),
+            thread_note: None,
         })
         .await?;
     let update_resp: JSONRPCResponse = timeout(

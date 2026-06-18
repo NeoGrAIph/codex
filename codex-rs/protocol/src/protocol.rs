@@ -2760,6 +2760,24 @@ impl SessionSource {
     }
 }
 
+pub const MAX_THREAD_NOTE_CHARS: usize = 500;
+
+pub fn normalize_thread_note_value(thread_note: Option<String>) -> Result<Option<String>, String> {
+    let Some(thread_note) = thread_note else {
+        return Ok(None);
+    };
+    let note = thread_note.trim().to_string();
+    if note.is_empty() {
+        return Ok(None);
+    }
+    if note.chars().count() > MAX_THREAD_NOTE_CHARS {
+        return Err(format!(
+            "thread_note must be at most {MAX_THREAD_NOTE_CHARS} characters"
+        ));
+    }
+    Ok(Some(note))
+}
+
 impl fmt::Display for SubAgentSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -3891,6 +3909,9 @@ pub struct CollabAgentRef {
     /// Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
     #[serde(default, alias = "agent_type", skip_serializing_if = "Option::is_none")]
     pub agent_role: Option<String>,
+    /// Optional short note assigned to an AgentControl-spawned sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
@@ -3903,6 +3924,9 @@ pub struct CollabAgentStatusEntry {
     /// Optional role (agent_role) assigned to an AgentControl-spawned sub-agent.
     #[serde(default, alias = "agent_type", skip_serializing_if = "Option::is_none")]
     pub agent_role: Option<String>,
+    /// Optional short note assigned to an AgentControl-spawned sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_note: Option<String>,
     /// Last known status of the agent.
     pub status: AgentStatus,
 }
@@ -3923,6 +3947,9 @@ pub struct CollabAgentSpawnEndEvent {
     /// Optional role assigned to the new agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_agent_role: Option<String>,
+    /// Optional short note assigned to the new agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_agent_thread_note: Option<String>,
     /// Initial prompt sent to the agent. Can be empty to prevent CoT leaking at the
     /// beginning.
     pub prompt: String,
@@ -3965,6 +3992,9 @@ pub struct CollabAgentInteractionEndEvent {
     /// Optional role assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_role: Option<String>,
+    /// Optional short note assigned to the receiver agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_agent_thread_note: Option<String>,
     /// Prompt sent from the sender to the receiver. Can be empty to prevent CoT
     /// leaking at the beginning.
     pub prompt: String,
@@ -4051,6 +4081,9 @@ pub struct CollabCloseEndEvent {
     /// Optional role assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_role: Option<String>,
+    /// Optional short note assigned to the receiver agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_agent_thread_note: Option<String>,
     /// Last known status of the receiver agent reported to the sender agent before
     /// the close.
     pub status: AgentStatus,
@@ -4072,6 +4105,9 @@ pub struct CollabResumeBeginEvent {
     /// Optional role assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_role: Option<String>,
+    /// Optional short note assigned to the receiver agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_agent_thread_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
@@ -4090,6 +4126,9 @@ pub struct CollabResumeEndEvent {
     /// Optional role assigned to the receiver agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receiver_agent_role: Option<String>,
+    /// Optional short note assigned to the receiver agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_agent_thread_note: Option<String>,
     /// Last known status of the receiver agent reported to the sender agent after
     /// resume.
     pub status: AgentStatus,

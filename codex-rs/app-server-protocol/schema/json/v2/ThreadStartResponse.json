@@ -253,6 +253,12 @@
         },
         "status": {
           "$ref": "#/definitions/CollabAgentStatus"
+        },
+        "threadNote": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -915,6 +921,13 @@
                 },
                 "parent_thread_id": {
                   "$ref": "#/definitions/ThreadId"
+                },
+                "thread_note": {
+                  "default": null,
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -1074,6 +1087,14 @@
             }
           ],
           "description": "Current runtime status for the thread."
+        },
+        "threadNote": {
+          "default": null,
+          "description": "Optional short note attached to an AgentControl-spawned sub-agent thread.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "threadSource": {
           "anyOf": [

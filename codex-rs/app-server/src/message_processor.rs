@@ -1130,7 +1130,9 @@ impl MessageProcessor {
                     .await
             }
             ClientRequest::ThreadMetadataUpdate { params, .. } => {
-                self.thread_processor.thread_metadata_update(params).await
+                self.thread_processor
+                    .thread_metadata_update(request_id.clone(), params)
+                    .await
             }
             ClientRequest::ThreadSettingsUpdate { params, .. } => {
                 self.turn_processor
@@ -1264,6 +1266,29 @@ impl MessageProcessor {
             ClientRequest::ModelList { params, .. } => {
                 self.catalog_processor.model_list(params).await
             }
+            ClientRequest::ModelProviderList { params, .. } => {
+                self.catalog_processor.model_provider_list(params).await
+            }
+            ClientRequest::AgentRoleToolSelectionCatalogRead { params, .. } => {
+                self.catalog_processor
+                    .agent_role_tool_selection_catalog_read(params)
+                    .await
+            }
+            ClientRequest::ModelProviderConfigWrite { params, .. } => {
+                self.catalog_processor
+                    .model_provider_config_write(params)
+                    .await
+            }
+            ClientRequest::ModelProviderAuthWrite { params, .. } => {
+                self.catalog_processor
+                    .model_provider_auth_write(params)
+                    .await
+            }
+            ClientRequest::ModelProviderAuthRemove { params, .. } => {
+                self.catalog_processor
+                    .model_provider_auth_remove(params)
+                    .await
+            }
             ClientRequest::ExperimentalFeatureList { params, .. } => {
                 self.catalog_processor
                     .experimental_feature_list(params)
@@ -1292,6 +1317,15 @@ impl MessageProcessor {
             }
             ClientRequest::ThreadInjectItems { params, .. } => {
                 self.turn_processor.thread_inject_items(params).await
+            }
+            ClientRequest::AgentMessageSend { params, .. } => {
+                self.thread_processor.agent_message_send(params).await
+            }
+            ClientRequest::AgentFollowupSend { params, .. } => {
+                self.thread_processor.agent_followup_send(params).await
+            }
+            ClientRequest::AgentClose { params, .. } => {
+                self.thread_processor.agent_close(params).await
             }
             ClientRequest::TurnSteer { params, .. } => {
                 self.turn_processor.turn_steer(&request_id, params).await

@@ -138,6 +138,7 @@ use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_rmcp_client::ElicitationAction;
+use codex_tools::ToolSpec;
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
 use core_test_support::context_snapshot;
@@ -1474,6 +1475,137 @@ disabled_tools = [
             ToolSuggestDisabledTool::plugin("slack@openai-curated"),
         ]
     );
+}
+
+#[tokio::test]
+async fn reload_user_config_layer_updates_agent_roles_from_agents_dir() {
+    let (session, _turn_context) = make_session_and_context().await;
+    let codex_home = session.codex_home().await;
+    let agents_dir = codex_home.join("agents");
+    let role_path = agents_dir.join("reviewer.toml");
+    std::fs::create_dir_all(&agents_dir).expect("create agents dir");
+    std::fs::write(
+        &role_path,
+        r#"name = "reviewer"
+description = "Review code changes"
+developer_instructions = "Review code changes and report concrete risks."
+"#,
+    )
+    .expect("write reviewer role");
+    assert!(
+        !session
+            .get_config()
+            .await
+            .agent_roles
+            .contains_key("reviewer")
+    );
+
+    session.reload_user_config_layer().await;
+
+    let config = session.get_config().await;
+    let role = config
+        .agent_roles
+        .get("reviewer")
+        .expect("reviewer role reloaded");
+    assert_eq!(role.description.as_deref(), Some("Review code changes"));
+    assert_eq!(role.config_file.as_deref(), Some(role_path.as_path()));
+}
+
+#[tokio::test]
+async fn reload_user_config_layer_updates_spawn_agent_role_schema_for_next_turn()
+-> anyhow::Result<()> {
+    let session = make_session_with_config(|config| {
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("enable multi-agent v2");
+        config.multi_agent_v2.hide_spawn_agent_metadata = false;
+    })
+    .await?;
+    let codex_home = session.codex_home().await;
+    let agents_dir = codex_home.join("agents");
+    std::fs::create_dir_all(&agents_dir)?;
+    std::fs::write(
+        agents_dir.join("reviewer.toml"),
+        r#"name = "reviewer"
+description = "Review code changes"
+developer_instructions = "Review code changes and report concrete risks."
+"#,
+    )?;
+    assert!(
+        !session
+            .get_config()
+            .await
+            .agent_roles
+            .contains_key("reviewer")
+    );
+
+    session.reload_user_config_layer().await;
+    let turn_context = session.new_default_turn().await;
+    let router = ToolRouter::from_turn_context(
+        &turn_context,
+        crate::tools::router::ToolRouterParams {
+            mcp_tools: None,
+            deferred_mcp_tools: None,
+            discoverable_tools: None,
+            extension_tool_executors: Vec::new(),
+            dynamic_tools: turn_context.dynamic_tools.as_slice(),
+        },
+    );
+    let specs = router.model_visible_specs();
+    let ToolSpec::Function(spawn_agent) = specs
+        .iter()
+        .find(|spec| spec.name() == "spawn_agent")
+        .expect("spawn_agent should be visible")
+    else {
+        panic!("spawn_agent should be a function tool");
+    };
+    let agent_type_description = spawn_agent
+        .parameters
+        .properties
+        .as_ref()
+        .and_then(|properties| properties.get("agent_type"))
+        .and_then(|schema| schema.description.as_deref())
+        .expect("agent_type description should be present");
+
+    assert!(agent_type_description.contains("reviewer: {"));
+    assert!(agent_type_description.contains("Review code changes"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn refresh_runtime_config_updates_agent_roles_from_agents_dir() {
+    let (session, _turn_context) = make_session_and_context().await;
+    let codex_home = session.codex_home().await;
+    let agents_dir = codex_home.join("agents");
+    let role_path = agents_dir.join("reviewer.toml");
+    std::fs::create_dir_all(&agents_dir).expect("create agents dir");
+    std::fs::write(
+        &role_path,
+        r#"name = "reviewer"
+description = "Review code changes"
+developer_instructions = "Review code changes and report concrete risks."
+"#,
+    )
+    .expect("write reviewer role");
+    assert!(
+        !session
+            .get_config()
+            .await
+            .agent_roles
+            .contains_key("reviewer")
+    );
+
+    let next_config = load_latest_config_for_session(&session).await;
+    session.refresh_runtime_config(next_config).await;
+
+    let config = session.get_config().await;
+    let role = config
+        .agent_roles
+        .get("reviewer")
+        .expect("reviewer role refreshed");
+    assert_eq!(role.description.as_deref(), Some("Review code changes"));
+    assert_eq!(role.config_file.as_deref(), Some(role_path.as_path()));
 }
 
 #[tokio::test]
@@ -4529,6 +4661,8 @@ enabled = false
             description: None,
             config_file: Some(role_path.to_path_buf()),
             nickname_candidates: None,
+            metadata_sources: Default::default(),
+            runtime_config_sources: Default::default(),
         },
     );
     crate::agent::role::apply_role_to_config(&mut child_config, Some("custom"))
@@ -7960,6 +8094,53 @@ async fn build_initial_context_emits_thread_start_skill_warning_on_repeated_buil
         EventMsg::Warning(WarningEvent { message })
             if message == "Exceeded skills context budget of 2%. All skill descriptions were removed and 2 additional skills were not included in the model-visible skills list."
     ));
+}
+
+#[tokio::test]
+async fn built_tools_warns_once_for_unavailable_tool_selection_entries() {
+    let (session, turn_context, rx) = make_session_and_context_with_rx().await;
+    let mut turn_context = Arc::into_inner(turn_context).expect("sole thread settings owner");
+    let mut config = (*turn_context.config).clone();
+    config.tool_selection.allowed = Some(
+        [
+            codex_tools::ToolName::plain("update_plan"),
+            codex_tools::ToolName::plain("missing_tool"),
+            codex_tools::ToolName::namespaced("mcp__stale", "lookup"),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    turn_context.config = Arc::new(config);
+
+    let _router = crate::session::turn::built_tools(
+        session.as_ref(),
+        &turn_context,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("tools should build");
+    let warning_event = timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("warning event should arrive")
+        .expect("warning event should be readable");
+    assert!(matches!(
+        warning_event.msg,
+        EventMsg::Warning(WarningEvent { message })
+            if message == "tool_selection.allowed_tools entries are not available in this turn and were ignored: mcp__stale/lookup, missing_tool. They do not grant tool access."
+    ));
+
+    let _router = crate::session::turn::built_tools(
+        session.as_ref(),
+        &turn_context,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("tools should build on repeated call");
+    let repeated_warning = timeout(Duration::from_millis(100), rx.recv()).await;
+    assert!(
+        repeated_warning.is_err(),
+        "tool selection warning should be emitted once per turn"
+    );
 }
 
 #[tokio::test]

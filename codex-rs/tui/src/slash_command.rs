@@ -13,6 +13,12 @@ pub enum SlashCommand {
     // DO NOT ALPHA-SORT! Enum order is presentation order in the popup, so
     // more frequently used commands should be listed first.
     Model,
+    #[strum(
+        to_string = "model-providers",
+        serialize = "providers",
+        serialize = "model_provider"
+    )]
+    ModelProviders,
     Ide,
     Permissions,
     Keymap,
@@ -39,6 +45,7 @@ pub enum SlashCommand {
     Init,
     Compact,
     Plan,
+    Interactive,
     Goal,
     Agent,
     #[strum(to_string = "agent-roles", serialize = "agents")]
@@ -116,11 +123,13 @@ impl SlashCommand {
             SlashCommand::MemoryDrop => "DO NOT USE",
             SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
+            SlashCommand::ModelProviders => "manage model providers and API key status",
             SlashCommand::Ide => {
                 "include current selection, open files, and other context from your IDE"
             }
             SlashCommand::Personality => "choose a communication style for Codex",
             SlashCommand::Plan => "switch to Plan mode",
+            SlashCommand::Interactive => "switch to Interactive mode",
             SlashCommand::Goal => "set or view the goal for a long-running task",
             SlashCommand::Agent | SlashCommand::MultiAgents => "switch the active agent thread",
             SlashCommand::AgentRoles => "manage sub-agent role templates",
@@ -198,6 +207,7 @@ impl SlashCommand {
             | SlashCommand::Init
             | SlashCommand::Compact
             | SlashCommand::Model
+            | SlashCommand::ModelProviders
             | SlashCommand::Personality
             | SlashCommand::Permissions
             | SlashCommand::Keymap
@@ -209,6 +219,7 @@ impl SlashCommand {
             | SlashCommand::Import
             | SlashCommand::Review
             | SlashCommand::Plan
+            | SlashCommand::Interactive
             | SlashCommand::Clear
             | SlashCommand::Logout
             | SlashCommand::MemoryDrop
@@ -316,6 +327,19 @@ mod tests {
         assert_eq!(
             SlashCommand::from_str("agents"),
             Ok(SlashCommand::AgentRoles)
+        );
+    }
+
+    #[test]
+    fn model_provider_aliases_open_model_providers() {
+        assert_eq!(SlashCommand::ModelProviders.command(), "model-providers");
+        assert_eq!(
+            SlashCommand::from_str("providers"),
+            Ok(SlashCommand::ModelProviders)
+        );
+        assert_eq!(
+            SlashCommand::from_str("model_provider"),
+            Ok(SlashCommand::ModelProviders)
         );
     }
 }

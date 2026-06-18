@@ -2374,6 +2374,33 @@ async fn status_line_model_with_reasoning_plan_mode_footer_snapshot() {
 }
 
 #[tokio::test]
+async fn status_line_model_with_reasoning_interactive_mode_footer_snapshot() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
+    chat.show_welcome_banner = false;
+    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+    chat.config.tui_status_line = Some(vec!["model-with-reasoning".to_string()]);
+    chat.set_reasoning_effort(Some(ReasoningEffortConfig::High));
+
+    let interactive_mask = collaboration_modes::interactive_mask(chat.model_catalog.as_ref())
+        .expect("expected interactive collaboration mode");
+    chat.set_collaboration_mask(interactive_mask);
+
+    let width = 80;
+    let height = chat.desired_height(width);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|f| chat.render(f.area(), f.buffer_mut()))
+        .expect("draw interactive-mode footer");
+    assert_chatwidget_snapshot!(
+        "status_line_model_with_reasoning_interactive_mode_footer",
+        normalized_backend_snapshot(terminal.backend())
+    );
+}
+
+#[tokio::test]
 async fn renamed_thread_footer_title_snapshot() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;

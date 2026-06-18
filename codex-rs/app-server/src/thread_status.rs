@@ -904,6 +904,7 @@ mod tests {
             agent_nickname: None,
             agent_role: None,
             source,
+            thread_note: None,
             thread_source: None,
             git_info: None,
             name: None,

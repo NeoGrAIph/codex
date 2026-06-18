@@ -433,6 +433,41 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_skill_script_rejects_symlink_escape_from_scripts_dir() {
+        let root = tempfile::tempdir().expect("create root");
+        let (_skill_dir_guard, script_path) = make_script_skill(root.path());
+        let scripts_dir = script_path.parent().expect("script parent");
+        let outside_dir = root.path().join("outside");
+        std::fs::create_dir_all(&outside_dir).expect("create outside dir");
+        let outside_script = outside_dir.join("escape.sh");
+        std::fs::write(&outside_script, "#!/bin/sh\nprintf escape\n")
+            .expect("write outside script");
+        let symlink_script = scripts_dir.join("escape.sh");
+        std::os::unix::fs::symlink(&outside_script, &symlink_script)
+            .expect("create script symlink");
+
+        let (_turn_guard, mut invocation) = invocation_with_skill(&script_path).await;
+        invocation.payload = ToolPayload::Function {
+            arguments: serde_json::json!({
+                "skill": "demo",
+                "script": "escape.sh",
+            })
+            .to_string(),
+        };
+        let args: RunSkillScriptArgs = parse_arguments(match &invocation.payload {
+            ToolPayload::Function { arguments } => arguments,
+            _ => unreachable!("function payload"),
+        })
+        .expect("parse args");
+
+        let err = resolve_skill_script_invocation(invocation.turn.as_ref(), &args)
+            .expect_err("symlink escape should be rejected");
+
+        assert!(err.to_string().contains("escapes the scripts directory"));
+    }
+
     #[test]
     fn command_quotes_script_arguments() {
         let command = command_for_script(

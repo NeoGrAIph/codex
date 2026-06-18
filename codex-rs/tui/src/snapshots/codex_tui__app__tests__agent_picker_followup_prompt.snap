@@ -1,0 +1,10 @@
+---
+source: tui/src/app/tests.rs
+expression: rendered.clone()
+---
+▌ Follow up with agent
+▌ Robie [explorer] · /root/worker
+▌
+▌ Write the next task for this agent
+
+Press enter to confirm or esc to go back

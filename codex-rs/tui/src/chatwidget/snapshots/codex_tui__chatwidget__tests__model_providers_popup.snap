@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  Model Providers
+  Space toggles /model visibility. Enter opens details. OpenAI is always available.
+
+  Search providers
+› [ ] DeepSeek  env key missing   Space to show in /model; Enter view details.
+
+  space toggle · enter details · esc close

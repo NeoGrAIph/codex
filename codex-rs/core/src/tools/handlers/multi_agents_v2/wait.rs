@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::control::ListedAgent;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
 use crate::turn_timing::now_unix_timestamp_ms;
@@ -83,7 +84,17 @@ impl Handler {
 
         let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
         let timed_out = !wait_for_mailbox_change(&mut mailbox_rx, deadline).await;
-        let result = WaitAgentResult::from_timed_out(timed_out);
+        session
+            .services
+            .agent_control
+            .register_session_root(session.thread_id, turn.parent_thread_id);
+        let agents = session
+            .services
+            .agent_control
+            .list_agents(&turn.session_source, /*path_prefix*/ None)
+            .await
+            .unwrap_or_default();
+        let result = WaitAgentResult::from_timed_out(timed_out, agents);
 
         session
             .send_event(
@@ -119,10 +130,11 @@ struct WaitArgs {
 pub(crate) struct WaitAgentResult {
     pub(crate) message: String,
     pub(crate) timed_out: bool,
+    pub(crate) agents: Vec<ListedAgent>,
 }
 
 impl WaitAgentResult {
-    fn from_timed_out(timed_out: bool) -> Self {
+    fn from_timed_out(timed_out: bool, agents: Vec<ListedAgent>) -> Self {
         let message = if timed_out {
             "Wait timed out."
         } else {
@@ -131,6 +143,7 @@ impl WaitAgentResult {
         Self {
             message: message.to_string(),
             timed_out,
+            agents,
         }
     }
 }

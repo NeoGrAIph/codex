@@ -1553,21 +1553,35 @@ impl Session {
         // layers such as request/session overrides that were present when this session
         // was created.
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
-        let (previous_config, new_config, config) = {
-            let mut state = self.state.lock().await;
+        let (previous_config, previous_config_arc, mut config) = {
+            let state = self.state.lock().await;
             let previous_config = notify_config_contributors
                 .then(|| Self::build_effective_session_config(&state.session_configuration));
-            let mut config = (*state.session_configuration.original_config_do_not_use).clone();
+            let previous_config_arc =
+                Arc::clone(&state.session_configuration.original_config_do_not_use);
+            let mut config = (*previous_config_arc).clone();
             config.config_layer_stack = config
                 .config_layer_stack
                 .with_user_layer_from(&next_config.config_layer_stack);
             config.tool_suggest =
                 resolve_tool_suggest_config_from_layer_stack(&config.config_layer_stack);
-            let config = Arc::new(config);
+            (previous_config, previous_config_arc, config)
+        };
+        if let Err(err) = config.refresh_agent_roles_from_layer_stack().await {
+            warn!("failed to refresh agent roles from config layers: {err}");
+        }
+        let config = Arc::new(config);
+        let new_config = {
+            let mut state = self.state.lock().await;
+            if !Arc::ptr_eq(
+                &state.session_configuration.original_config_do_not_use,
+                &previous_config_arc,
+            ) {
+                return;
+            }
             state.session_configuration.original_config_do_not_use = Arc::clone(&config);
-            let new_config = notify_config_contributors
-                .then(|| Self::build_effective_session_config(&state.session_configuration));
-            (previous_config, new_config, config)
+            notify_config_contributors
+                .then(|| Self::build_effective_session_config(&state.session_configuration))
         };
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
         self.services.skills_manager.clear_cache();

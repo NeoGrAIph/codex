@@ -706,6 +706,7 @@ mod tests {
             agent_nickname: Some(None),
             agent_role: Some(None),
             agent_path: Some(None),
+            thread_note: Some(None),
             ..Default::default()
         };
 
@@ -715,6 +716,7 @@ mod tests {
         assert_eq!(value["agent_nickname"], json!(null));
         assert_eq!(value["agent_role"], json!(null));
         assert_eq!(value["agent_path"], json!(null));
+        assert_eq!(value["thread_note"], json!(null));
 
         let decoded: ThreadMetadataPatch =
             serde_json::from_value(value).expect("deserialize patch");
@@ -723,6 +725,7 @@ mod tests {
         assert_eq!(decoded.agent_nickname, Some(None));
         assert_eq!(decoded.agent_role, Some(None));
         assert_eq!(decoded.agent_path, Some(None));
+        assert_eq!(decoded.thread_note, Some(None));
     }
 
     #[test]

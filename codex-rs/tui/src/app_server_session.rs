@@ -20,6 +20,14 @@ use codex_app_server_client::AppServerPath;
 use codex_app_server_client::AppServerRequestHandle;
 use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
+use codex_app_server_protocol::AgentCloseParams;
+use codex_app_server_protocol::AgentCloseResponse;
+use codex_app_server_protocol::AgentFollowupSendParams;
+use codex_app_server_protocol::AgentFollowupSendResponse;
+use codex_app_server_protocol::AgentMessageSendParams;
+use codex_app_server_protocol::AgentMessageSendResponse;
+use codex_app_server_protocol::AgentRoleToolSelectionCatalogReadParams;
+use codex_app_server_protocol::AgentRoleToolSelectionCatalogReadResponse;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ClientRequest;
@@ -39,6 +47,13 @@ use codex_app_server_protocol::MemoryResetResponse;
 use codex_app_server_protocol::Model as ApiModel;
 use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelListResponse;
+use codex_app_server_protocol::ModelProviderAuthRemoveParams;
+use codex_app_server_protocol::ModelProviderAuthRemoveResponse;
+use codex_app_server_protocol::ModelProviderAuthWriteParams;
+use codex_app_server_protocol::ModelProviderAuthWriteResponse;
+use codex_app_server_protocol::ModelProviderConfigWriteParams;
+use codex_app_server_protocol::ModelProviderListParams;
+use codex_app_server_protocol::ModelProviderListResponse;
 use codex_app_server_protocol::RateLimitSnapshot;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ReviewDelivery;
@@ -136,6 +151,13 @@ const JSONRPC_METHOD_NOT_FOUND: i64 = -32601;
 pub(crate) const EXTERNAL_AGENT_CONFIG_IMPORT_IN_PROGRESS_MESSAGE: &str =
     "A previous Claude Code import is still running. Wait for it to finish before importing again.";
 const THREAD_SETTINGS_UPDATE_METHOD: &str = "thread/settings/update";
+const MODEL_PROVIDER_LIST_METHOD: &str = "modelProvider/list";
+const MODEL_PROVIDER_CONFIG_WRITE_METHOD: &str = "modelProvider/config/write";
+const MODEL_PROVIDER_AUTH_WRITE_METHOD: &str = "modelProvider/auth/write";
+const MODEL_PROVIDER_AUTH_REMOVE_METHOD: &str = "modelProvider/auth/remove";
+const AGENT_MESSAGE_SEND_METHOD: &str = "agent/message/send";
+const AGENT_FOLLOWUP_SEND_METHOD: &str = "agent/followup/send";
+const AGENT_CLOSE_METHOD: &str = "agent/close";
 
 fn bootstrap_request_error(context: &'static str, err: TypedRequestError) -> color_eyre::Report {
     color_eyre::eyre::eyre!("{context}: {err}")
@@ -145,6 +167,66 @@ fn is_thread_settings_update_unsupported(source: &JSONRPCErrorError) -> bool {
     source.code == JSONRPC_METHOD_NOT_FOUND
         || (source.code == JSONRPC_INVALID_REQUEST
             && source.message.contains(THREAD_SETTINGS_UPDATE_METHOD))
+}
+
+fn is_model_provider_request_unsupported(source: &JSONRPCErrorError, method: &str) -> bool {
+    source.code == JSONRPC_METHOD_NOT_FOUND
+        || (source.code == JSONRPC_INVALID_REQUEST && source.message.contains(method))
+}
+
+fn model_provider_request_error(
+    method: &'static str,
+    err: TypedRequestError,
+) -> color_eyre::Report {
+    match err {
+        TypedRequestError::Server { source, .. }
+            if is_model_provider_request_unsupported(&source, method) =>
+        {
+            color_eyre::eyre::eyre!(
+                "{method} is not supported by the connected app-server. The TUI and app-server are likely running different Codex builds; update/restart the local app-server daemon from this fork binary and retry."
+            )
+        }
+        err => color_eyre::eyre::eyre!("{method} failed in TUI: {err}"),
+    }
+}
+
+fn agent_message_send_error(err: TypedRequestError) -> color_eyre::Report {
+    match err {
+        TypedRequestError::Server { source, .. }
+            if is_model_provider_request_unsupported(&source, AGENT_MESSAGE_SEND_METHOD) =>
+        {
+            color_eyre::eyre::eyre!(
+                "Agent messaging is not supported by the connected app-server. Restart Codex from this fork build."
+            )
+        }
+        err => color_eyre::eyre::eyre!("{AGENT_MESSAGE_SEND_METHOD} failed in TUI: {err}"),
+    }
+}
+
+fn agent_close_error(err: TypedRequestError) -> color_eyre::Report {
+    match err {
+        TypedRequestError::Server { source, .. }
+            if is_model_provider_request_unsupported(&source, AGENT_CLOSE_METHOD) =>
+        {
+            color_eyre::eyre::eyre!(
+                "Agent close is not supported by the connected app-server. Restart Codex from this fork build."
+            )
+        }
+        err => color_eyre::eyre::eyre!("{AGENT_CLOSE_METHOD} failed in TUI: {err}"),
+    }
+}
+
+fn agent_followup_send_error(err: TypedRequestError) -> color_eyre::Report {
+    match err {
+        TypedRequestError::Server { source, .. }
+            if is_model_provider_request_unsupported(&source, AGENT_FOLLOWUP_SEND_METHOD) =>
+        {
+            color_eyre::eyre::eyre!(
+                "Agent follow-up is not supported by the connected app-server. Restart Codex from this fork build."
+            )
+        }
+        err => color_eyre::eyre::eyre!("{AGENT_FOLLOWUP_SEND_METHOD} failed in TUI: {err}"),
+    }
 }
 
 /// Data collected during the TUI bootstrap phase that the main event loop
@@ -677,6 +759,7 @@ impl AppServerSession {
                         branch: Some(Some(branch)),
                         origin_url: None,
                     }),
+                    thread_note: None,
                 },
             })
             .await
@@ -737,6 +820,68 @@ impl AppServerSession {
             })
             .await
             .wrap_err("thread/inject_items failed during TUI side conversation setup")
+    }
+
+    pub(crate) async fn agent_message_send(
+        &mut self,
+        author_thread_id: ThreadId,
+        target_thread_id: ThreadId,
+        message: String,
+    ) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: AgentMessageSendResponse = self
+            .client
+            .request_typed(ClientRequest::AgentMessageSend {
+                request_id,
+                params: AgentMessageSendParams {
+                    author_thread_id: author_thread_id.to_string(),
+                    target_thread_id: target_thread_id.to_string(),
+                    message,
+                },
+            })
+            .await
+            .map_err(agent_message_send_error)?;
+        Ok(())
+    }
+
+    pub(crate) async fn agent_followup_send(
+        &mut self,
+        author_thread_id: ThreadId,
+        target_thread_id: ThreadId,
+        message: String,
+    ) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: AgentFollowupSendResponse = self
+            .client
+            .request_typed(ClientRequest::AgentFollowupSend {
+                request_id,
+                params: AgentFollowupSendParams {
+                    author_thread_id: author_thread_id.to_string(),
+                    target_thread_id: target_thread_id.to_string(),
+                    message,
+                },
+            })
+            .await
+            .map_err(agent_followup_send_error)?;
+        Ok(())
+    }
+
+    pub(crate) async fn agent_close(
+        &mut self,
+        author_thread_id: ThreadId,
+        target_thread_id: ThreadId,
+    ) -> Result<AgentCloseResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentClose {
+                request_id,
+                params: AgentCloseParams {
+                    author_thread_id: author_thread_id.to_string(),
+                    target_thread_id: target_thread_id.to_string(),
+                },
+            })
+            .await
+            .map_err(agent_close_error)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1092,6 +1237,90 @@ impl AppServerSession {
             .request_typed(ClientRequest::SkillsList { request_id, params })
             .await
             .wrap_err("skills/list failed in TUI")
+    }
+
+    pub(crate) async fn model_provider_list(&mut self) -> Result<ModelProviderListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ModelProviderList {
+                request_id,
+                params: ModelProviderListParams {},
+            })
+            .await
+            .map_err(|err| model_provider_request_error(MODEL_PROVIDER_LIST_METHOD, err))
+    }
+
+    pub(crate) async fn agent_role_tool_selection_catalog_read(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Result<AgentRoleToolSelectionCatalogReadResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentRoleToolSelectionCatalogRead {
+                request_id,
+                params: AgentRoleToolSelectionCatalogReadParams {
+                    thread_id: thread_id.to_string(),
+                },
+            })
+            .await
+            .wrap_err("agentRole/toolSelectionCatalog/read failed in TUI")
+    }
+
+    pub(crate) async fn model_provider_config_write(
+        &mut self,
+        params: ModelProviderConfigWriteParams,
+    ) -> Result<ConfigWriteResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ModelProviderConfigWrite { request_id, params })
+            .await
+            .map_err(|err| model_provider_request_error(MODEL_PROVIDER_CONFIG_WRITE_METHOD, err))
+    }
+
+    pub(crate) async fn model_provider_auth_write(
+        &mut self,
+        params: ModelProviderAuthWriteParams,
+    ) -> Result<ModelProviderAuthWriteResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ModelProviderAuthWrite { request_id, params })
+            .await
+            .map_err(|err| model_provider_request_error(MODEL_PROVIDER_AUTH_WRITE_METHOD, err))
+    }
+
+    pub(crate) async fn model_provider_auth_remove(
+        &mut self,
+        params: ModelProviderAuthRemoveParams,
+    ) -> Result<ModelProviderAuthRemoveResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ModelProviderAuthRemove { request_id, params })
+            .await
+            .map_err(|err| model_provider_request_error(MODEL_PROVIDER_AUTH_REMOVE_METHOD, err))
+    }
+
+    pub(crate) async fn refresh_available_models(&mut self) -> Result<Vec<ModelPreset>> {
+        let request_id = self.next_request_id();
+        let models: ModelListResponse = self
+            .client
+            .request_typed(ClientRequest::ModelList {
+                request_id,
+                params: ModelListParams {
+                    cursor: None,
+                    limit: None,
+                    include_hidden: Some(true),
+                    include_configured_providers: Some(true),
+                },
+            })
+            .await
+            .wrap_err("model/list failed while refreshing TUI models")?;
+        let models = models
+            .data
+            .into_iter()
+            .map(model_preset_from_api_model)
+            .collect::<Vec<_>>();
+        self.available_models = models.clone();
+        Ok(models)
     }
 
     pub(crate) async fn reload_user_config(&mut self) -> Result<()> {
@@ -1838,6 +2067,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn model_provider_request_compat_detects_unsupported_errors() {
+        let cases = [
+            (JSONRPC_METHOD_NOT_FOUND, "method not found", true),
+            (
+                JSONRPC_INVALID_REQUEST,
+                "Invalid request: unknown variant `modelProvider/list`",
+                true,
+            ),
+            (
+                JSONRPC_INVALID_REQUEST,
+                "Invalid request: unknown variant `model/list`",
+                false,
+            ),
+        ];
+
+        for (code, message, expected) in cases {
+            let source = JSONRPCErrorError {
+                code,
+                data: None,
+                message: message.to_string(),
+            };
+            assert_eq!(
+                is_model_provider_request_unsupported(&source, MODEL_PROVIDER_LIST_METHOD),
+                expected,
+                "{message}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn thread_start_params_include_cwd_for_embedded_sessions() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -2325,6 +2584,7 @@ mod tests {
                 cwd: test_path_buf("/tmp/project").abs(),
                 cli_version: "0.0.0".to_string(),
                 source: codex_app_server_protocol::SessionSource::Cli,
+                thread_note: None,
                 thread_source: None,
                 agent_nickname: None,
                 agent_role: None,

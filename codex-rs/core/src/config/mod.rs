@@ -79,6 +79,7 @@ use codex_model_provider_info::OLLAMA_CHAT_PROVIDER_REMOVED_ERROR;
 use codex_model_provider_info::built_in_model_providers;
 use codex_model_provider_info::merge_configured_model_providers;
 use codex_models_manager::ModelsManagerConfig;
+use codex_protocol::ToolName;
 use codex_protocol::config_types::AltScreenMode;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ForcedLoginMethod;
@@ -103,6 +104,10 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SandboxPolicy;
+use codex_secrets::SecretName;
+use codex_secrets::SecretScope;
+use codex_secrets::SecretsBackendKind;
+use codex_secrets::SecretsManager;
 pub use codex_thread_store::ExtraConfig;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
@@ -821,6 +826,9 @@ pub struct Config {
     /// Combined provider map (defaults plus user-defined providers).
     pub model_providers: HashMap<String, ModelProviderInfo>,
 
+    /// Provider IDs hidden from provider-aware model pickers.
+    pub disabled_model_providers: HashSet<String>,
+
     /// Maximum number of bytes to include from an AGENTS.md project doc file.
     pub project_doc_max_bytes: usize,
 
@@ -1041,8 +1049,16 @@ pub struct Config {
     /// Configured discoverable tools for tool suggestions.
     pub tool_suggest: ToolSuggestConfig,
 
+    /// Optional role/config-level allowlist for the effective runtime tool set.
+    pub tool_selection: ToolSelectionConfig,
+
     /// OTEL configuration (exporter type, endpoint, headers, etc.).
     pub otel: codex_config::types::OtelConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolSelectionConfig {
+    pub allowed: Option<HashSet<ToolName>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -2042,6 +2058,96 @@ pub struct AgentRoleConfig {
     pub config_file: Option<PathBuf>,
     /// Candidate nicknames for agents spawned with this role.
     pub nickname_candidates: Option<Vec<String>>,
+    /// Provenance for role metadata fields that can be tracked during native role loading.
+    pub metadata_sources: AgentRoleConfigMetadataSources,
+    /// Provenance for runtime config fields read from the effective role file.
+    pub runtime_config_sources: BTreeMap<String, AgentRoleConfigRuntimeFieldSource>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentRoleConfigMetadataSources {
+    pub description: AgentRoleConfigFieldSource,
+    pub config_file: AgentRoleConfigFieldSource,
+    pub nickname_candidates: AgentRoleConfigFieldSource,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AgentRoleConfigFieldSource {
+    pub kind: AgentRoleConfigFieldSourceKind,
+    pub inherited_from_lower_precedence: bool,
+    pub overrides_lower_precedence: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AgentRoleConfigRuntimeFieldSource {
+    pub inherited_from_lower_precedence: bool,
+    pub overrides_lower_precedence: bool,
+}
+
+impl AgentRoleConfigRuntimeFieldSource {
+    pub fn effective_role_file() -> Self {
+        Self {
+            inherited_from_lower_precedence: false,
+            overrides_lower_precedence: false,
+        }
+    }
+
+    pub fn inherited_from(mut self) -> Self {
+        self.inherited_from_lower_precedence = true;
+        self.overrides_lower_precedence = false;
+        self
+    }
+
+    pub fn mark_overrides_lower_precedence(&mut self) {
+        self.overrides_lower_precedence = true;
+    }
+}
+
+impl AgentRoleConfigFieldSource {
+    pub fn config_layer() -> Self {
+        Self {
+            kind: AgentRoleConfigFieldSourceKind::ConfigLayer,
+            inherited_from_lower_precedence: false,
+            overrides_lower_precedence: false,
+        }
+    }
+
+    pub fn role_file_metadata() -> Self {
+        Self {
+            kind: AgentRoleConfigFieldSourceKind::RoleFileMetadata,
+            inherited_from_lower_precedence: false,
+            overrides_lower_precedence: false,
+        }
+    }
+
+    pub fn discovered_role_file() -> Self {
+        Self {
+            kind: AgentRoleConfigFieldSourceKind::DiscoveredRoleFile,
+            inherited_from_lower_precedence: false,
+            overrides_lower_precedence: false,
+        }
+    }
+
+    pub fn inherited_from(mut self) -> Self {
+        self.inherited_from_lower_precedence = true;
+        self.overrides_lower_precedence = false;
+        self
+    }
+
+    pub fn mark_overrides_lower_precedence(&mut self) {
+        if self.kind != AgentRoleConfigFieldSourceKind::Unknown {
+            self.overrides_lower_precedence = true;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AgentRoleConfigFieldSourceKind {
+    #[default]
+    Unknown,
+    ConfigLayer,
+    RoleFileMetadata,
+    DiscoveredRoleFile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2355,6 +2461,77 @@ fn resolve_experimental_request_user_input_enabled(config_toml: &ConfigToml) -> 
         .is_none_or(|config| config.enabled)
 }
 
+fn resolve_tool_selection_config(config_toml: &ConfigToml) -> std::io::Result<ToolSelectionConfig> {
+    let Some(allowed_tools) = parse_tool_selection_allowed_tools(config_toml)? else {
+        return Ok(ToolSelectionConfig::default());
+    };
+
+    Ok(ToolSelectionConfig {
+        allowed: Some(allowed_tools),
+    })
+}
+
+fn validate_tool_selection_config_toml(config_toml: &ConfigToml) -> std::io::Result<()> {
+    parse_tool_selection_allowed_tools(config_toml).map(|_| ())
+}
+
+fn parse_tool_selection_allowed_tools(
+    config_toml: &ConfigToml,
+) -> std::io::Result<Option<HashSet<ToolName>>> {
+    let Some(tool_selection) = config_toml.tool_selection.as_ref() else {
+        return Ok(None);
+    };
+    let Some(configured_allowed_tools) = tool_selection.allowed_tools.as_ref() else {
+        return Ok(None);
+    };
+
+    let mut allowed_tools = HashSet::new();
+    for (index, entry) in configured_allowed_tools.iter().enumerate() {
+        let tool_name =
+            parse_tool_selection_entry(&format!("tool_selection.allowed_tools[{index}]"), entry)?;
+        if !allowed_tools.insert(tool_name) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("duplicate tool_selection.allowed_tools entry `{entry}`"),
+            ));
+        }
+    }
+
+    Ok(Some(allowed_tools))
+}
+
+fn parse_tool_selection_entry(field_label: &str, entry: &str) -> std::io::Result<ToolName> {
+    let entry = entry.trim();
+    if entry.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{field_label} cannot be blank"),
+        ));
+    }
+
+    if let Some((namespace, name)) = entry.split_once('/') {
+        if name.contains('/') {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{field_label} must use `name` or `namespace/name`; got `{entry}`"),
+            ));
+        }
+        let namespace = namespace.trim();
+        let name = name.trim();
+        if namespace.is_empty() || name.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "{field_label} must use non-empty `name` or `namespace/name`; got `{entry}`"
+                ),
+            ));
+        }
+        return Ok(ToolName::namespaced(namespace, name));
+    }
+
+    Ok(ToolName::plain(entry))
+}
+
 fn resolve_code_mode_config(config_toml: &ConfigToml) -> CodeModeConfig {
     let base = code_mode_toml_config(config_toml.features.as_ref());
 
@@ -2421,6 +2598,66 @@ fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config
         hide_spawn_agent_metadata,
         non_code_mode_only,
     }
+}
+
+fn materialize_managed_model_provider_keys(
+    model_providers: &mut HashMap<String, ModelProviderInfo>,
+    codex_home: &Path,
+) {
+    let manager = SecretsManager::new(codex_home.to_path_buf(), SecretsBackendKind::Local);
+    for (provider_id, provider) in model_providers {
+        if provider.experimental_bearer_token.is_some()
+            || provider.auth.is_some()
+            || provider.aws.is_some()
+            || provider.requires_openai_auth
+        {
+            continue;
+        }
+
+        let Some(secret_name) = model_provider_secret_name(provider_id, provider) else {
+            continue;
+        };
+        if provider.env_key.as_deref().is_some_and(|env_key| {
+            std::env::var(env_key).is_ok_and(|value| !value.trim().is_empty())
+        }) {
+            continue;
+        }
+
+        match manager.get(&SecretScope::Global, &secret_name) {
+            Ok(Some(secret)) if !secret.trim().is_empty() => {
+                provider.experimental_bearer_token = Some(secret);
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!(
+                    provider_id,
+                    secret_name = %secret_name,
+                    "failed to read managed model provider key: {err:#}"
+                );
+            }
+        }
+    }
+}
+
+fn model_provider_secret_name(
+    provider_id: &str,
+    provider: &ModelProviderInfo,
+) -> Option<SecretName> {
+    if let Some(env_key) = provider.env_key.as_deref() {
+        return SecretName::new(env_key).ok();
+    }
+
+    let suffix = provider_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    SecretName::new(&format!("MODEL_PROVIDER_{suffix}_API_KEY")).ok()
 }
 
 fn resolve_terminal_resize_reflow_config(config_toml: &ConfigToml) -> TerminalResizeReflowConfig {
@@ -2585,6 +2822,25 @@ fn validate_multi_agent_v2_tool_namespace(namespace: Option<&str>) -> std::io::R
 }
 
 impl Config {
+    pub(crate) async fn refresh_agent_roles_from_layer_stack(&mut self) -> std::io::Result<()> {
+        let cfg: ConfigToml = self
+            .config_layer_stack
+            .effective_config()
+            .try_into()
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        let mut startup_warnings = Vec::new();
+        let agent_roles = agent_roles::load_agent_roles(
+            LOCAL_FS.as_ref(),
+            &cfg,
+            &self.config_layer_stack,
+            &mut startup_warnings,
+        )
+        .await?;
+        self.startup_warnings.extend(startup_warnings);
+        self.agent_roles = agent_roles;
+        Ok(())
+    }
+
     #[cfg(test)]
     async fn load_from_base_config_with_overrides(
         cfg: ConfigToml,
@@ -3076,6 +3332,7 @@ impl Config {
         let web_search_config = resolve_web_search_config(&cfg);
         let experimental_request_user_input_enabled =
             resolve_experimental_request_user_input_enabled(&cfg);
+        let tool_selection = resolve_tool_selection_config(&cfg)?;
         let code_mode = resolve_code_mode_config(&cfg);
         let multi_agent_v2 = resolve_multi_agent_v2_config(&cfg);
         let terminal_resize_reflow = resolve_terminal_resize_reflow_config(&cfg);
@@ -3089,9 +3346,10 @@ impl Config {
             .clone()
             .filter(|value| !value.is_empty());
 
-        let model_providers =
+        let mut model_providers =
             merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
+        materialize_managed_model_provider_keys(&mut model_providers, codex_home.as_path());
 
         let model_provider_id = model_provider
             .or(cfg.model_provider)
@@ -3510,6 +3768,7 @@ impl Config {
             ),
             mcp_oauth_callback_port: cfg.mcp_oauth_callback_port,
             mcp_oauth_callback_url: cfg.mcp_oauth_callback_url.clone(),
+            disabled_model_providers: cfg.disabled_model_providers.into_iter().collect(),
             model_providers,
             project_doc_max_bytes: cfg.project_doc_max_bytes.unwrap_or(AGENTS_MD_MAX_BYTES),
             project_doc_fallback_filenames: cfg
@@ -3632,6 +3891,7 @@ impl Config {
                 .and_then(|feedback| feedback.enabled)
                 .unwrap_or(true),
             tool_suggest,
+            tool_selection,
             tui_notifications: cfg
                 .tui
                 .as_ref()

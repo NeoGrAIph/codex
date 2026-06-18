@@ -272,6 +272,10 @@ pub struct ConfigToml {
     #[serde(default, deserialize_with = "deserialize_model_providers")]
     pub model_providers: HashMap<String, ModelProviderInfo>,
 
+    /// Provider IDs hidden from provider-aware model pickers.
+    #[serde(default)]
+    pub disabled_model_providers: Vec<String>,
+
     /// Maximum number of bytes to include from an AGENTS.md project doc file.
     #[serde(default = "default_project_doc_max_bytes")]
     pub project_doc_max_bytes: Option<usize>,
@@ -414,6 +418,10 @@ pub struct ConfigToml {
 
     /// Nested tools section for feature toggles
     pub tools: Option<ToolsToml>,
+
+    /// Restricts the effective runtime tool set. Intended for role-applied
+    /// config layers; absent means all native tools remain available.
+    pub tool_selection: Option<ToolSelectionToml>,
 
     /// Additional discoverable tools that can be suggested for installation.
     pub tool_suggest: Option<ToolSuggestConfig>,
@@ -629,6 +637,14 @@ pub struct ToolsToml {
     )]
     pub web_search: Option<WebSearchToolConfig>,
     pub experimental_request_user_input: Option<ExperimentalRequestUserInput>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ToolSelectionToml {
+    /// Allowlist of runtime tool identifiers. Entries use `name` for plain
+    /// tools and `namespace/name` for namespaced tools.
+    pub allowed_tools: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]

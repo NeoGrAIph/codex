@@ -19,12 +19,15 @@
 //! updated or marked closed.
 
 use crate::multi_agents::AgentPickerThreadEntry;
+use crate::multi_agents::AgentPickerThreadStatus;
+use crate::multi_agents::AgentRoleRuntimeUsage;
 use crate::multi_agents::SubAgentActivityDisplay;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut;
 use crate::multi_agents::previous_agent_shortcut;
 use codex_protocol::ThreadId;
 use ratatui::text::Span;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 /// Small state container for multi-agent picker ordering and labeling.
@@ -51,6 +54,16 @@ pub(crate) enum AgentNavigationDirection {
     Previous,
     /// Move toward the entry that was seen later in spawn order, wrapping at the end.
     Next,
+}
+
+pub(crate) struct AgentPickerThreadDetail {
+    pub(crate) agent_path: Option<String>,
+    pub(crate) prompt_preview: Option<String>,
+    pub(crate) thread_note: Option<String>,
+    pub(crate) cwd: Option<String>,
+    pub(crate) model_provider: Option<String>,
+    pub(crate) created_at: Option<i64>,
+    pub(crate) updated_at: Option<i64>,
 }
 
 impl AgentNavigationState {
@@ -87,19 +100,44 @@ impl AgentNavigationState {
         if !self.threads.contains_key(&thread_id) {
             self.order.push(thread_id);
         }
-        let (previous_agent_path, previous_is_running) = self
-            .threads
-            .get(&thread_id)
-            .map(|entry| (entry.agent_path.clone(), entry.is_running))
-            .unwrap_or((None, false));
+        let previous_entry = self.threads.get(&thread_id);
+        let previous_agent_path = previous_entry.and_then(|entry| entry.agent_path.clone());
+        let previous_prompt_preview = previous_entry.and_then(|entry| entry.prompt_preview.clone());
+        let previous_thread_note = previous_entry.and_then(|entry| entry.thread_note.clone());
+        let previous_cwd = previous_entry.and_then(|entry| entry.cwd.clone());
+        let previous_model_provider = previous_entry.and_then(|entry| entry.model_provider.clone());
+        let previous_created_at = previous_entry.and_then(|entry| entry.created_at);
+        let previous_updated_at = previous_entry.and_then(|entry| entry.updated_at);
+        let previous_model = previous_entry.and_then(|entry| entry.model.clone());
+        let previous_reasoning_effort =
+            previous_entry.and_then(|entry| entry.reasoning_effort.clone());
+        let previous_service_tier = previous_entry.and_then(|entry| entry.service_tier.clone());
+        let previous_status = previous_entry
+            .map(|entry| entry.status)
+            .unwrap_or(AgentPickerThreadStatus::Idle);
+        let status = if is_closed {
+            AgentPickerThreadStatus::Closed
+        } else if previous_status.is_closed() {
+            AgentPickerThreadStatus::Idle
+        } else {
+            previous_status
+        };
         self.threads.insert(
             thread_id,
             AgentPickerThreadEntry {
                 agent_nickname,
                 agent_role,
                 agent_path: previous_agent_path,
-                is_running: previous_is_running && !is_closed,
-                is_closed,
+                prompt_preview: previous_prompt_preview,
+                thread_note: previous_thread_note,
+                cwd: previous_cwd,
+                model_provider: previous_model_provider,
+                created_at: previous_created_at,
+                updated_at: previous_updated_at,
+                model: previous_model,
+                reasoning_effort: previous_reasoning_effort,
+                service_tier: previous_service_tier,
+                status,
             },
         );
     }
@@ -115,17 +153,38 @@ impl AgentNavigationState {
                     agent_nickname: None,
                     agent_role: None,
                     agent_path: None,
-                    is_running: false,
-                    is_closed: false,
+                    prompt_preview: None,
+                    thread_note: None,
+                    cwd: None,
+                    model_provider: None,
+                    created_at: None,
+                    updated_at: None,
+                    model: None,
+                    reasoning_effort: None,
+                    service_tier: None,
+                    status: AgentPickerThreadStatus::Idle,
                 });
         entry.agent_path = Some(activity.agent_path);
-        entry.is_running = activity.is_running_hint;
-        entry.is_closed = false;
+        entry.status = if activity.is_running_hint {
+            AgentPickerThreadStatus::Running
+        } else {
+            AgentPickerThreadStatus::Idle
+        };
     }
 
     pub(crate) fn set_running(&mut self, thread_id: ThreadId, is_running: bool) {
         if let Some(entry) = self.threads.get_mut(&thread_id) {
-            entry.is_running = is_running;
+            entry.status = if is_running {
+                AgentPickerThreadStatus::Running
+            } else {
+                AgentPickerThreadStatus::Idle
+            };
+        }
+    }
+
+    pub(crate) fn set_status(&mut self, thread_id: ThreadId, status: AgentPickerThreadStatus) {
+        if let Some(entry) = self.threads.get_mut(&thread_id) {
+            entry.status = status;
         }
     }
 
@@ -137,6 +196,66 @@ impl AgentNavigationState {
         }
     }
 
+    pub(crate) fn update_thread_detail(
+        &mut self,
+        thread_id: ThreadId,
+        detail: AgentPickerThreadDetail,
+    ) {
+        if let Some(entry) = self.threads.get_mut(&thread_id) {
+            if let Some(agent_path) = detail.agent_path.filter(|value| !value.trim().is_empty()) {
+                entry.agent_path = Some(agent_path);
+            }
+            if let Some(prompt_preview) = detail
+                .prompt_preview
+                .filter(|value| !value.trim().is_empty())
+            {
+                entry.prompt_preview = Some(prompt_preview);
+            }
+            entry.thread_note = detail.thread_note.filter(|value| !value.trim().is_empty());
+            if let Some(cwd) = detail.cwd.filter(|value| !value.trim().is_empty()) {
+                entry.cwd = Some(cwd);
+            }
+            if let Some(model_provider) = detail
+                .model_provider
+                .filter(|value| !value.trim().is_empty())
+            {
+                entry.model_provider = Some(model_provider);
+            }
+            if let Some(created_at) = detail.created_at.filter(|value| *value > 0) {
+                entry.created_at = Some(created_at);
+            }
+            if let Some(updated_at) = detail.updated_at.filter(|value| *value > 0) {
+                entry.updated_at = Some(updated_at);
+            }
+        }
+    }
+
+    pub(crate) fn update_thread_session_detail(
+        &mut self,
+        thread_id: ThreadId,
+        model_provider: Option<String>,
+        model: Option<String>,
+        reasoning_effort: Option<String>,
+        service_tier: Option<String>,
+    ) {
+        if let Some(entry) = self.threads.get_mut(&thread_id) {
+            if let Some(model_provider) = model_provider.filter(|value| !value.trim().is_empty()) {
+                entry.model_provider = Some(model_provider);
+            }
+            if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+                entry.model = Some(model);
+            }
+            if let Some(reasoning_effort) =
+                reasoning_effort.filter(|value| !value.trim().is_empty())
+            {
+                entry.reasoning_effort = Some(reasoning_effort);
+            }
+            if let Some(service_tier) = service_tier.filter(|value| !value.trim().is_empty()) {
+                entry.service_tier = Some(service_tier);
+            }
+        }
+    }
+
     /// Marks a thread as closed without removing it from the traversal cache.
     ///
     /// Closed threads stay in the picker and in spawn order so users can still review them and so
@@ -145,8 +264,7 @@ impl AgentNavigationState {
     /// mid-session.
     pub(crate) fn mark_closed(&mut self, thread_id: ThreadId) {
         if let Some(entry) = self.threads.get_mut(&thread_id) {
-            entry.is_closed = true;
-            entry.is_running = false;
+            entry.status = AgentPickerThreadStatus::Closed;
         } else {
             self.upsert(
                 thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
@@ -211,6 +329,40 @@ impl AgentNavigationState {
                         .is_some_and(|agent_path| !agent_path.trim().is_empty())
             })
             .collect()
+    }
+
+    pub(crate) fn role_runtime_usage(
+        &self,
+        primary_thread_id: Option<ThreadId>,
+        active_thread_id: Option<ThreadId>,
+    ) -> BTreeMap<String, AgentRoleRuntimeUsage> {
+        let mut usage = BTreeMap::<String, AgentRoleRuntimeUsage>::new();
+        for (thread_id, entry) in self.ordered_threads() {
+            if Some(thread_id) == primary_thread_id {
+                continue;
+            }
+            let Some(role) = entry
+                .agent_role
+                .as_deref()
+                .map(str::trim)
+                .filter(|role| !role.is_empty())
+            else {
+                continue;
+            };
+            let usage = usage.entry(role.to_string()).or_default();
+            usage.total += 1;
+            usage.current_view |= Some(thread_id) == active_thread_id;
+            match entry.status {
+                AgentPickerThreadStatus::Idle => {}
+                AgentPickerThreadStatus::Running => usage.running += 1,
+                AgentPickerThreadStatus::WaitingApproval | AgentPickerThreadStatus::WaitingUser => {
+                    usage.waiting += 1;
+                }
+                AgentPickerThreadStatus::Error => usage.errors += 1,
+                AgentPickerThreadStatus::Closed => usage.closed += 1,
+            }
+        }
+        usage
     }
 
     /// Returns tracked thread ids in the same stable order used by the picker.
@@ -305,7 +457,7 @@ impl AgentNavigationState {
         let previous: Span<'static> = previous_agent_shortcut().into();
         let next: Span<'static> = next_agent_shortcut().into();
         format!(
-            "Select an agent to watch. {} previous, {} next.",
+            "Select a thread to watch. {} previous, {} next.",
             previous.content, next.content
         )
     }
@@ -416,5 +568,46 @@ mod tests {
             state.active_agent_label(Some(main_thread_id), Some(main_thread_id)),
             Some("Main [default]".to_string())
         );
+    }
+
+    #[test]
+    fn role_runtime_usage_counts_non_primary_thread_roles() {
+        let (mut state, main_thread_id, first_agent_id, second_agent_id) = populated_state();
+        state.set_running(first_agent_id, /*is_running*/ true);
+        state.set_status(second_agent_id, AgentPickerThreadStatus::WaitingUser);
+        let closed_agent_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000104").expect("valid thread");
+        state.upsert(
+            closed_agent_id,
+            Some("Done".to_string()),
+            Some("explorer".to_string()),
+            /*is_closed*/ true,
+        );
+
+        let usage = state.role_runtime_usage(Some(main_thread_id), Some(first_agent_id));
+
+        assert_eq!(
+            usage.get("explorer"),
+            Some(&AgentRoleRuntimeUsage {
+                total: 2,
+                running: 1,
+                waiting: 0,
+                errors: 0,
+                closed: 1,
+                current_view: true,
+            })
+        );
+        assert_eq!(
+            usage.get("worker"),
+            Some(&AgentRoleRuntimeUsage {
+                total: 1,
+                running: 0,
+                waiting: 1,
+                errors: 0,
+                closed: 0,
+                current_view: false,
+            })
+        );
+        assert!(!usage.contains_key("default"));
     }
 }

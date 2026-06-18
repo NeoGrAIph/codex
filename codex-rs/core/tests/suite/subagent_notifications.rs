@@ -1322,6 +1322,8 @@ async fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> 
                         description: Some("Custom role".to_string()),
                         config_file: Some(role_path.to_path_buf()),
                         nickname_candidates: None,
+                        metadata_sources: Default::default(),
+                        runtime_config_sources: Default::default(),
                     },
                 );
             })
@@ -1384,6 +1386,8 @@ async fn spawn_agent_tool_description_mentions_role_locked_settings() -> Result<
                 description: Some("Custom role".to_string()),
                 config_file: Some(role_path.to_path_buf()),
                 nickname_candidates: None,
+                metadata_sources: Default::default(),
+                runtime_config_sources: Default::default(),
             },
         );
     });

@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use codex_git_utils::get_git_repo_root;
+#[cfg(debug_assertions)]
+use codex_keyring_store::CredentialStoreError;
 use codex_keyring_store::DefaultKeyringStore;
 use codex_keyring_store::KeyringStore;
 use schemars::JsonSchema;
@@ -103,7 +105,7 @@ impl SecretsManager {
     pub fn new(codex_home: PathBuf, backend_kind: SecretsBackendKind) -> Self {
         let backend: Arc<dyn SecretsBackend> = match backend_kind {
             SecretsBackendKind::Local => {
-                let keyring_store: Arc<dyn KeyringStore> = Arc::new(DefaultKeyringStore);
+                let keyring_store = default_keyring_store();
                 Arc::new(LocalSecretsBackend::new(codex_home, keyring_store))
             }
         };
@@ -153,6 +155,46 @@ impl SecretsManager {
 
     pub fn list(&self, scope_filter: Option<&SecretScope>) -> Result<Vec<SecretListEntry>> {
         self.backend.list(scope_filter)
+    }
+}
+
+fn default_keyring_store() -> Arc<dyn KeyringStore> {
+    #[cfg(debug_assertions)]
+    // App-server integration tests run a child process, so they cannot inject
+    // `MockKeyringStore` directly. Keep this out of release builds.
+    if let Some(passphrase) = std::env::var("CODEX_SECRETS_FIXED_KEYRING_PASSPHRASE_FOR_TESTS")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        return Arc::new(FixedPassphraseKeyringStore { passphrase });
+    }
+
+    Arc::new(DefaultKeyringStore)
+}
+
+#[cfg(debug_assertions)]
+#[derive(Debug)]
+struct FixedPassphraseKeyringStore {
+    passphrase: String,
+}
+
+#[cfg(debug_assertions)]
+impl KeyringStore for FixedPassphraseKeyringStore {
+    fn load(&self, _service: &str, _account: &str) -> Result<Option<String>, CredentialStoreError> {
+        Ok(Some(self.passphrase.clone()))
+    }
+
+    fn save(
+        &self,
+        _service: &str,
+        _account: &str,
+        _value: &str,
+    ) -> Result<(), CredentialStoreError> {
+        Ok(())
+    }
+
+    fn delete(&self, _service: &str, _account: &str) -> Result<bool, CredentialStoreError> {
+        Ok(false)
     }
 }
 
@@ -206,12 +248,17 @@ mod tests {
 
     #[test]
     fn environment_id_fallback_has_cwd_prefix() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let env_id = environment_id_from_cwd(dir.path());
-        let canonical = dir
-            .path()
+        let root = std::env::current_dir()
+            .expect("current dir")
+            .ancestors()
+            .last()
+            .expect("filesystem root")
+            .to_path_buf();
+        let cwd = root.join("codex-nonexistent-env-id-fallback-test");
+        let env_id = environment_id_from_cwd(&cwd);
+        let canonical = cwd
             .canonicalize()
-            .expect("tempdir canonical path should exist")
+            .unwrap_or(cwd)
             .to_string_lossy()
             .into_owned();
         let mut hasher = Sha256::new();

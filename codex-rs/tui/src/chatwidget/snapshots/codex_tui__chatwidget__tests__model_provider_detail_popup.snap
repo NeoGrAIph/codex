@@ -1,0 +1,19 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  DeepSeek
+  Provider ID: deepseek
+
+› 1. Set as default provider  Provider: DeepSeek
+                              Active default: no
+                              Picker: hidden from /model
+                              Auth: env key missing
+                              Env key: DEEPSEEK_API_KEY
+                              Wire API: chat_completions
+                              Base URL: https://api.deepseek.com
+                              Models in picker: 2
+  2. Set managed API key      Store or replace the local encrypted provider key.
+  3. Clear managed API key    Remove the local encrypted provider key.
+
+  enter action · esc close

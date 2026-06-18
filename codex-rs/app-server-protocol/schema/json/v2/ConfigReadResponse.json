@@ -280,6 +280,13 @@
             "null"
           ]
         },
+        "disabled_model_providers": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "forced_chatgpt_workspace_id": {
           "anyOf": [
             {

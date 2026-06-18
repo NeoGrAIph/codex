@@ -33,8 +33,10 @@ pub(crate) async fn read_summary_from_rollout(
     let mut session_meta = session_meta;
     session_meta.source = with_thread_spawn_agent_metadata(
         session_meta.source.clone(),
+        session_meta.agent_path.clone(),
         session_meta.agent_nickname.clone(),
         session_meta.agent_role.clone(),
+        session_meta.thread_note.clone(),
     );
 
     let created_at = if session_meta.timestamp.is_empty() {
@@ -140,10 +142,16 @@ fn map_git_info(git_info: &CoreGitInfo) -> ConversationGitInfo {
 
 pub(super) fn with_thread_spawn_agent_metadata(
     source: codex_protocol::protocol::SessionSource,
+    agent_path: Option<String>,
     agent_nickname: Option<String>,
     agent_role: Option<String>,
+    thread_note: Option<String>,
 ) -> codex_protocol::protocol::SessionSource {
-    if agent_nickname.is_none() && agent_role.is_none() {
+    if agent_path.is_none()
+        && agent_nickname.is_none()
+        && agent_role.is_none()
+        && thread_note.is_none()
+    {
         return source;
     }
 
@@ -152,19 +160,21 @@ pub(super) fn with_thread_spawn_agent_metadata(
             codex_protocol::protocol::SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,
-                agent_path,
+                agent_path: existing_agent_path,
                 agent_nickname: existing_agent_nickname,
                 agent_role: existing_agent_role,
-                thread_note,
+                thread_note: existing_thread_note,
             },
         ) => codex_protocol::protocol::SessionSource::SubAgent(
             codex_protocol::protocol::SubAgentSource::ThreadSpawn {
                 parent_thread_id,
                 depth,
-                agent_path,
+                agent_path: agent_path
+                    .and_then(|path| codex_protocol::AgentPath::try_from(path).ok())
+                    .or(existing_agent_path),
                 agent_nickname: agent_nickname.or(existing_agent_nickname),
                 agent_role: agent_role.or(existing_agent_role),
-                thread_note,
+                thread_note: thread_note.or(existing_thread_note),
             },
         ),
         _ => source,
@@ -312,6 +322,7 @@ pub(crate) fn summary_to_thread(
             });
 
     let thread_id = conversation_id.to_string();
+    let thread_note = source.get_thread_note();
     Thread {
         id: thread_id.clone(),
         session_id: thread_id,
@@ -329,6 +340,7 @@ pub(crate) fn summary_to_thread(
         agent_nickname: source.get_nickname(),
         agent_role: source.get_agent_role(),
         source: source.into(),
+        thread_note,
         thread_source: None,
         git_info,
         name: None,

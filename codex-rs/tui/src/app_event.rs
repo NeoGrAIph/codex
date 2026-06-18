@@ -8,10 +8,12 @@
 //! Exit is modelled explicitly via `AppEvent::Exit(ExitMode)` so callers can request shutdown-first
 //! quits without reaching into the app loop or coupling to shutdown/exit sequencing.
 
+use std::fmt;
 use std::path::PathBuf;
 
 use codex_app_server_protocol::AddCreditsNudgeCreditType;
 use codex_app_server_protocol::AddCreditsNudgeEmailStatus;
+use codex_app_server_protocol::AgentRoleToolSelectionCatalogEntry;
 use codex_app_server_protocol::AppInfo;
 use codex_app_server_protocol::GetAccountTokenUsageResponse;
 use codex_app_server_protocol::MarketplaceAddResponse;
@@ -19,6 +21,7 @@ use codex_app_server_protocol::MarketplaceRemoveResponse;
 use codex_app_server_protocol::MarketplaceUpgradeResponse;
 use codex_app_server_protocol::McpServerStatus;
 use codex_app_server_protocol::McpServerStatusDetail;
+use codex_app_server_protocol::ModelProvider;
 use codex_app_server_protocol::PluginInstallResponse;
 use codex_app_server_protocol::PluginListResponse;
 use codex_app_server_protocol::PluginReadParams;
@@ -126,6 +129,25 @@ pub(crate) enum KeymapEditIntent {
     ReplaceOne { old_key: String },
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct SensitiveString(String);
+
+impl SensitiveString {
+    pub(crate) fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Debug for SensitiveString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum AppEvent {
@@ -133,13 +155,107 @@ pub(crate) enum AppEvent {
     OpenAgentPicker,
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
+    /// Open a confirmation popup before interrupting one sub-agent thread.
+    OpenAgentInterruptConfirmation {
+        thread_id: ThreadId,
+    },
+    /// Interrupt one sub-agent thread after user confirmation.
+    InterruptAgentThreadConfirmed {
+        thread_id: ThreadId,
+    },
+    /// Open a prompt for queue-only messaging to one sub-agent thread.
+    OpenAgentMessagePrompt {
+        thread_id: ThreadId,
+    },
+    /// Queue a message for one sub-agent thread without starting a turn.
+    SendAgentMessage {
+        thread_id: ThreadId,
+        message: String,
+    },
+    /// Open a prompt for a follow-up task that starts one sub-agent turn.
+    OpenAgentFollowupPrompt {
+        thread_id: ThreadId,
+    },
+    /// Open confirmation before starting one follow-up turn.
+    OpenAgentFollowupConfirmation {
+        thread_id: ThreadId,
+        message: String,
+    },
+    /// Send a follow-up task to one sub-agent after confirmation.
+    FollowupAgentThreadConfirmed {
+        thread_id: ThreadId,
+        message: String,
+    },
+    /// Open destructive confirmation before closing one sub-agent thread.
+    OpenAgentCloseConfirmation {
+        thread_id: ThreadId,
+    },
+    /// Close one sub-agent thread and its live descendants after confirmation.
+    CloseAgentThreadConfirmed {
+        thread_id: ThreadId,
+    },
     /// Open the role-template manager for sub-agent roles.
     OpenAgentRoleTemplates,
     /// Open the prompt used to create a new user role template file.
     OpenAgentRoleTemplateCreatePrompt,
-    /// Create a user role template from the submitted name.
-    CreateAgentRoleTemplate {
-        raw_name: String,
+    /// Open a runtime-catalog picker that prepares a native role TOML draft.
+    OpenAgentRoleTemplateToolSelectionPicker {
+        catalog_entries: Vec<AgentRoleToolSelectionCatalogEntry>,
+    },
+    /// Open a runtime-catalog picker that edits an existing native role TOML draft.
+    OpenAgentRoleTemplateToolSelectionPickerForRole {
+        role_name: String,
+        role_path: PathBuf,
+        selected_tools: Vec<String>,
+        catalog_entries: Vec<AgentRoleToolSelectionCatalogEntry>,
+    },
+    /// Open the role-template create prompt with a generated tool allowlist.
+    OpenAgentRoleTemplateCreatePromptWithAllowedTools {
+        allowed_tools: Vec<String>,
+    },
+    /// Open the role-template edit prompt with a generated tool allowlist.
+    OpenAgentRoleTemplateEditPromptWithAllowedTools {
+        role_name: String,
+        role_path: PathBuf,
+        allowed_tools: Vec<String>,
+    },
+    /// Create a user role template from a submitted native TOML draft.
+    CreateAgentRoleTemplateFromDraft {
+        draft: String,
+    },
+    /// Update an existing user role template from a submitted native TOML draft.
+    UpdateAgentRoleTemplateFromDraft {
+        role_name: String,
+        role_path: PathBuf,
+        draft: String,
+    },
+    /// Open the model provider manager.
+    OpenModelProviders,
+    /// Open the details view for one configurable model provider.
+    OpenModelProviderDetail {
+        provider: ModelProvider,
+    },
+    /// Set provider visibility in model pickers.
+    SetModelProviderEnabled {
+        provider_id: String,
+        enabled: bool,
+    },
+    /// Set the default model provider.
+    SetActiveModelProvider {
+        provider_id: String,
+    },
+    /// Open the prompt used to store a provider API key.
+    OpenModelProviderApiKeyPrompt {
+        provider_id: String,
+    },
+    /// Store a provider API key in managed local secrets.
+    SaveModelProviderApiKey {
+        provider_id: String,
+        api_key: SensitiveString,
+    },
+    /// Remove a provider API key from managed local secrets.
+    ClearModelProviderApiKey {
+        provider_id: String,
     },
 
     /// Fork the current thread into a transient side conversation.

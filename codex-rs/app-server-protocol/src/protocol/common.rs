@@ -105,6 +105,15 @@ macro_rules! experimental_type_entry {
     };
 }
 
+macro_rules! stable_type_entry {
+    (#[experimental($reason:expr)] $ty:ty) => {
+        ""
+    };
+    ($ty:ty) => {
+        stringify!($ty)
+    };
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientRequestSerializationScope {
     Global(&'static str),
@@ -412,6 +421,11 @@ macro_rules! client_request_definitions {
                 experimental_type_entry!($(#[experimental($reason)])? $response),
             )*
         ];
+        pub(crate) const STABLE_CLIENT_METHOD_RESPONSE_TYPES: &[&str] = &[
+            $(
+                stable_type_entry!($(#[experimental($reason)])? $response),
+            )*
+        ];
 
         pub fn export_client_responses(
             out_dir: &::std::path::Path,
@@ -653,6 +667,24 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadInjectItemsResponse,
     },
+    #[experimental("agent/message/send")]
+    AgentMessageSend => "agent/message/send" {
+        params: v2::AgentMessageSendParams,
+        serialization: thread_id(params.target_thread_id),
+        response: v2::AgentMessageSendResponse,
+    },
+    #[experimental("agent/followup/send")]
+    AgentFollowupSend => "agent/followup/send" {
+        params: v2::AgentFollowupSendParams,
+        serialization: thread_id(params.target_thread_id),
+        response: v2::AgentFollowupSendResponse,
+    },
+    #[experimental("agent/close")]
+    AgentClose => "agent/close" {
+        params: v2::AgentCloseParams,
+        serialization: thread_id(params.target_thread_id),
+        response: v2::AgentCloseResponse,
+    },
     SkillsList => "skills/list" {
         params: v2::SkillsListParams,
         serialization: global_shared_read("config"),
@@ -857,6 +889,36 @@ client_request_definitions! {
         params: v2::ModelProviderCapabilitiesReadParams,
         serialization: None,
         response: v2::ModelProviderCapabilitiesReadResponse,
+    },
+    #[experimental("modelProvider/list")]
+    ModelProviderList => "modelProvider/list" {
+        params: v2::ModelProviderListParams,
+        serialization: global_shared_read("config"),
+        response: v2::ModelProviderListResponse,
+    },
+    #[experimental("modelProvider/config/write")]
+    ModelProviderConfigWrite => "modelProvider/config/write" {
+        params: v2::ModelProviderConfigWriteParams,
+        serialization: global("config"),
+        response: v2::ConfigWriteResponse,
+    },
+    #[experimental("modelProvider/auth/write")]
+    ModelProviderAuthWrite => "modelProvider/auth/write" {
+        params: v2::ModelProviderAuthWriteParams,
+        serialization: global("model-provider-auth"),
+        response: v2::ModelProviderAuthWriteResponse,
+    },
+    #[experimental("modelProvider/auth/remove")]
+    ModelProviderAuthRemove => "modelProvider/auth/remove" {
+        params: v2::ModelProviderAuthRemoveParams,
+        serialization: global("model-provider-auth"),
+        response: v2::ModelProviderAuthRemoveResponse,
+    },
+    #[experimental("agentRole/toolSelectionCatalog/read")]
+    AgentRoleToolSelectionCatalogRead => "agentRole/toolSelectionCatalog/read" {
+        params: v2::AgentRoleToolSelectionCatalogReadParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::AgentRoleToolSelectionCatalogReadResponse,
     },
     ExperimentalFeatureList => "experimentalFeature/list" {
         params: v2::ExperimentalFeatureListParams,
@@ -1560,6 +1622,7 @@ server_notification_definitions! {
     ThreadClosed => "thread/closed" (v2::ThreadClosedNotification),
     SkillsChanged => "skills/changed" (v2::SkillsChangedNotification),
     ThreadNameUpdated => "thread/name/updated" (v2::ThreadNameUpdatedNotification),
+    ThreadNoteUpdated => "thread/note/updated" (v2::ThreadNoteUpdatedNotification),
     ThreadGoalUpdated => "thread/goal/updated" (v2::ThreadGoalUpdatedNotification),
     ThreadGoalCleared => "thread/goal/cleared" (v2::ThreadGoalClearedNotification),
     #[experimental("thread/settings/updated")]
@@ -2486,6 +2549,7 @@ mod tests {
                     cwd: cwd.clone(),
                     cli_version: "0.0.0".to_string(),
                     source: v2::SessionSource::Exec,
+                    thread_note: None,
                     thread_source: None,
                     agent_nickname: None,
                     agent_role: None,
@@ -2554,6 +2618,85 @@ mod tests {
                 }
             }),
             serde_json::to_value(&response)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_agent_message_send() -> Result<()> {
+        let request = ClientRequest::AgentMessageSend {
+            request_id: RequestId::Integer(7),
+            params: v2::AgentMessageSendParams {
+                author_thread_id: "67e55044-10b1-426f-9247-bb680e5fe0c7".to_string(),
+                target_thread_id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
+                message: "Please inspect the failing test.".to_string(),
+            },
+        };
+        assert_eq!(request.id(), &RequestId::Integer(7));
+        assert_eq!(request.method(), "agent/message/send");
+        assert_eq!(
+            json!({
+                "method": "agent/message/send",
+                "id": 7,
+                "params": {
+                    "authorThreadId": "67e55044-10b1-426f-9247-bb680e5fe0c7",
+                    "targetThreadId": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                    "message": "Please inspect the failing test."
+                }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_agent_close() -> Result<()> {
+        let request = ClientRequest::AgentClose {
+            request_id: RequestId::Integer(8),
+            params: v2::AgentCloseParams {
+                author_thread_id: "67e55044-10b1-426f-9247-bb680e5fe0c7".to_string(),
+                target_thread_id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
+            },
+        };
+        assert_eq!(request.id(), &RequestId::Integer(8));
+        assert_eq!(request.method(), "agent/close");
+        assert_eq!(
+            json!({
+                "method": "agent/close",
+                "id": 8,
+                "params": {
+                    "authorThreadId": "67e55044-10b1-426f-9247-bb680e5fe0c7",
+                    "targetThreadId": "67e55044-10b1-426f-9247-bb680e5fe0c8"
+                }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_agent_followup_send() -> Result<()> {
+        let request = ClientRequest::AgentFollowupSend {
+            request_id: RequestId::Integer(9),
+            params: v2::AgentFollowupSendParams {
+                author_thread_id: "67e55044-10b1-426f-9247-bb680e5fe0c7".to_string(),
+                target_thread_id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
+                message: "Continue with the next parser task.".to_string(),
+            },
+        };
+        assert_eq!(request.id(), &RequestId::Integer(9));
+        assert_eq!(request.method(), "agent/followup/send");
+        assert_eq!(
+            json!({
+                "method": "agent/followup/send",
+                "id": 9,
+                "params": {
+                    "authorThreadId": "67e55044-10b1-426f-9247-bb680e5fe0c7",
+                    "targetThreadId": "67e55044-10b1-426f-9247-bb680e5fe0c8",
+                    "message": "Continue with the next parser task."
+                }
+            }),
+            serde_json::to_value(&request)?,
         );
         Ok(())
     }
@@ -2794,6 +2937,118 @@ mod tests {
                 "method": "modelProvider/capabilities/read",
                 "id": 7,
                 "params": {}
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_model_provider_list() -> Result<()> {
+        let request = ClientRequest::ModelProviderList {
+            request_id: RequestId::Integer(8),
+            params: v2::ModelProviderListParams {},
+        };
+        assert_eq!(
+            json!({
+                "method": "modelProvider/list",
+                "id": 8,
+                "params": {}
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_agent_role_tool_selection_catalog_read() -> Result<()> {
+        let request = ClientRequest::AgentRoleToolSelectionCatalogRead {
+            request_id: RequestId::Integer(9),
+            params: v2::AgentRoleToolSelectionCatalogReadParams {
+                thread_id: "thread-1".to_string(),
+            },
+        };
+        assert_eq!(
+            json!({
+                "method": "agentRole/toolSelectionCatalog/read",
+                "id": 9,
+                "params": {
+                    "threadId": "thread-1"
+                }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_model_provider_config_write() -> Result<()> {
+        let request = ClientRequest::ModelProviderConfigWrite {
+            request_id: RequestId::Integer(9),
+            params: v2::ModelProviderConfigWriteParams {
+                provider_id: "deepseek".to_string(),
+                enabled_in_picker: Some(false),
+                set_active: true,
+            },
+        };
+        assert_eq!(
+            json!({
+                "method": "modelProvider/config/write",
+                "id": 9,
+                "params": {
+                    "providerId": "deepseek",
+                    "enabledInPicker": false,
+                    "setActive": true
+                }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_model_provider_auth_write() -> Result<()> {
+        let params = v2::ModelProviderAuthWriteParams {
+            provider_id: "deepseek".to_string(),
+            api_key: "secret".to_string(),
+        };
+        let debug = format!("{params:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("secret"));
+
+        let request = ClientRequest::ModelProviderAuthWrite {
+            request_id: RequestId::Integer(10),
+            params,
+        };
+        assert_eq!(
+            json!({
+                "method": "modelProvider/auth/write",
+                "id": 10,
+                "params": {
+                    "providerId": "deepseek",
+                    "apiKey": "secret"
+                }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_model_provider_auth_remove() -> Result<()> {
+        let request = ClientRequest::ModelProviderAuthRemove {
+            request_id: RequestId::Integer(11),
+            params: v2::ModelProviderAuthRemoveParams {
+                provider_id: "deepseek".to_string(),
+            },
+        };
+        assert_eq!(
+            json!({
+                "method": "modelProvider/auth/remove",
+                "id": 11,
+                "params": {
+                    "providerId": "deepseek"
+                }
             }),
             serde_json::to_value(&request)?,
         );
@@ -3351,6 +3606,34 @@ mod tests {
             crate::experimental_api::ExperimentalApi::experimental_reason(&cleared),
             None
         );
+    }
+
+    #[test]
+    fn thread_note_updated_notification_round_trips() -> anyhow::Result<()> {
+        let notification =
+            ServerNotification::ThreadNoteUpdated(v2::ThreadNoteUpdatedNotification {
+                thread_id: "thr_123".to_string(),
+                thread_note: None,
+            });
+
+        let value = serde_json::to_value(&notification)?;
+        assert_eq!(
+            value,
+            json!({
+                "method": "thread/note/updated",
+                "params": {
+                    "threadId": "thr_123",
+                    "threadNote": null
+                }
+            })
+        );
+        let parsed = serde_json::from_value::<ServerNotification>(value)?;
+        let ServerNotification::ThreadNoteUpdated(parsed) = parsed else {
+            panic!("expected ThreadNoteUpdated notification");
+        };
+        assert_eq!(parsed.thread_id, "thr_123");
+        assert_eq!(parsed.thread_note, None);
+        Ok(())
     }
 
     #[test]

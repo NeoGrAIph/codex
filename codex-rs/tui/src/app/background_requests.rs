@@ -55,7 +55,7 @@ impl App {
                 && self
                     .agent_navigation
                     .get(thread_id)
-                    .is_none_or(|entry| !entry.is_closed)
+                    .is_none_or(|entry| !entry.status.is_closed())
         })
     }
 

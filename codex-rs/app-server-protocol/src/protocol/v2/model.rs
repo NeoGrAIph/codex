@@ -9,6 +9,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use std::fmt;
 use ts_rs::TS;
 
 v2_enum_from_core!(
@@ -35,6 +36,100 @@ pub struct ModelProviderCapabilitiesReadResponse {
     pub namespace_tools: bool,
     pub image_generation: bool,
     pub web_search: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ModelProviderListParams {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum ModelProviderAuthStatus {
+    OpenAiAuth,
+    EnvKeyPresent,
+    EnvKeyMissing,
+    ManagedKeyPresent,
+    ManagedKeyMissing,
+    Command,
+    Aws,
+    InlineBearer,
+    None,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ModelProvider {
+    pub id: String,
+    pub name: String,
+    pub active: bool,
+    pub enabled_in_picker: bool,
+    pub auth_status: ModelProviderAuthStatus,
+    pub env_key: Option<String>,
+    pub base_url: Option<String>,
+    pub wire_api: String,
+    pub model_count: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ModelProviderListResponse {
+    pub data: Vec<ModelProvider>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ModelProviderConfigWriteParams {
+    pub provider_id: String,
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub enabled_in_picker: Option<bool>,
+    #[serde(default)]
+    pub set_active: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ModelProviderAuthWriteParams {
+    pub provider_id: String,
+    pub api_key: String,
+}
+
+impl fmt::Debug for ModelProviderAuthWriteParams {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ModelProviderAuthWriteParams")
+            .field("provider_id", &self.provider_id)
+            .field("api_key", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ModelProviderAuthRemoveParams {
+    pub provider_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ModelProviderAuthWriteResponse {
+    pub provider_id: String,
+    pub managed_key_present: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ModelProviderAuthRemoveResponse {
+    pub provider_id: String,
+    pub managed_key_present: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]

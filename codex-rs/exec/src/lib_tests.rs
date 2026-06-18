@@ -350,6 +350,7 @@ fn turn_items_for_thread_returns_matching_turn_items() {
         thread_source: None,
         agent_nickname: None,
         agent_role: None,
+        thread_note: None,
         git_info: None,
         name: None,
         turns: vec![
@@ -742,6 +743,7 @@ fn sample_thread_start_response() -> ThreadStartResponse {
             thread_source: Some(codex_app_server_protocol::ThreadSource::User),
             agent_nickname: None,
             agent_role: None,
+            thread_note: None,
             git_info: None,
             name: Some("thread".to_string()),
             turns: vec![],

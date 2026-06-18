@@ -1,0 +1,58 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  Agent Role Templates
+  Create and inspect role profiles used by spawn_agent.agent_type.
+  User templates live in $CODEX_HOME/agents/*.toml.
+  Runtime tool catalog: 3 current-thread tools, 1 selected by current policy.
+
+  1. Create new template                   Edit a native TOML role draft for future sub-agent spawns
+  2. Create template from current tools    Pick from 3 current-thread runtime tool ids
+› 3. [user active] explorer                Role: explorer
+                                           Source: user
+                                           Status: active
+                                           Overrides built-in role with the same name.
+                                           Description: Custom explorer role for codebase discovery.
+                                           Config file: $CODEX_HOME/agents/
+                                           explorer.toml
+                                           Config origin: $CODEX_HOME/agents
+                                           Native profile fields: name, description,
+                                           nickname_candidates, developer_instructions, model,
+                                           model_provider, model_reasoning_effort, service_tier
+                                           Declaration fields: description, config_file
+                                           TOML fields: name, description, developer_instructions,
+                                           tool_selection.allowed_tools
+                                           Field sources: description=role-file metadata,
+                                           config_file=$CODEX_HOME/agents discovery,
+                                           developer_instructions=effective role file, name=role-file
+                                           metadata, tool_selection.allowed_tools=effective role file
+                                           Validation: valid native TOML role file
+                                           Runtime use: 3 known threads; 1 running; 1 waiting; 1
+                                           closed; current view: yes; thread metadata stores
+                                           agent_type, not definition source
+                                           Tool selection state: runtime allowlist; unmatched entries
+                                           warn during tool planning and grant no access
+                                           Runtime catalog reference: current thread planner output;
+                                           use as tool id evidence, not as a role-specific preview.
+                                           Runtime catalog totals: 3 tools, 1 unmatched current-policy
+                                           entries.
+                                           Template allowlist vs current catalog: 1 present, 1 absent
+                                           Runtime catalog sample: *update_plan (direct), tool_search
+                                           (deferred), exec (hidden)
+                                           Current unmatched allowlist entries: missing_tool
+                                           Template sets: developer_instructions,
+                                           tool_selection=update_plan, missing_tool
+                                           Runtime binding: spawn_agent.agent_type `explorer`
+                                           Enter: open template file for editing
+                                           Availability: loaded threads use this TOML file after
+                                           native config reload or restart; the TUI wizard triggers
+                                           reload after successful create.
+                                           Use: ask Codex to spawn a sub-agent with agent_type
+                                           `explorer`.
+  4. [user tools] Edit tools for explorer  Update this native role TOML allowlist from current tools
+  5. [built-in active] default             Default agent.
+  6. [built-in shadowed] explorer          Use `explorer` for specific codebase questions.
+  7. [built-in active] worker              Use for execution and production work.
+
+  Press enter to confirm or esc to go back

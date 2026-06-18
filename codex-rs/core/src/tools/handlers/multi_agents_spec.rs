@@ -285,6 +285,48 @@ pub fn create_list_agents_tool() -> ToolSpec {
     })
 }
 
+pub fn create_set_thread_note_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "target".to_string(),
+            JsonSchema::string(Some(
+                "Relative or canonical task name to update (from spawn_agent). Omit from a spawned sub-agent to update the current thread."
+                    .to_string(),
+            )),
+        ),
+        (
+            "thread_note".to_string(),
+            JsonSchema::any_of(
+                vec![
+                    JsonSchema::string(Some(
+                        "Short metadata-only note to attach to the target sub-agent thread."
+                            .to_string(),
+                    )),
+                    JsonSchema::null(Some("Clear the target thread note.".to_string())),
+                ],
+                Some(
+                    "Short metadata-only note for the target sub-agent thread. Use null to clear it."
+                        .to_string(),
+                ),
+            ),
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "set_thread_note".to_string(),
+        description: "Set or clear a metadata-only note for a visible spawned sub-agent thread."
+            .to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            properties,
+            Some(vec!["thread_note".to_string()]),
+            Some(false.into()),
+        ),
+        output_schema: Some(set_thread_note_output_schema()),
+    })
+}
+
 pub fn create_close_agent_tool_v1() -> ToolSpec {
     let properties = BTreeMap::from([(
         "target".to_string(),
@@ -422,39 +464,61 @@ fn send_input_output_schema() -> Value {
     })
 }
 
+fn listed_agents_schema() -> Value {
+    json!({
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "agent_name": {
+                    "type": "string",
+                    "description": "Canonical task name for the agent when available, otherwise the agent id."
+                },
+                "agent_status": {
+                    "description": "Last known status of the agent.",
+                    "allOf": [agent_status_output_schema()]
+                },
+                "last_task_message": {
+                    "type": ["string", "null"],
+                    "description": "Most recent user or inter-agent instruction received by the agent, when available."
+                },
+                "thread_note": {
+                    "type": ["string", "null"],
+                    "description": "Short note attached to the agent thread, when available."
+                },
+            },
+            "required": ["agent_name", "agent_status", "last_task_message", "thread_note"],
+            "additionalProperties": false
+        },
+        "description": "Live agents visible in the current root thread tree."
+    })
+}
+
 fn list_agents_output_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "agents": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "agent_name": {
-                            "type": "string",
-                            "description": "Canonical task name for the agent when available, otherwise the agent id."
-                        },
-                        "agent_status": {
-                            "description": "Last known status of the agent.",
-                            "allOf": [agent_status_output_schema()]
-                        },
-                        "last_task_message": {
-                            "type": ["string", "null"],
-                            "description": "Most recent user or inter-agent instruction received by the agent, when available."
-                        },
-                        "thread_note": {
-                            "type": ["string", "null"],
-                            "description": "Short note attached to the agent thread, when available."
-                        }
-                    },
-                    "required": ["agent_name", "agent_status", "last_task_message", "thread_note"],
-                    "additionalProperties": false
-                },
-                "description": "Live agents visible in the current root thread tree."
-            }
+            "agents": listed_agents_schema()
         },
         "required": ["agents"],
+        "additionalProperties": false
+    })
+}
+
+fn set_thread_note_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": "Canonical task name whose note was updated."
+            },
+            "thread_note": {
+                "type": ["string", "null"],
+                "description": "Normalized note now stored on the target thread, or null if cleared."
+            }
+        },
+        "required": ["target", "thread_note"],
         "additionalProperties": false
     })
 }
@@ -500,9 +564,13 @@ fn wait_output_schema_v2() -> Value {
             "timed_out": {
                 "type": "boolean",
                 "description": "Whether the wait call returned because no mailbox update arrived before the timeout."
+            },
+            "agents": {
+                "description": "Snapshot of live agents visible when wait_agent returned, including metadata-only thread notes. This does not include mailbox or final-answer content.",
+                "allOf": [listed_agents_schema()]
             }
         },
-        "required": ["message", "timed_out"],
+        "required": ["message", "timed_out", "agents"],
         "additionalProperties": false
     })
 }

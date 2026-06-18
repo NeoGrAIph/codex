@@ -137,6 +137,7 @@ pub struct TurnContext {
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
     pub(crate) server_model_warning_emitted: AtomicBool,
     pub(crate) model_verification_emitted: AtomicBool,
+    pub(crate) tool_selection_warning_emitted: AtomicBool,
 }
 
 enum TurnMultiAgentRuntime {
@@ -309,6 +310,9 @@ impl TurnContext {
             ),
             model_verification_emitted: AtomicBool::new(
                 self.model_verification_emitted.load(Ordering::Relaxed),
+            ),
+            tool_selection_warning_emitted: AtomicBool::new(
+                self.tool_selection_warning_emitted.load(Ordering::Relaxed),
             ),
         }
     }
@@ -609,6 +613,7 @@ impl Session {
             turn_timing_state: Arc::new(TurnTimingState::default()),
             server_model_warning_emitted: AtomicBool::new(false),
             model_verification_emitted: AtomicBool::new(false),
+            tool_selection_warning_emitted: AtomicBool::new(false),
         }
     }
 

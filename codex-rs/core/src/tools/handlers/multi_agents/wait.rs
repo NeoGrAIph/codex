@@ -83,6 +83,7 @@ impl Handler {
                 thread_id: *receiver_thread_id,
                 agent_nickname: agent_metadata.agent_nickname,
                 agent_role: agent_metadata.agent_role,
+                thread_note: agent_metadata.thread_note,
             });
         }
 

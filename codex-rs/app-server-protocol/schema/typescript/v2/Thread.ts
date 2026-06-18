@@ -62,6 +62,10 @@ cliVersion: string,
  */
 source: SessionSource,
 /**
+ * Optional short note attached to an AgentControl-spawned sub-agent thread.
+ */
+threadNote: string | null,
+/**
  * Optional analytics source classification for this thread.
  */
 threadSource: ThreadSource | null,

@@ -153,7 +153,10 @@ fn format_allowed_modes(available_modes: &[ModeKind]) -> String {
         [] => "no modes".to_string(),
         [mode] => format!("{mode} mode"),
         [first, second] => format!("{first} or {second} mode"),
-        [..] => format!("modes: {}", mode_names.join(",")),
+        [.., last] => {
+            let leading = mode_names[..mode_names.len() - 1].join(", ");
+            format!("{leading}, or {last} mode")
+        }
     }
 }
 

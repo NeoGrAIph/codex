@@ -14,7 +14,7 @@ static COLLABORATION_MODE_DEFAULT_TEMPLATE: LazyLock<Template> = LazyLock::new(|
 });
 
 pub fn builtin_collaboration_mode_presets() -> Vec<CollaborationModeMask> {
-    vec![plan_preset(), default_preset()]
+    vec![plan_preset(), interactive_preset(), default_preset()]
 }
 
 fn plan_preset() -> CollaborationModeMask {
@@ -24,6 +24,18 @@ fn plan_preset() -> CollaborationModeMask {
         model: None,
         reasoning_effort: Some(Some(ReasoningEffort::Medium)),
         developer_instructions: Some(Some(COLLABORATION_MODE_PLAN.to_string())),
+    }
+}
+
+fn interactive_preset() -> CollaborationModeMask {
+    CollaborationModeMask {
+        name: ModeKind::Interactive.display_name().to_string(),
+        mode: Some(ModeKind::Interactive),
+        model: None,
+        reasoning_effort: None,
+        developer_instructions: Some(Some(
+            "Use interactive mode when user choices can materially improve the next step. Prefer the `request_user_input` tool for concise, structured questions with clear options; ask plain-text questions directly only when that tool is unavailable or the choice is simple enough not to need structured options.".to_string(),
+        )),
     }
 }
 

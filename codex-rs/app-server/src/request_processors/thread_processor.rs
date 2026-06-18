@@ -4,6 +4,7 @@ use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
+use codex_protocol::protocol::normalize_thread_note_value;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
@@ -509,11 +510,76 @@ impl ThreadRequestProcessor {
 
     pub(crate) async fn thread_metadata_update(
         &self,
+        request_id: ConnectionRequestId,
         params: ThreadMetadataUpdateParams,
     ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
-        self.thread_metadata_update_response_inner(params)
+        match self.thread_metadata_update_response_inner(params).await {
+            Ok((response, notification)) => {
+                self.outgoing
+                    .send_response(request_id.clone(), response)
+                    .await;
+                if let Some(notification) = notification {
+                    self.outgoing
+                        .send_server_notification(ServerNotification::ThreadNoteUpdated(
+                            notification,
+                        ))
+                        .await;
+                }
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) async fn agent_message_send(
+        &self,
+        params: AgentMessageSendParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let author_thread_id = ThreadId::from_string(&params.author_thread_id)
+            .map_err(|err| invalid_request(format!("invalid authorThreadId: {err}")))?;
+        let target_thread_id = ThreadId::from_string(&params.target_thread_id)
+            .map_err(|err| invalid_request(format!("invalid targetThreadId: {err}")))?;
+        self.thread_manager
+            .queue_inter_agent_message(author_thread_id, target_thread_id, params.message)
             .await
-            .map(|response| Some(response.into()))
+            .map_err(|err| core_thread_write_error("queue agent message", err))?;
+        Ok(Some(AgentMessageSendResponse {}.into()))
+    }
+
+    pub(crate) async fn agent_followup_send(
+        &self,
+        params: AgentFollowupSendParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let author_thread_id = ThreadId::from_string(&params.author_thread_id)
+            .map_err(|err| invalid_request(format!("invalid authorThreadId: {err}")))?;
+        let target_thread_id = ThreadId::from_string(&params.target_thread_id)
+            .map_err(|err| invalid_request(format!("invalid targetThreadId: {err}")))?;
+        self.thread_manager
+            .send_inter_agent_followup(author_thread_id, target_thread_id, params.message)
+            .await
+            .map_err(|err| core_thread_write_error("send agent follow-up", err))?;
+        Ok(Some(AgentFollowupSendResponse {}.into()))
+    }
+
+    pub(crate) async fn agent_close(
+        &self,
+        params: AgentCloseParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let author_thread_id = ThreadId::from_string(&params.author_thread_id)
+            .map_err(|err| invalid_request(format!("invalid authorThreadId: {err}")))?;
+        let target_thread_id = ThreadId::from_string(&params.target_thread_id)
+            .map_err(|err| invalid_request(format!("invalid targetThreadId: {err}")))?;
+        let previous_status = self
+            .thread_manager
+            .close_agent_from_workbench(author_thread_id, target_thread_id)
+            .await
+            .map_err(|err| core_thread_write_error("close agent", err))?;
+        Ok(Some(
+            AgentCloseResponse {
+                previous_status: previous_status.into(),
+            }
+            .into(),
+        ))
     }
 
     pub(crate) async fn thread_memory_mode_set(
@@ -1554,39 +1620,62 @@ impl ThreadRequestProcessor {
     async fn thread_metadata_update_response_inner(
         &self,
         params: ThreadMetadataUpdateParams,
-    ) -> Result<ThreadMetadataUpdateResponse, JSONRPCErrorError> {
+    ) -> Result<
+        (
+            ThreadMetadataUpdateResponse,
+            Option<ThreadNoteUpdatedNotification>,
+        ),
+        JSONRPCErrorError,
+    > {
         let ThreadMetadataUpdateParams {
             thread_id,
             git_info,
+            thread_note,
         } = params;
 
         let thread_uuid = ThreadId::from_string(&thread_id)
             .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
 
-        let Some(ThreadMetadataGitInfoUpdateParams {
-            sha,
-            branch,
-            origin_url,
-        }) = git_info
-        else {
-            return Err(invalid_request("gitInfo must include at least one field"));
+        let git_info = match git_info {
+            Some(ThreadMetadataGitInfoUpdateParams {
+                sha,
+                branch,
+                origin_url,
+            }) => {
+                if sha.is_none() && branch.is_none() && origin_url.is_none() {
+                    return Err(invalid_request("gitInfo must include at least one field"));
+                }
+
+                Some(StoreGitInfoPatch {
+                    sha: Self::normalize_thread_metadata_git_field(sha, "gitInfo.sha")?,
+                    branch: Self::normalize_thread_metadata_git_field(branch, "gitInfo.branch")?,
+                    origin_url: Self::normalize_thread_metadata_git_field(
+                        origin_url,
+                        "gitInfo.originUrl",
+                    )?,
+                })
+            }
+            None => None,
         };
 
-        if sha.is_none() && branch.is_none() && origin_url.is_none() {
-            return Err(invalid_request("gitInfo must include at least one field"));
+        let thread_note = Self::normalize_thread_metadata_thread_note(thread_note)?;
+        let thread_note_notification =
+            thread_note
+                .clone()
+                .map(|thread_note| ThreadNoteUpdatedNotification {
+                    thread_id: thread_id.clone(),
+                    thread_note,
+                });
+
+        if git_info.is_none() && thread_note.is_none() {
+            return Err(invalid_request(
+                "thread metadata update must include gitInfo or threadNote",
+            ));
         }
 
-        let git_sha = Self::normalize_thread_metadata_git_field(sha, "gitInfo.sha")?;
-        let git_branch = Self::normalize_thread_metadata_git_field(branch, "gitInfo.branch")?;
-        let git_origin_url =
-            Self::normalize_thread_metadata_git_field(origin_url, "gitInfo.originUrl")?;
-
         let patch = StoreThreadMetadataPatch {
-            git_info: Some(StoreGitInfoPatch {
-                sha: git_sha,
-                branch: git_branch,
-                origin_url: git_origin_url,
-            }),
+            git_info,
+            thread_note,
             ..Default::default()
         };
 
@@ -1613,7 +1702,10 @@ impl ThreadRequestProcessor {
             /*has_in_progress_turn*/ false,
         );
 
-        Ok(ThreadMetadataUpdateResponse { thread })
+        Ok((
+            ThreadMetadataUpdateResponse { thread },
+            thread_note_notification,
+        ))
     }
 
     fn normalize_thread_metadata_git_field(
@@ -1628,6 +1720,18 @@ impl ThreadRequestProcessor {
                 }
                 Ok(Some(Some(value)))
             }
+            Some(None) => Ok(Some(None)),
+            None => Ok(None),
+        }
+    }
+
+    fn normalize_thread_metadata_thread_note(
+        value: Option<Option<String>>,
+    ) -> Result<Option<Option<String>>, JSONRPCErrorError> {
+        match value {
+            Some(Some(value)) => normalize_thread_note_value(Some(value))
+                .map(Some)
+                .map_err(invalid_request),
             Some(None) => Ok(Some(None)),
             None => Ok(None),
         }
@@ -1994,8 +2098,10 @@ impl ThreadRequestProcessor {
             for result in page.items {
                 let source = with_thread_spawn_agent_metadata(
                     result.thread.source.clone(),
+                    result.thread.agent_path.clone(),
                     result.thread.agent_nickname.clone(),
                     result.thread.agent_role.clone(),
+                    result.thread.thread_note.clone(),
                 );
                 if source_kind_filter
                     .as_ref()
@@ -3608,8 +3714,10 @@ impl ThreadRequestProcessor {
             for it in page.items {
                 let source = with_thread_spawn_agent_metadata(
                     it.source.clone(),
+                    it.agent_path.clone(),
                     it.agent_nickname.clone(),
                     it.agent_role.clone(),
+                    it.thread_note.clone(),
                 );
                 if source_kind_filter
                     .as_ref()
@@ -4098,11 +4206,14 @@ pub(crate) fn thread_from_stored_thread(
     });
     let source = with_thread_spawn_agent_metadata(
         thread.source,
+        thread.agent_path.clone(),
         thread.agent_nickname.clone(),
         thread.agent_role.clone(),
+        thread.thread_note.clone(),
     );
     let history = thread.history;
     let thread_id = thread.thread_id.to_string();
+    let thread_note = source.get_thread_note();
     let thread = Thread {
         id: thread_id.clone(),
         session_id: thread_id,
@@ -4124,6 +4235,7 @@ pub(crate) fn thread_from_stored_thread(
         agent_nickname: source.get_nickname(),
         agent_role: source.get_agent_role(),
         source: source.into(),
+        thread_note,
         thread_source: thread.thread_source.map(Into::into),
         git_info,
         name: thread.name,
@@ -4139,8 +4251,10 @@ fn summary_from_stored_thread(
     let path = thread.rollout_path.unwrap_or_default();
     let source = with_thread_spawn_agent_metadata(
         thread.source,
+        thread.agent_path.clone(),
         thread.agent_nickname.clone(),
         thread.agent_role.clone(),
+        thread.thread_note.clone(),
     );
     let git_info = thread.git_info.map(|git| ConversationGitInfo {
         sha: git.commit_hash.map(|sha| sha.0),
@@ -4199,7 +4313,7 @@ fn summary_from_state_db_metadata(
     let source = serde_json::from_str(&source)
         .or_else(|_| serde_json::from_value(serde_json::Value::String(source.clone())))
         .unwrap_or(codex_protocol::protocol::SessionSource::Unknown);
-    let source = with_thread_spawn_agent_metadata(source, agent_nickname, agent_role);
+    let source = with_thread_spawn_agent_metadata(source, None, agent_nickname, agent_role, None);
     let git_info = if git_sha.is_none() && git_branch.is_none() && git_origin_url.is_none() {
         None
     } else {
@@ -4312,6 +4426,7 @@ fn build_thread_from_snapshot(
     path: Option<PathBuf>,
 ) -> Thread {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let thread_note = config_snapshot.session_source.get_thread_note();
     Thread {
         id: thread_id.to_string(),
         session_id,
@@ -4329,6 +4444,7 @@ fn build_thread_from_snapshot(
         agent_nickname: config_snapshot.session_source.get_nickname(),
         agent_role: config_snapshot.session_source.get_agent_role(),
         source: config_snapshot.session_source.clone().into(),
+        thread_note,
         thread_source: config_snapshot.thread_source.clone().map(Into::into),
         git_info: None,
         name: None,

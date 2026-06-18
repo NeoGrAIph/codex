@@ -24,6 +24,7 @@ use crate::history_cell::PlainHistoryCell;
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::new_session_info;
 use crate::multi_agents::AgentPickerThreadEntry;
+use crate::multi_agents::AgentPickerThreadStatus;
 use crate::multi_agents::SubAgentActivityDisplay;
 use assert_matches::assert_matches;
 
@@ -63,6 +64,7 @@ use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadNoteUpdatedNotification;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadStartedNotification;
@@ -73,6 +75,9 @@ use codex_app_server_protocol::ToolRequestUserInputParams;
 use codex_app_server_protocol::Turn;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnError as AppServerTurnError;
+use codex_app_server_protocol::TurnPlanStep;
+use codex_app_server_protocol::TurnPlanStepStatus;
+use codex_app_server_protocol::TurnPlanUpdatedNotification;
 use codex_app_server_protocol::TurnStartedNotification;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
@@ -81,6 +86,7 @@ use codex_app_server_protocol::WarningNotification;
 use codex_models_manager::test_support::construct_model_info_offline_for_tests;
 use codex_models_manager::test_support::get_model_offline_for_tests;
 use codex_otel::SessionTelemetry;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::CollaborationModeMask;
@@ -1173,8 +1179,93 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
             agent_nickname: None,
             agent_role: None,
             agent_path: None,
-            is_running: false,
-            is_closed: false,
+            prompt_preview: None,
+            thread_note: None,
+            cwd: None,
+            model_provider: None,
+            created_at: None,
+            updated_at: None,
+            model: None,
+            reasoning_effort: None,
+            service_tier: None,
+            status: AgentPickerThreadStatus::Idle,
+        })
+    );
+}
+
+#[tokio::test]
+async fn thread_status_changed_updates_agent_picker_status_cache() {
+    let mut app = make_test_app().await;
+    let thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000125").expect("valid thread id");
+    app.upsert_agent_picker_thread(
+        thread_id,
+        Some("Robie".to_string()),
+        Some("explorer".to_string()),
+        /*is_closed*/ false,
+    );
+
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: codex_app_server_protocol::ThreadStatus::Active {
+                    active_flags: vec![
+                        codex_app_server_protocol::ThreadActiveFlag::WaitingOnApproval,
+                    ],
+                },
+            },
+        ),
+    ));
+
+    assert_eq!(
+        app.agent_navigation.get(&thread_id),
+        Some(&AgentPickerThreadEntry {
+            agent_nickname: Some("Robie".to_string()),
+            agent_role: Some("explorer".to_string()),
+            agent_path: None,
+            prompt_preview: None,
+            thread_note: None,
+            cwd: None,
+            model_provider: None,
+            created_at: None,
+            updated_at: None,
+            model: None,
+            reasoning_effort: None,
+            service_tier: None,
+            status: AgentPickerThreadStatus::WaitingApproval,
+        })
+    );
+
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(
+        ServerNotification::ThreadStatusChanged(
+            codex_app_server_protocol::ThreadStatusChangedNotification {
+                thread_id: thread_id.to_string(),
+                status: codex_app_server_protocol::ThreadStatus::Active {
+                    active_flags: vec![
+                        codex_app_server_protocol::ThreadActiveFlag::WaitingOnUserInput,
+                    ],
+                },
+            },
+        ),
+    ));
+
+    assert_eq!(
+        app.agent_navigation.get(&thread_id),
+        Some(&AgentPickerThreadEntry {
+            agent_nickname: Some("Robie".to_string()),
+            agent_role: Some("explorer".to_string()),
+            agent_path: None,
+            prompt_preview: None,
+            thread_note: None,
+            cwd: None,
+            model_provider: None,
+            created_at: None,
+            updated_at: None,
+            model: None,
+            reasoning_effort: None,
+            service_tier: None,
+            status: AgentPickerThreadStatus::WaitingUser,
         })
     );
 }
@@ -1204,6 +1295,7 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                     codex_app_server_protocol::CollabAgentState {
                         status: codex_app_server_protocol::CollabAgentStatus::NotFound,
                         message: None,
+                        thread_note: None,
                     },
                 )]),
             },
@@ -1234,8 +1326,16 @@ async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
             agent_nickname: None,
             agent_role: None,
             agent_path: None,
-            is_running: false,
-            is_closed: true,
+            prompt_preview: None,
+            thread_note: None,
+            cwd: None,
+            model_provider: None,
+            created_at: None,
+            updated_at: None,
+            model: None,
+            reasoning_effort: None,
+            service_tier: None,
+            status: AgentPickerThreadStatus::Closed,
         })
     );
     assert_eq!(app.agent_navigation.ordered_thread_ids(), vec![thread_id]);
@@ -1269,8 +1369,16 @@ async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Res
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
             agent_path: None,
-            is_running: false,
-            is_closed: true,
+            prompt_preview: None,
+            thread_note: None,
+            cwd: None,
+            model_provider: None,
+            created_at: None,
+            updated_at: None,
+            model: None,
+            reasoning_effort: None,
+            service_tier: None,
+            status: AgentPickerThreadStatus::Closed,
         })
     );
     Ok(())
@@ -1311,8 +1419,16 @@ async fn open_agent_picker_clears_completed_path_backed_agent_running_state() ->
             agent_nickname: None,
             agent_role: None,
             agent_path: Some("/root/child".to_string()),
-            is_running: false,
-            is_closed: false,
+            prompt_preview: None,
+            thread_note: None,
+            cwd: None,
+            model_provider: None,
+            created_at: None,
+            updated_at: None,
+            model: None,
+            reasoning_effort: None,
+            service_tier: None,
+            status: AgentPickerThreadStatus::Idle,
         })
     );
     Ok(())
@@ -1349,8 +1465,16 @@ async fn open_agent_picker_refreshes_replay_only_path_backed_liveness() -> Resul
             agent_nickname: None,
             agent_role: None,
             agent_path: Some("/root/child".to_string()),
-            is_running: false,
-            is_closed: true,
+            prompt_preview: None,
+            thread_note: None,
+            cwd: None,
+            model_provider: None,
+            created_at: None,
+            updated_at: None,
+            model: None,
+            reasoning_effort: None,
+            service_tier: None,
+            status: AgentPickerThreadStatus::Closed,
         })
     );
     Ok(())
@@ -1405,8 +1529,16 @@ async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
             agent_path: None,
-            is_running: false,
-            is_closed: true,
+            prompt_preview: None,
+            thread_note: None,
+            cwd: None,
+            model_provider: None,
+            created_at: None,
+            updated_at: None,
+            model: None,
+            reasoning_effort: None,
+            service_tier: None,
+            status: AgentPickerThreadStatus::Closed,
         })
     );
     Ok(())
@@ -1439,16 +1571,23 @@ fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
 
         Box::pin(app.open_agent_picker(&mut app_server)).await;
 
-        assert_eq!(
-            app.agent_navigation.get(&thread_id),
-            Some(&AgentPickerThreadEntry {
-                agent_nickname: None,
-                agent_role: None,
-                agent_path: None,
-                is_running: false,
-                is_closed: false,
-            })
-        );
+        let entry = app
+            .agent_navigation
+            .get(&thread_id)
+            .expect("agent picker entry");
+        assert_eq!(entry.agent_nickname, None);
+        assert_eq!(entry.agent_role, None);
+        assert_eq!(entry.agent_path, None);
+        assert_eq!(entry.prompt_preview, None);
+        assert_eq!(entry.thread_note, None);
+        assert_eq!(entry.cwd, Some("/tmp/project".to_string()));
+        assert_eq!(entry.model_provider, Some("openai".to_string()));
+        assert!(entry.created_at.is_some_and(|timestamp| timestamp > 0));
+        assert!(entry.updated_at.is_some_and(|timestamp| timestamp > 0));
+        assert_eq!(entry.model, None);
+        assert_eq!(entry.reasoning_effort, None);
+        assert_eq!(entry.service_tier, None);
+        assert_eq!(entry.status, AgentPickerThreadStatus::Idle);
         Ok(())
     })
 }
@@ -2180,6 +2319,876 @@ async fn open_agent_picker_allows_existing_agent_threads_when_feature_is_disable
 }
 
 #[tokio::test]
+async fn agent_picker_workbench_snapshot() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000101").expect("valid thread");
+    let agent_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000102").expect("valid thread");
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(agent_thread_id);
+    let main_channel = ThreadEventChannel::new(/*capacity*/ 4);
+    {
+        let mut store = main_channel.store.lock().await;
+        store.push_notification(ServerNotification::ItemCompleted(
+            codex_app_server_protocol::ItemCompletedNotification {
+                item: ThreadItem::CollabAgentToolCall {
+                    id: "spawn-agent-1".to_string(),
+                    tool: codex_app_server_protocol::CollabAgentTool::SpawnAgent,
+                    status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
+                    sender_thread_id: main_thread_id.to_string(),
+                    receiver_thread_ids: vec![agent_thread_id.to_string()],
+                    prompt: Some("Map parser entry points.\nReport evidence.".to_string()),
+                    model: None,
+                    reasoning_effort: None,
+                    agents_states: HashMap::new(),
+                },
+                thread_id: main_thread_id.to_string(),
+                turn_id: "turn-0".to_string(),
+                completed_at_ms: 0,
+            },
+        ));
+        store.push_notification(ServerNotification::ItemCompleted(
+            codex_app_server_protocol::ItemCompletedNotification {
+                item: ThreadItem::UserMessage {
+                    id: "user-raw-1".to_string(),
+                    client_id: None,
+                    content: vec![codex_app_server_protocol::UserInput::Text {
+                        text: "raw parent prompt should stay hidden".to_string(),
+                        text_elements: Vec::new(),
+                    }],
+                },
+                thread_id: main_thread_id.to_string(),
+                turn_id: "turn-0".to_string(),
+                completed_at_ms: 1,
+            },
+        ));
+        store.push_notification(ServerNotification::ItemCompleted(
+            codex_app_server_protocol::ItemCompletedNotification {
+                item: ThreadItem::CollabAgentToolCall {
+                    id: "send-input-1".to_string(),
+                    tool: codex_app_server_protocol::CollabAgentTool::SendInput,
+                    status: codex_app_server_protocol::CollabAgentToolCallStatus::Completed,
+                    sender_thread_id: main_thread_id.to_string(),
+                    receiver_thread_ids: vec![agent_thread_id.to_string()],
+                    prompt: Some("Focus on app-server projection.".to_string()),
+                    model: None,
+                    reasoning_effort: None,
+                    agents_states: HashMap::new(),
+                },
+                thread_id: main_thread_id.to_string(),
+                turn_id: "turn-0".to_string(),
+                completed_at_ms: 2,
+            },
+        ));
+    }
+    app.thread_event_channels
+        .insert(main_thread_id, main_channel);
+    let agent_channel = ThreadEventChannel::new(/*capacity*/ 4);
+    {
+        let mut store = agent_channel.store.lock().await;
+        store.push_notification(turn_started_notification(agent_thread_id, "turn-1"));
+        store.push_notification(ServerNotification::ItemCompleted(
+            codex_app_server_protocol::ItemCompletedNotification {
+                item: ThreadItem::CommandExecution {
+                    id: "command-1".to_string(),
+                    command: "cargo test -p codex-tui agent_picker_workbench_snapshot".to_string(),
+                    cwd: codex_utils_absolute_path::AbsolutePathBuf::try_from("/workspace")
+                        .expect("absolute path"),
+                    process_id: None,
+                    source: codex_app_server_protocol::CommandExecutionSource::Agent,
+                    status: codex_app_server_protocol::CommandExecutionStatus::Completed,
+                    command_actions: Vec::new(),
+                    aggregated_output: Some("secret command output\n".repeat(100)),
+                    exit_code: Some(0),
+                    duration_ms: Some(42),
+                },
+                thread_id: agent_thread_id.to_string(),
+                turn_id: "turn-1".to_string(),
+                completed_at_ms: 1,
+            },
+        ));
+        store.push_notification(ServerNotification::ItemCompleted(
+            codex_app_server_protocol::ItemCompletedNotification {
+                item: ThreadItem::Reasoning {
+                    id: "reasoning-1".to_string(),
+                    summary: vec!["Checked selected detail activity.".to_string()],
+                    content: vec!["hidden raw reasoning".to_string()],
+                },
+                thread_id: agent_thread_id.to_string(),
+                turn_id: "turn-1".to_string(),
+                completed_at_ms: 2,
+            },
+        ));
+        store.push_notification(token_usage_notification(
+            agent_thread_id,
+            "turn-1",
+            Some(950_000),
+        ));
+        store.push_notification(ServerNotification::TurnPlanUpdated(
+            TurnPlanUpdatedNotification {
+                thread_id: agent_thread_id.to_string(),
+                turn_id: "turn-1".to_string(),
+                explanation: Some(
+                    "hidden explanation should stay out of workbench detail".to_string(),
+                ),
+                plan: vec![
+                    TurnPlanStep {
+                        step: "Inspect parser state".to_string(),
+                        status: TurnPlanStepStatus::Completed,
+                    },
+                    TurnPlanStep {
+                        step: "Verify workbench anchors".to_string(),
+                        status: TurnPlanStepStatus::InProgress,
+                    },
+                    TurnPlanStep {
+                        step: "Update feature docs".to_string(),
+                        status: TurnPlanStepStatus::Pending,
+                    },
+                ],
+            },
+        ));
+    }
+    app.thread_event_channels
+        .insert(agent_thread_id, agent_channel);
+    app.agent_navigation.upsert(
+        main_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: agent_thread_id,
+            agent_path: "/root/worker".to_string(),
+            is_running_hint: true,
+        });
+    app.agent_navigation.upsert(
+        agent_thread_id,
+        Some("Robie".to_string()),
+        Some("explorer".to_string()),
+        /*is_closed*/ false,
+    );
+    app.agent_navigation.update_thread_detail(
+        agent_thread_id,
+        AgentPickerThreadDetail {
+            agent_path: Some("/root/worker".to_string()),
+            prompt_preview: Some(
+                "Inspect the parser state\nand report concise evidence.".to_string(),
+            ),
+            thread_note: None,
+            cwd: None,
+            model_provider: None,
+            created_at: None,
+            updated_at: None,
+        },
+    );
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert_app_snapshot!("agent_picker_workbench", rendered.clone());
+    assert!(!rendered.contains("secret command output"));
+    assert!(!rendered.contains("hidden raw reasoning"));
+    assert!(!rendered.contains("raw parent prompt"));
+    assert!(!rendered.contains("hidden explanation"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_picker_interrupt_action_and_confirmation_snapshot() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000101").expect("valid thread");
+    let agent_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000102").expect("valid thread");
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.thread_event_channels
+        .insert(main_thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    let agent_channel = ThreadEventChannel::new(/*capacity*/ 4);
+    {
+        let mut store = agent_channel.store.lock().await;
+        store.push_notification(turn_started_notification(agent_thread_id, "turn-1"));
+    }
+    app.thread_event_channels
+        .insert(agent_thread_id, agent_channel);
+    app.agent_navigation.upsert(
+        main_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: agent_thread_id,
+            agent_path: "/root/worker".to_string(),
+            is_running_hint: true,
+        });
+    app.agent_navigation.upsert(
+        agent_thread_id,
+        Some("Robie".to_string()),
+        Some("explorer".to_string()),
+        /*is_closed*/ false,
+    );
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert_app_snapshot!("agent_picker_workbench_root_actions", rendered.clone());
+    assert!(rendered.contains("Send message Robie [explorer]"));
+    assert!(rendered.contains("Interrupt Robie [explorer]"));
+    assert!(rendered.contains("Close Robie [explorer]"));
+
+    app.open_agent_message_prompt(agent_thread_id);
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert_app_snapshot!("agent_picker_send_message_prompt", rendered.clone());
+    assert!(rendered.contains("Message agent"));
+
+    app.open_agent_interrupt_confirmation(agent_thread_id);
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert_app_snapshot!("agent_picker_interrupt_confirmation", rendered.clone());
+    assert!(rendered.contains("current status: running"));
+    assert!(rendered.contains("Stop the current turn only"));
+    assert!(rendered.contains("delete the thread"));
+
+    app.open_agent_close_confirmation(agent_thread_id);
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert_app_snapshot!("agent_picker_close_confirmation", rendered.clone());
+    assert!(rendered.contains("current status: running"));
+    assert!(rendered.contains("Mark this spawn edge closed"));
+    assert!(rendered.contains("descendants"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_picker_interrupt_child_context_snapshot() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000201").expect("valid thread");
+    let owner_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000202").expect("valid thread");
+    let descendant_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000203").expect("valid thread");
+    let sibling_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000204").expect("valid thread");
+    let idle_descendant_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000205").expect("valid thread");
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(owner_thread_id);
+    for thread_id in [
+        main_thread_id,
+        owner_thread_id,
+        descendant_thread_id,
+        sibling_thread_id,
+        idle_descendant_thread_id,
+    ] {
+        let channel = ThreadEventChannel::new(/*capacity*/ 4);
+        {
+            let mut store = channel.store.lock().await;
+            if thread_id != idle_descendant_thread_id {
+                store.push_notification(turn_started_notification(thread_id, "turn-1"));
+            }
+        }
+        app.thread_event_channels.insert(thread_id, channel);
+    }
+    app.agent_navigation.upsert(
+        main_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    for (thread_id, nickname, role, agent_path) in [
+        (owner_thread_id, "Owner", "planner", "/root/owner"),
+        (descendant_thread_id, "Child", "worker", "/root/owner/child"),
+        (
+            idle_descendant_thread_id,
+            "Idle",
+            "worker",
+            "/root/owner/idle",
+        ),
+        (sibling_thread_id, "Sibling", "reviewer", "/root/sibling"),
+    ] {
+        app.agent_navigation
+            .record_sub_agent_activity(SubAgentActivityDisplay {
+                thread_id,
+                agent_path: agent_path.to_string(),
+                is_running_hint: thread_id != idle_descendant_thread_id,
+            });
+        app.agent_navigation.upsert(
+            thread_id,
+            Some(nickname.to_string()),
+            Some(role.to_string()),
+            /*is_closed*/ false,
+        );
+    }
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert_app_snapshot!(
+        "agent_picker_workbench_child_context_actions",
+        rendered.clone()
+    );
+    assert!(rendered.contains("Interrupt Child [worker]"));
+    assert!(rendered.contains("Close Child [worker]"));
+    assert!(rendered.contains("Follow up Idle [worker]"));
+    assert!(!rendered.contains("Interrupt Owner [planner]"));
+    assert!(!rendered.contains("Close Owner [planner]"));
+    assert!(!rendered.contains("Send message Owner [planner]"));
+    assert!(!rendered.contains("Follow up Owner [planner]"));
+    assert!(!rendered.contains("Interrupt Sibling [reviewer]"));
+    assert!(!rendered.contains("Close Sibling [reviewer]"));
+    assert!(!rendered.contains("Send message Sibling [reviewer]"));
+    assert!(!rendered.contains("Follow up Sibling [reviewer]"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_picker_message_child_context_snapshot() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000211").expect("valid thread");
+    let owner_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000212").expect("valid thread");
+    let idle_descendant_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000213").expect("valid thread");
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(owner_thread_id);
+    for thread_id in [main_thread_id, owner_thread_id, idle_descendant_thread_id] {
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 4));
+    }
+    app.agent_navigation.upsert(
+        main_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    for (thread_id, nickname, role, agent_path) in [
+        (owner_thread_id, "Owner", "planner", "/root/owner"),
+        (
+            idle_descendant_thread_id,
+            "Idle",
+            "worker",
+            "/root/owner/idle",
+        ),
+    ] {
+        app.agent_navigation
+            .record_sub_agent_activity(SubAgentActivityDisplay {
+                thread_id,
+                agent_path: agent_path.to_string(),
+                is_running_hint: false,
+            });
+        app.agent_navigation.upsert(
+            thread_id,
+            Some(nickname.to_string()),
+            Some(role.to_string()),
+            /*is_closed*/ false,
+        );
+    }
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert_app_snapshot!("agent_picker_message_child_context", rendered.clone());
+    assert!(rendered.contains("Send message Idle [worker]"));
+    assert!(rendered.contains("queue message only"));
+    assert!(rendered.contains("Follow up Idle [worker]"));
+    assert!(!rendered.contains("Send message Owner [planner]"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_picker_message_preflight_allows_subtree_owner_descendants_only() {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000101").expect("valid thread");
+    let owner_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000102").expect("valid thread");
+    let worker_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000103").expect("valid thread");
+    let sibling_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000104").expect("valid thread");
+    let root_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000105").expect("valid thread");
+    let pathless_owner_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000106").expect("valid thread");
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    for (thread_id, agent_path) in [
+        (owner_thread_id, "/root/owner"),
+        (worker_thread_id, "/root/owner/worker"),
+        (sibling_thread_id, "/root/sibling"),
+        (root_thread_id, "/root"),
+    ] {
+        app.agent_navigation
+            .record_sub_agent_activity(SubAgentActivityDisplay {
+                thread_id,
+                agent_path: agent_path.to_string(),
+                is_running_hint: true,
+            });
+    }
+    app.agent_navigation.upsert(
+        pathless_owner_thread_id,
+        Some("Pathless".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+
+    assert_eq!(app.agent_picker_message_preflight(worker_thread_id), Ok(()));
+
+    app.active_thread_id = Some(owner_thread_id);
+    assert_eq!(
+        app.agent_picker_action_author_thread_id(),
+        Some(owner_thread_id)
+    );
+    assert_eq!(app.agent_picker_message_preflight(worker_thread_id), Ok(()));
+    assert_eq!(
+        app.agent_picker_message_preflight(owner_thread_id),
+        Err("Cannot send an agent message to the current thread.".to_string())
+    );
+    assert_eq!(
+        app.agent_picker_message_preflight(sibling_thread_id),
+        Err(
+            "Agent `/root/owner` cannot message `/root/sibling` because the target is outside its sub-agent tree."
+                .to_string()
+        )
+    );
+    assert_eq!(
+        app.agent_picker_message_preflight(root_thread_id),
+        Err("Cannot send an agent message to the root agent.".to_string())
+    );
+    app.active_thread_id = Some(pathless_owner_thread_id);
+    assert_eq!(
+        app.agent_picker_message_preflight(worker_thread_id),
+        Err("Cannot send an agent message from an agent thread without agent_path.".to_string())
+    );
+
+    app.active_thread_id = Some(main_thread_id);
+    app.agent_navigation
+        .set_status(worker_thread_id, AgentPickerThreadStatus::Closed);
+    assert_eq!(
+        app.agent_picker_message_preflight(worker_thread_id),
+        Err("Cannot message a closed agent thread.".to_string())
+    );
+}
+
+#[tokio::test]
+async fn agent_picker_followup_prompt_and_confirmation_snapshot() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000111").expect("valid thread");
+    let agent_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000112").expect("valid thread");
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.thread_event_channels
+        .insert(main_thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    app.thread_event_channels
+        .insert(agent_thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+    app.agent_navigation.upsert(
+        main_thread_id,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
+        /*is_closed*/ false,
+    );
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: agent_thread_id,
+            agent_path: "/root/worker".to_string(),
+            is_running_hint: false,
+        });
+    app.agent_navigation.upsert(
+        agent_thread_id,
+        Some("Robie".to_string()),
+        Some("explorer".to_string()),
+        /*is_closed*/ false,
+    );
+
+    Box::pin(app.open_agent_picker(&mut app_server)).await;
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert_app_snapshot!("agent_picker_followup_root_actions", rendered.clone());
+    assert!(rendered.contains("Follow up Robie [explorer]"));
+    assert!(rendered.contains("starts a turn"));
+    assert!(!rendered.contains("Interrupt Robie [explorer]"));
+
+    app.open_agent_followup_prompt(agent_thread_id);
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert_app_snapshot!("agent_picker_followup_prompt", rendered.clone());
+    assert!(rendered.contains("Follow up with agent"));
+
+    app.open_agent_followup_confirmation(agent_thread_id, "Continue parser audit".to_string());
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
+    assert_app_snapshot!("agent_picker_followup_confirmation", rendered.clone());
+    assert!(rendered.contains("Start a follow-up turn?"));
+    assert!(rendered.contains("encrypted follow-up"));
+    let normalized_rendered = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(normalized_rendered.contains("capacity is available"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_picker_followup_preflight_allows_subtree_owner_idle_descendants_only() {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000111").expect("valid thread");
+    let owner_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000112").expect("valid thread");
+    let worker_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000113").expect("valid thread");
+    let sibling_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000114").expect("valid thread");
+    let root_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000115").expect("valid thread");
+    let pathless_owner_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000116").expect("valid thread");
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    for (thread_id, agent_path) in [
+        (owner_thread_id, "/root/owner"),
+        (worker_thread_id, "/root/owner/worker"),
+        (sibling_thread_id, "/root/sibling"),
+        (root_thread_id, "/root"),
+    ] {
+        app.agent_navigation
+            .record_sub_agent_activity(SubAgentActivityDisplay {
+                thread_id,
+                agent_path: agent_path.to_string(),
+                is_running_hint: false,
+            });
+    }
+    app.agent_navigation.upsert(
+        pathless_owner_thread_id,
+        Some("Pathless".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+
+    assert_eq!(
+        app.agent_picker_followup_preflight(worker_thread_id),
+        Ok(())
+    );
+
+    app.agent_navigation
+        .set_status(worker_thread_id, AgentPickerThreadStatus::Running);
+    assert_eq!(
+        app.agent_picker_followup_preflight(worker_thread_id),
+        Err(
+            "Cannot start a follow-up for an agent thread that is already running or waiting."
+                .to_string()
+        )
+    );
+
+    app.agent_navigation
+        .set_status(worker_thread_id, AgentPickerThreadStatus::Idle);
+    app.active_thread_id = Some(owner_thread_id);
+    assert_eq!(
+        app.agent_picker_action_author_thread_id(),
+        Some(owner_thread_id)
+    );
+    assert_eq!(
+        app.agent_picker_followup_preflight(worker_thread_id),
+        Ok(())
+    );
+    assert_eq!(
+        app.agent_picker_followup_preflight(owner_thread_id),
+        Err("An agent cannot follow up itself from the agent workbench.".to_string())
+    );
+    assert_eq!(
+        app.agent_picker_followup_preflight(sibling_thread_id),
+        Err(
+            "Agent `/root/owner` cannot follow up `/root/sibling` because the target is outside its sub-agent tree."
+                .to_string()
+        )
+    );
+    assert_eq!(
+        app.agent_picker_followup_preflight(root_thread_id),
+        Err("Cannot send an agent follow-up to the root agent.".to_string())
+    );
+    app.active_thread_id = Some(pathless_owner_thread_id);
+    assert_eq!(
+        app.agent_picker_followup_preflight(worker_thread_id),
+        Err("Cannot send an agent follow-up from an agent thread without agent_path.".to_string())
+    );
+
+    app.active_thread_id = Some(main_thread_id);
+    app.agent_navigation
+        .set_status(worker_thread_id, AgentPickerThreadStatus::Closed);
+    assert_eq!(
+        app.agent_picker_followup_preflight(worker_thread_id),
+        Err("Cannot follow up a closed agent thread.".to_string())
+    );
+}
+
+#[tokio::test]
+async fn agent_picker_interrupt_confirmed_refreshes_target_status() -> Result<()> {
+    let mut app = Box::pin(make_test_app()).await;
+    let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(
+        app.chat_widget.config_ref(),
+    ))
+    .await
+    .expect("embedded app server");
+    let started = app_server
+        .start_thread(app.chat_widget.config_ref())
+        .await?;
+    let agent_thread_id = started.session.thread_id;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000101").expect("valid thread");
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(main_thread_id);
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: agent_thread_id,
+            agent_path: "/root/worker".to_string(),
+            is_running_hint: true,
+        });
+    app.agent_navigation.upsert(
+        agent_thread_id,
+        Some("Robie".to_string()),
+        Some("explorer".to_string()),
+        /*is_closed*/ false,
+    );
+
+    assert_eq!(
+        app.agent_navigation
+            .get(&agent_thread_id)
+            .map(|entry| entry.status),
+        Some(AgentPickerThreadStatus::Running)
+    );
+
+    Box::pin(app.interrupt_agent_thread_confirmed(&mut app_server, agent_thread_id)).await?;
+
+    assert_eq!(
+        app.agent_navigation
+            .get(&agent_thread_id)
+            .map(|entry| entry.status),
+        Some(AgentPickerThreadStatus::Idle)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_picker_interrupt_preflight_denies_self_and_missing_path() {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000101").expect("valid thread");
+    let agent_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000102").expect("valid thread");
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(agent_thread_id);
+    app.agent_navigation
+        .record_sub_agent_activity(SubAgentActivityDisplay {
+            thread_id: agent_thread_id,
+            agent_path: "/root/worker".to_string(),
+            is_running_hint: true,
+        });
+
+    assert_eq!(
+        app.agent_picker_interrupt_preflight(agent_thread_id),
+        Err("An agent cannot interrupt itself from the agent workbench.".to_string())
+    );
+
+    let missing_path_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000103").expect("valid thread");
+    app.active_thread_id = Some(main_thread_id);
+    app.agent_navigation.upsert(
+        missing_path_thread_id,
+        Some("Pathless".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+    app.agent_navigation
+        .set_status(missing_path_thread_id, AgentPickerThreadStatus::Running);
+
+    assert_eq!(
+        app.agent_picker_interrupt_preflight(missing_path_thread_id),
+        Err("Cannot interrupt an agent thread without agent_path.".to_string())
+    );
+}
+
+#[tokio::test]
+async fn agent_picker_interrupt_preflight_enforces_status_and_path_ownership() {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000201").expect("valid thread");
+    let owner_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000202").expect("valid thread");
+    let descendant_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000203").expect("valid thread");
+    let sibling_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000204").expect("valid thread");
+    let ancestor_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000205").expect("valid thread");
+    let root_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000206").expect("valid thread");
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(owner_thread_id);
+    for (thread_id, agent_path) in [
+        (owner_thread_id, "/root/owner"),
+        (descendant_thread_id, "/root/owner/child"),
+        (sibling_thread_id, "/root/sibling"),
+        (ancestor_thread_id, "/root"),
+        (root_thread_id, "/root"),
+    ] {
+        app.agent_navigation
+            .record_sub_agent_activity(SubAgentActivityDisplay {
+                thread_id,
+                agent_path: agent_path.to_string(),
+                is_running_hint: true,
+            });
+    }
+
+    assert_eq!(
+        app.agent_picker_interrupt_preflight(descendant_thread_id),
+        Ok(())
+    );
+    assert_eq!(
+        app.agent_picker_interrupt_preflight(sibling_thread_id),
+        Err(
+            "Agent `/root/owner` cannot interrupt `/root/sibling` because the target is outside its sub-agent tree."
+                .to_string()
+        )
+    );
+    assert_eq!(
+        app.agent_picker_interrupt_preflight(ancestor_thread_id),
+        Err("Cannot interrupt the root agent from the agent workbench.".to_string())
+    );
+    assert_eq!(
+        app.agent_picker_interrupt_preflight(root_thread_id),
+        Err("Cannot interrupt the root agent from the agent workbench.".to_string())
+    );
+
+    app.active_thread_id = Some(main_thread_id);
+    for (status, expected) in [
+        (
+            AgentPickerThreadStatus::Idle,
+            "Cannot interrupt an idle agent thread.",
+        ),
+        (
+            AgentPickerThreadStatus::Error,
+            "Cannot interrupt an agent thread that is already in error state.",
+        ),
+        (
+            AgentPickerThreadStatus::Closed,
+            "Cannot interrupt a closed agent thread.",
+        ),
+    ] {
+        app.agent_navigation
+            .set_status(descendant_thread_id, status);
+        assert_eq!(
+            app.agent_picker_interrupt_preflight(descendant_thread_id),
+            Err(expected.to_string())
+        );
+    }
+}
+
+#[tokio::test]
+async fn agent_picker_close_preflight_enforces_status_and_path_ownership() {
+    let mut app = make_test_app().await;
+    let main_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000301").expect("valid thread");
+    let owner_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000302").expect("valid thread");
+    let descendant_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000303").expect("valid thread");
+    let sibling_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000304").expect("valid thread");
+    let pathless_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000305").expect("valid thread");
+    let root_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000306").expect("valid thread");
+
+    app.primary_thread_id = Some(main_thread_id);
+    app.active_thread_id = Some(owner_thread_id);
+    for (thread_id, agent_path) in [
+        (owner_thread_id, "/root/owner"),
+        (descendant_thread_id, "/root/owner/child"),
+        (sibling_thread_id, "/root/sibling"),
+        (root_thread_id, "/root"),
+    ] {
+        app.agent_navigation
+            .record_sub_agent_activity(SubAgentActivityDisplay {
+                thread_id,
+                agent_path: agent_path.to_string(),
+                is_running_hint: true,
+            });
+    }
+    app.agent_navigation.upsert(
+        pathless_thread_id,
+        Some("Pathless".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+
+    assert_eq!(
+        app.agent_picker_close_preflight(descendant_thread_id),
+        Ok(())
+    );
+    assert_eq!(
+        app.agent_picker_close_preflight(owner_thread_id),
+        Err("An agent cannot close itself from the agent workbench.".to_string())
+    );
+    assert_eq!(
+        app.agent_picker_close_preflight(sibling_thread_id),
+        Err(
+            "Agent `/root/owner` cannot close `/root/sibling` because the target is outside its sub-agent tree."
+                .to_string()
+        )
+    );
+    assert_eq!(
+        app.agent_picker_close_preflight(root_thread_id),
+        Err("Cannot close the root agent from the agent workbench.".to_string())
+    );
+    assert_eq!(
+        app.agent_picker_close_preflight(pathless_thread_id),
+        Err("Cannot close an agent thread without agent_path.".to_string())
+    );
+
+    app.active_thread_id = Some(main_thread_id);
+    app.agent_navigation
+        .set_status(descendant_thread_id, AgentPickerThreadStatus::Closed);
+    assert_eq!(
+        app.agent_picker_close_preflight(descendant_thread_id),
+        Err("Cannot close an already closed agent thread.".to_string())
+    );
+}
+
+#[tokio::test]
 async fn refresh_pending_thread_approvals_only_lists_inactive_threads() {
     let mut app = make_test_app().await;
     let main_thread_id =
@@ -2879,7 +3888,19 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
                 path: Some(rollout_path.clone()),
                 cwd: test_path_buf("/tmp/agent").abs(),
                 cli_version: "0.0.0".to_string(),
-                source: codex_app_server_protocol::SessionSource::Unknown,
+                source: SessionSource::SubAgent(
+                    codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+                        parent_thread_id: main_thread_id,
+                        depth: 1,
+                        agent_path: Some(
+                            AgentPath::try_from("/root/explorer").expect("agent path"),
+                        ),
+                        agent_nickname: Some("Robie".to_string()),
+                        agent_role: Some("explorer".to_string()),
+                        thread_note: Some("Investigate parser state".to_string()),
+                    },
+                ),
+                thread_note: Some("Investigate parser state".to_string()),
                 thread_source: None,
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
@@ -2917,9 +3938,17 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
         Some(&AgentPickerThreadEntry {
             agent_nickname: Some("Robie".to_string()),
             agent_role: Some("explorer".to_string()),
-            agent_path: None,
-            is_running: false,
-            is_closed: false,
+            agent_path: Some("/root/explorer".to_string()),
+            prompt_preview: Some("agent thread".to_string()),
+            thread_note: Some("Investigate parser state".to_string()),
+            cwd: Some(test_path_buf("/tmp/agent").display().to_string()),
+            model_provider: Some("agent-provider".to_string()),
+            created_at: Some(1),
+            updated_at: Some(1),
+            model: Some("gpt-agent".to_string()),
+            reasoning_effort: None,
+            service_tier: None,
+            status: AgentPickerThreadStatus::Idle,
         })
     );
 
@@ -2972,6 +4001,7 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
                 cwd: test_path_buf("/tmp/agent").abs(),
                 cli_version: "0.0.0".to_string(),
                 source: codex_app_server_protocol::SessionSource::Unknown,
+                thread_note: None,
                 thread_source: None,
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
@@ -3031,6 +4061,7 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         cwd: test_path_buf("/tmp/read").abs(),
         cli_version: "0.0.0".to_string(),
         source: codex_app_server_protocol::SessionSource::Unknown,
+        thread_note: None,
         thread_source: None,
         agent_nickname: None,
         agent_role: None,
@@ -3059,6 +4090,104 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         session.permission_profile, expected_permission_profile,
         "thread/read does not return fresh server permissions; the fallback profile must use the \
          active widget permissions rather than reusing the cached primary session profile"
+    );
+}
+
+#[tokio::test]
+async fn agent_picker_thread_detail_uses_top_level_thread_note_and_clears_stale_note() {
+    let mut app = make_test_app().await;
+    let thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000405").expect("valid thread");
+    let mut thread = Thread {
+        id: thread_id.to_string(),
+        session_id: thread_id.to_string(),
+        forked_from_id: None,
+        parent_thread_id: None,
+        preview: "read thread".to_string(),
+        ephemeral: false,
+        model_provider: "read-provider".to_string(),
+        created_at: 1,
+        updated_at: 2,
+        status: codex_app_server_protocol::ThreadStatus::Idle,
+        path: None,
+        cwd: test_path_buf("/tmp/read").abs(),
+        cli_version: "0.0.0".to_string(),
+        source: codex_app_server_protocol::SessionSource::Unknown,
+        thread_note: Some("Inspect parser state".to_string()),
+        thread_source: None,
+        agent_nickname: Some("Robie".to_string()),
+        agent_role: Some("explorer".to_string()),
+        git_info: None,
+        name: Some("read thread".to_string()),
+        turns: Vec::new(),
+    };
+
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Robie".to_string()),
+        Some("explorer".to_string()),
+        /*is_closed*/ false,
+    );
+    app.update_agent_picker_thread_detail_from_thread(thread_id, &thread);
+    assert_eq!(
+        app.agent_navigation
+            .get(&thread_id)
+            .and_then(|entry| entry.thread_note.as_deref()),
+        Some("Inspect parser state")
+    );
+
+    thread.thread_note = None;
+    app.update_agent_picker_thread_detail_from_thread(thread_id, &thread);
+    assert_eq!(
+        app.agent_navigation
+            .get(&thread_id)
+            .and_then(|entry| entry.thread_note.as_deref()),
+        None
+    );
+}
+
+#[tokio::test]
+async fn thread_note_updated_notification_updates_agent_picker_cache() {
+    let mut app = make_test_app().await;
+    let thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000406").expect("valid thread");
+
+    app.agent_navigation.upsert(
+        thread_id,
+        Some("Robie".to_string()),
+        Some("explorer".to_string()),
+        /*is_closed*/ false,
+    );
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadNoteUpdated(ThreadNoteUpdatedNotification {
+            thread_id: thread_id.to_string(),
+            thread_note: Some("Inspect parser state".to_string()),
+        }),
+    )
+    .await
+    .expect("thread note notification should be cached");
+    assert_eq!(
+        app.agent_navigation
+            .get(&thread_id)
+            .and_then(|entry| entry.thread_note.as_deref()),
+        Some("Inspect parser state")
+    );
+
+    app.enqueue_thread_notification(
+        thread_id,
+        ServerNotification::ThreadNoteUpdated(ThreadNoteUpdatedNotification {
+            thread_id: thread_id.to_string(),
+            thread_note: None,
+        }),
+    )
+    .await
+    .expect("thread note clear notification should be cached");
+    assert_eq!(
+        app.agent_navigation
+            .get(&thread_id)
+            .and_then(|entry| entry.thread_note.as_deref()),
+        None
     );
 }
 
@@ -5647,6 +6776,7 @@ async fn thread_rollback_response_discards_queued_active_thread_events() {
                 cwd: test_path_buf("/tmp/project").abs(),
                 cli_version: "0.0.0".to_string(),
                 source: SessionSource::Cli,
+                thread_note: None,
                 thread_source: None,
                 agent_nickname: None,
                 agent_role: None,

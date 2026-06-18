@@ -738,6 +738,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                     ApiCollabAgentState {
                         status: ApiCollabAgentStatus::Running,
                         message: None,
+                        thread_note: Some("drafting plan".to_string()),
                     },
                 )]),
             },
@@ -782,6 +783,7 @@ fn collab_spawn_begin_and_end_emit_item_events() {
                             CollabAgentState {
                                 status: CollabAgentStatus::Running,
                                 message: None,
+                                thread_note: Some("drafting plan".to_string()),
                             },
                         )]),
                         status: CollabToolCallStatus::Completed,

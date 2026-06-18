@@ -247,6 +247,8 @@ pub struct Config {
     pub model_auto_compact_token_limit: Option<i64>,
     pub model_auto_compact_token_limit_scope: Option<AutoCompactTokenLimitScope>,
     pub model_provider: Option<String>,
+    #[serde(default)]
+    pub disabled_model_providers: Vec<String>,
     #[experimental(nested)]
     pub approval_policy: Option<AskForApproval>,
     /// [UNSTABLE] Optional default for where approval requests are routed for

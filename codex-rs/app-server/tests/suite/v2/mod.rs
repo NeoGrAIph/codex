@@ -1,4 +1,5 @@
 mod account;
+mod agent_role_tool_selection_catalog;
 mod analytics;
 mod app_list;
 mod attestation;

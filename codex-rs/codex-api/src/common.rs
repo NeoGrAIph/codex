@@ -265,13 +265,16 @@ fn chat_messages_from_response_items(
     let mut pending_reasoning: Option<String> = None;
     for item in input {
         match item {
-            ResponseItem::Message { role, content, .. } => messages.push(ChatMessage {
-                role,
-                content: Some(content_items_to_chat_text(&content)?),
-                reasoning_content: pending_reasoning.take(),
-                tool_calls: None,
-                tool_call_id: None,
-            }),
+            ResponseItem::Message { role, content, .. } => {
+                let role = chat_message_role_from_response_role(&role)?;
+                messages.push(ChatMessage {
+                    role,
+                    content: Some(content_items_to_chat_text(&content)?),
+                    reasoning_content: pending_reasoning.take(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
             ResponseItem::Reasoning { content, .. } => {
                 pending_reasoning = reasoning_content_to_chat_text(content);
             }
@@ -310,6 +313,18 @@ fn chat_messages_from_response_items(
     }
 
     Ok(messages)
+}
+
+fn chat_message_role_from_response_role(role: &str) -> Result<String, ApiError> {
+    match role {
+        "developer" => Ok("system".to_string()),
+        "system" | "user" | "assistant" | "tool" | "latest_reminder" => Ok(role.to_string()),
+        unsupported => Err(ApiError::InvalidRequest {
+            message: format!(
+                "chat_completions providers do not support `{unsupported}` message roles"
+            ),
+        }),
+    }
 }
 
 fn chat_unsupported_response_item_kind(item: &ResponseItem) -> &'static str {
@@ -488,6 +503,89 @@ mod tests {
             },
             expected_content_kind,
         );
+    }
+
+    fn message(role: &str, text: &str) -> ResponseItem {
+        ResponseItem::Message {
+            id: None,
+            role: role.to_string(),
+            content: vec![ContentItem::InputText {
+                text: text.to_string(),
+            }],
+            phase: None,
+        }
+    }
+
+    #[test]
+    fn chat_completions_maps_developer_messages_to_system_role() {
+        let request = ChatCompletionsApiRequest::new(
+            "deepseek-v4-flash".to_string(),
+            "base instructions".to_string(),
+            vec![
+                message("developer", "developer context"),
+                message("user", "hi"),
+            ],
+            Vec::new(),
+            /*parallel_tool_calls*/ false,
+            /*reasoning*/ None,
+        )
+        .expect("developer messages should be representable for chat completions");
+
+        assert_eq!(
+            request.messages,
+            vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: Some("base instructions".to_string()),
+                    reasoning_content: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: Some("developer context".to_string()),
+                    reasoning_content: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: Some("hi".to_string()),
+                    reasoning_content: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn chat_completions_preserves_latest_reminder_role() {
+        let request = ChatCompletionsApiRequest::new(
+            "deepseek-v4-flash".to_string(),
+            String::new(),
+            vec![message("latest_reminder", "remember this")],
+            Vec::new(),
+            /*parallel_tool_calls*/ false,
+            /*reasoning*/ None,
+        )
+        .expect("latest_reminder is a supported chat completions role");
+
+        assert_eq!(
+            request.messages,
+            vec![ChatMessage {
+                role: "latest_reminder".to_string(),
+                content: Some("remember this".to_string()),
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn chat_completions_rejects_unknown_message_role() {
+        assert_chat_request_rejects_history_item(message("observer", "unsupported"), "observer");
     }
 
     #[test]

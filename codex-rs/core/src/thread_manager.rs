@@ -34,14 +34,17 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::openai_models::ModelPreset;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
+use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ResumedHistory;
@@ -590,6 +593,205 @@ impl ThreadManager {
         Ok(subtree_thread_ids)
     }
 
+    /// Queue a message for a path-backed MAv2 child agent without starting a turn.
+    pub async fn queue_inter_agent_message(
+        &self,
+        author_thread_id: ThreadId,
+        target_thread_id: ThreadId,
+        message: String,
+    ) -> CodexResult<()> {
+        if message.trim().is_empty() {
+            return Err(CodexErr::InvalidRequest(
+                "Cannot send an empty agent message.".to_string(),
+            ));
+        }
+
+        if author_thread_id == target_thread_id {
+            return Err(CodexErr::InvalidRequest(
+                "Cannot send an agent message to the current thread.".to_string(),
+            ));
+        }
+
+        let author_thread = self.get_thread(author_thread_id).await?;
+        let target_thread = self.get_thread(target_thread_id).await?;
+        let author_session_source = author_thread.config_snapshot().await.session_source;
+        let target_session_source = target_thread.config_snapshot().await.session_source;
+
+        let author_path = match author_session_source.get_agent_path() {
+            Some(agent_path) => agent_path,
+            None if author_session_source.is_non_root_agent() => {
+                return Err(CodexErr::InvalidRequest(
+                    "Agent messaging requires a path-backed author.".to_string(),
+                ));
+            }
+            None => AgentPath::root(),
+        };
+        let target_path = target_session_source.get_agent_path().ok_or_else(|| {
+            CodexErr::InvalidRequest(
+                "Agent messaging requires a path-backed sub-agent target.".to_string(),
+            )
+        })?;
+
+        if target_path.is_root() {
+            return Err(CodexErr::InvalidRequest(
+                "Agent messaging cannot target the root agent.".to_string(),
+            ));
+        }
+        if target_path == author_path {
+            return Err(CodexErr::InvalidRequest(
+                "Cannot send an agent message to the current thread.".to_string(),
+            ));
+        }
+        if !agent_path_is_descendant_of(&target_path, &author_path) {
+            return Err(CodexErr::InvalidRequest(
+                "Agent messaging can only target descendants of the current agent.".to_string(),
+            ));
+        }
+
+        let communication = InterAgentCommunication::new_encrypted(
+            author_path,
+            target_path,
+            Vec::new(),
+            message,
+            /*trigger_turn*/ false,
+        );
+        self.agent_control()
+            .send_inter_agent_communication(target_thread_id, communication)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Send a follow-up task to a path-backed MAv2 child agent from an owning workbench context.
+    pub async fn send_inter_agent_followup(
+        &self,
+        author_thread_id: ThreadId,
+        target_thread_id: ThreadId,
+        message: String,
+    ) -> CodexResult<()> {
+        if message.trim().is_empty() {
+            return Err(CodexErr::InvalidRequest(
+                "Cannot send an empty agent follow-up.".to_string(),
+            ));
+        }
+
+        if author_thread_id == target_thread_id {
+            return Err(CodexErr::InvalidRequest(
+                "Cannot send an agent follow-up to the current thread.".to_string(),
+            ));
+        }
+
+        let author_thread = self.get_thread(author_thread_id).await?;
+        let target_thread = self.get_thread(target_thread_id).await?;
+        let author_session_source = author_thread.config_snapshot().await.session_source;
+        let target_session_source = target_thread.config_snapshot().await.session_source;
+
+        let author_path = match author_session_source.get_agent_path() {
+            Some(agent_path) => agent_path,
+            None if author_session_source.is_non_root_agent() => {
+                return Err(CodexErr::InvalidRequest(
+                    "Agent follow-up requires a path-backed author.".to_string(),
+                ));
+            }
+            None => AgentPath::root(),
+        };
+        let target_path = target_session_source.get_agent_path().ok_or_else(|| {
+            CodexErr::InvalidRequest(
+                "Agent follow-up requires a path-backed sub-agent target.".to_string(),
+            )
+        })?;
+
+        if target_path.is_root() {
+            return Err(CodexErr::InvalidRequest(
+                "Agent follow-up cannot target the root agent.".to_string(),
+            ));
+        }
+        if target_path == author_path {
+            return Err(CodexErr::InvalidRequest(
+                "An agent cannot follow up itself from the agent workbench.".to_string(),
+            ));
+        }
+        if !agent_path_is_descendant_of(&target_path, &author_path) {
+            return Err(CodexErr::InvalidRequest(
+                "Agent follow-up can only target descendants of the current agent.".to_string(),
+            ));
+        }
+
+        match target_thread.agent_status().await {
+            AgentStatus::Completed(_) | AgentStatus::Interrupted => {}
+            AgentStatus::PendingInit | AgentStatus::Running => {
+                return Err(CodexErr::InvalidRequest(
+                    "Agent follow-up can only start when the target is idle.".to_string(),
+                ));
+            }
+            AgentStatus::Errored(_) => {
+                return Err(CodexErr::InvalidRequest(
+                    "Cannot follow up an agent thread that is already in error state.".to_string(),
+                ));
+            }
+            AgentStatus::Shutdown | AgentStatus::NotFound => {
+                return Err(CodexErr::InvalidRequest(
+                    "Cannot follow up a closed agent thread.".to_string(),
+                ));
+            }
+        }
+
+        let communication = InterAgentCommunication::new_encrypted(
+            author_path,
+            target_path,
+            Vec::new(),
+            message,
+            /*trigger_turn*/ true,
+        );
+        self.agent_control()
+            .send_inter_agent_communication(target_thread_id, communication)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Close a path-backed MAv2 child agent from an owning workbench context.
+    pub async fn close_agent_from_workbench(
+        &self,
+        author_thread_id: ThreadId,
+        target_thread_id: ThreadId,
+    ) -> CodexResult<AgentStatus> {
+        if author_thread_id == target_thread_id {
+            return Err(CodexErr::InvalidRequest(
+                "Cannot close the current agent from its own workbench.".to_string(),
+            ));
+        }
+
+        let author_thread = self.get_thread(author_thread_id).await?;
+        let target_thread = self.get_thread(target_thread_id).await?;
+        let author_session_source = author_thread.config_snapshot().await.session_source;
+        let target_session_source = target_thread.config_snapshot().await.session_source;
+
+        let author_path = author_session_source
+            .get_agent_path()
+            .unwrap_or_else(AgentPath::root);
+        let target_path = target_session_source.get_agent_path().ok_or_else(|| {
+            CodexErr::InvalidRequest(
+                "Agent close requires a path-backed sub-agent target.".to_string(),
+            )
+        })?;
+
+        if target_path.is_root() {
+            return Err(CodexErr::InvalidRequest(
+                "Agent close cannot target the root agent.".to_string(),
+            ));
+        }
+        if !agent_path_is_descendant_of(&target_path, &author_path) {
+            return Err(CodexErr::InvalidRequest(
+                "Agent close can only target descendants of the current agent.".to_string(),
+            ));
+        }
+
+        let previous_status = self.agent_control().get_status(target_thread_id).await;
+        self.agent_control().close_agent(target_thread_id).await?;
+        Ok(previous_status)
+    }
+
     pub async fn start_thread(&self, config: Config) -> CodexResult<NewThread> {
         // Box delegated thread-spawn futures so these convenience wrappers do
         // not inline the full spawn path into every caller's async state.
@@ -993,6 +1195,13 @@ impl ThreadManager {
             .and_then(|ops_log| ops_log.lock().ok().map(|log| log.clone()))
             .unwrap_or_default()
     }
+}
+
+fn agent_path_is_descendant_of(agent_path: &AgentPath, ancestor: &AgentPath) -> bool {
+    agent_path
+        .as_str()
+        .strip_prefix(ancestor.as_str())
+        .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 impl ThreadManagerState {

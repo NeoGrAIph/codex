@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use codex_features::Feature;
@@ -29,12 +30,19 @@ use codex_tools::ToolOutput;
 use codex_tools::ToolSpec;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use tokio_util::sync::CancellationToken;
 
+use crate::function_tool::FunctionCallError;
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnContext;
+use crate::tools::context::ToolPayload;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
+use crate::tools::router::ToolCall;
+use crate::tools::router::ToolCallSource;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
+use crate::tools::router::ToolSelectionCatalogExposure;
+use crate::turn_diff_tracker::TurnDiffTracker;
 
 #[derive(Default)]
 struct ToolPlanInputs {
@@ -51,6 +59,8 @@ struct ToolPlanProbe {
     namespace_functions: BTreeMap<String, Vec<String>>,
     registered_names: Vec<String>,
     exposures: BTreeMap<String, ToolExposure>,
+    unmatched_allowed_tools: Vec<String>,
+    tool_selection_catalog: Vec<(String, bool, ToolSelectionCatalogExposure)>,
 }
 
 impl ToolPlanProbe {
@@ -81,6 +91,16 @@ impl ToolPlanProbe {
             })
             .collect::<BTreeMap<_, _>>();
         let registered_tool_names = router.registered_tool_names_for_test();
+        let unmatched_allowed_tools = router
+            .tool_selection_diagnostics()
+            .unmatched_allowed_tools
+            .clone();
+        let tool_selection_catalog = router
+            .tool_selection_diagnostics()
+            .catalog_entries
+            .iter()
+            .map(|entry| (entry.name.clone(), entry.selected, entry.exposure))
+            .collect::<Vec<_>>();
         let registered_names = registered_tool_names
             .iter()
             .map(ToString::to_string)
@@ -100,6 +120,8 @@ impl ToolPlanProbe {
             namespace_functions,
             registered_names,
             exposures,
+            unmatched_allowed_tools,
+            tool_selection_catalog,
         }
     }
 
@@ -166,6 +188,64 @@ impl ToolPlanProbe {
             .exposures
             .get(name)
             .unwrap_or_else(|| panic!("expected registered tool `{name}`"))
+    }
+
+    fn assert_unmatched_allowed_tools(&self, expected: &[&str]) {
+        assert_eq!(
+            self.unmatched_allowed_tools,
+            expected
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    fn assert_tool_selection_catalog_contains(&self, expected: &[(&str, bool)]) {
+        for (name, selected) in expected {
+            assert!(
+                self.tool_selection_catalog
+                    .iter()
+                    .any(|(entry_name, entry_selected, _)| {
+                        entry_name == name && entry_selected == selected
+                    }),
+                "expected tool selection catalog entry `{} = {}` in {:?}",
+                name,
+                selected,
+                self.tool_selection_catalog
+            );
+        }
+    }
+
+    fn assert_tool_selection_catalog_lacks(&self, expected_absent: &[&str]) {
+        for name in expected_absent {
+            assert!(
+                !self
+                    .tool_selection_catalog
+                    .iter()
+                    .any(|(entry_name, _, _)| entry_name == name),
+                "expected tool selection catalog entry `{name}` to be absent from {:?}",
+                self.tool_selection_catalog
+            );
+        }
+    }
+
+    fn assert_tool_selection_catalog_exposure(
+        &self,
+        expected: &[(&str, ToolSelectionCatalogExposure)],
+    ) {
+        for (name, exposure) in expected {
+            assert!(
+                self.tool_selection_catalog
+                    .iter()
+                    .any(|(entry_name, _, entry_exposure)| {
+                        entry_name == name && entry_exposure == exposure
+                    }),
+                "expected tool selection catalog exposure `{} = {:?}` in {:?}",
+                name,
+                exposure,
+                self.tool_selection_catalog
+            );
+        }
     }
 }
 
@@ -253,6 +333,15 @@ fn update_config(turn: &mut TurnContext, update: impl FnOnce(&mut crate::config:
     let mut config = (*turn.config).clone();
     update(&mut config);
     turn.config = Arc::new(config);
+}
+
+fn set_tool_selection_allowlist(
+    turn: &mut TurnContext,
+    allowed_tools: impl IntoIterator<Item = ToolName>,
+) {
+    update_config(turn, |config| {
+        config.tool_selection.allowed = Some(allowed_tools.into_iter().collect::<HashSet<_>>());
+    });
 }
 
 fn set_web_search_mode(turn: &mut TurnContext, mode: WebSearchMode) {
@@ -774,6 +863,465 @@ async fn deferred_extension_tools_are_discoverable_with_tool_search() {
 }
 
 #[tokio::test]
+async fn tool_selection_allowlist_filters_visible_specs_and_registry() {
+    let plan = probe(|turn| {
+        set_tool_selection_allowlist(turn, [ToolName::plain("update_plan")]);
+    })
+    .await;
+
+    plan.assert_visible_contains(&["update_plan"]);
+    plan.assert_visible_lacks(&["view_image", "request_user_input"]);
+    plan.assert_registered_contains(&["update_plan"]);
+    plan.assert_registered_lacks(&["view_image", "request_user_input"]);
+}
+
+#[tokio::test]
+async fn tool_selection_missing_policy_keeps_native_tools_unrestricted() {
+    let plan = probe(|_| {}).await;
+
+    plan.assert_visible_contains(&["update_plan", "view_image", "request_user_input"]);
+    plan.assert_registered_contains(&["update_plan", "view_image", "request_user_input"]);
+    plan.assert_tool_selection_catalog_contains(&[
+        ("request_user_input", true),
+        ("shell_command", true),
+        ("update_plan", true),
+        ("view_image", true),
+    ]);
+    plan.assert_tool_selection_catalog_exposure(&[(
+        "shell_command",
+        ToolSelectionCatalogExposure::Hidden,
+    )]);
+}
+
+#[tokio::test]
+async fn tool_selection_unknown_entries_do_not_create_tools() {
+    let plan = probe(|turn| {
+        set_tool_selection_allowlist(turn, [ToolName::plain("missing_tool")]);
+    })
+    .await;
+
+    plan.assert_visible_lacks(&["missing_tool", "update_plan", "view_image"]);
+    plan.assert_registered_lacks(&["missing_tool", "update_plan", "view_image"]);
+    plan.assert_unmatched_allowed_tools(&["missing_tool"]);
+    plan.assert_tool_selection_catalog_lacks(&["missing_tool"]);
+    plan.assert_tool_selection_catalog_contains(&[("update_plan", false), ("view_image", false)]);
+}
+
+#[tokio::test]
+async fn tool_selection_catalog_projects_effective_runtime_tools() {
+    let direct_tool = ToolName::namespaced("mcp__direct", "lookup");
+    let deferred_tool = ToolName::namespaced("mcp__searchable", "lookup");
+    let nested_tool = ToolName::namespaced("codex_app", "lookup");
+    let plan = probe_with(
+        |turn| {
+            set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
+            set_web_search_mode(turn, WebSearchMode::Live);
+            turn.model_info.supports_search_tool = true;
+            turn.model_info.web_search_tool_type = WebSearchToolType::TextAndImage;
+            set_tool_selection_allowlist(
+                turn,
+                [
+                    direct_tool.clone(),
+                    deferred_tool.clone(),
+                    nested_tool.clone(),
+                    ToolName::plain("tool_search"),
+                    ToolName::plain(codex_code_mode::PUBLIC_TOOL_NAME),
+                    ToolName::plain(codex_code_mode::WAIT_TOOL_NAME),
+                    ToolName::plain("web_search"),
+                    ToolName::plain("missing_tool"),
+                ],
+            );
+        },
+        ToolPlanInputs {
+            mcp_tools: Some(vec![mcp_tool("direct", "mcp__direct", "lookup")]),
+            deferred_mcp_tools: Some(vec![mcp_tool("searchable", "mcp__searchable", "lookup")]),
+            dynamic_tools: vec![dynamic_tool(
+                Some("codex_app"),
+                "lookup",
+                /*defer_loading*/ false,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    plan.assert_tool_selection_catalog_contains(&[
+        ("mcp__direct/lookup", true),
+        ("mcp__searchable/lookup", true),
+        ("codex_app/lookup", true),
+        ("tool_search", true),
+        (codex_code_mode::PUBLIC_TOOL_NAME, true),
+        (codex_code_mode::WAIT_TOOL_NAME, true),
+        ("web_search", true),
+        ("update_plan", false),
+    ]);
+    plan.assert_tool_selection_catalog_exposure(&[
+        ("mcp__direct/lookup", ToolSelectionCatalogExposure::Direct),
+        (
+            "mcp__searchable/lookup",
+            ToolSelectionCatalogExposure::Deferred,
+        ),
+        ("codex_app/lookup", ToolSelectionCatalogExposure::Direct),
+        (
+            codex_code_mode::PUBLIC_TOOL_NAME,
+            ToolSelectionCatalogExposure::Direct,
+        ),
+        (
+            codex_code_mode::WAIT_TOOL_NAME,
+            ToolSelectionCatalogExposure::Direct,
+        ),
+        ("tool_search", ToolSelectionCatalogExposure::Direct),
+        ("web_search", ToolSelectionCatalogExposure::Hosted),
+    ]);
+    plan.assert_tool_selection_catalog_lacks(&["missing_tool"]);
+    plan.assert_unmatched_allowed_tools(&["missing_tool"]);
+}
+
+#[tokio::test]
+async fn tool_selection_catalog_marks_unselected_runtime_discovered_tools() {
+    let plan = probe_with(
+        |turn| {
+            set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
+            set_web_search_mode(turn, WebSearchMode::Live);
+            turn.model_info.supports_search_tool = true;
+            turn.model_info.web_search_tool_type = WebSearchToolType::TextAndImage;
+            set_tool_selection_allowlist(turn, [ToolName::plain("update_plan")]);
+        },
+        ToolPlanInputs {
+            mcp_tools: Some(vec![mcp_tool("direct", "mcp__direct", "lookup")]),
+            deferred_mcp_tools: Some(vec![mcp_tool("searchable", "mcp__searchable", "lookup")]),
+            dynamic_tools: vec![dynamic_tool(
+                Some("codex_app"),
+                "lookup",
+                /*defer_loading*/ false,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    plan.assert_tool_selection_catalog_contains(&[
+        ("update_plan", true),
+        ("mcp__direct/lookup", false),
+        ("mcp__searchable/lookup", false),
+        ("codex_app/lookup", false),
+        ("tool_search", false),
+        (codex_code_mode::PUBLIC_TOOL_NAME, false),
+        (codex_code_mode::WAIT_TOOL_NAME, false),
+        ("web_search", false),
+    ]);
+    plan.assert_tool_selection_catalog_exposure(&[
+        ("mcp__direct/lookup", ToolSelectionCatalogExposure::Direct),
+        (
+            "mcp__searchable/lookup",
+            ToolSelectionCatalogExposure::Deferred,
+        ),
+        ("web_search", ToolSelectionCatalogExposure::Hosted),
+    ]);
+    plan.assert_unmatched_allowed_tools(&[]);
+}
+
+#[tokio::test]
+async fn tool_selection_warns_when_selected_tool_search_has_no_effective_index() {
+    let plan = probe_with(
+        |turn| {
+            turn.model_info.supports_search_tool = true;
+            set_tool_selection_allowlist(turn, [ToolName::plain("tool_search")]);
+        },
+        ToolPlanInputs {
+            deferred_mcp_tools: Some(vec![mcp_tool("searchable", "mcp__searchable", "lookup")]),
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    plan.assert_visible_lacks(&["tool_search"]);
+    plan.assert_registered_lacks(&["tool_search"]);
+    plan.assert_tool_selection_catalog_contains(&[
+        ("tool_search", true),
+        ("mcp__searchable/lookup", false),
+    ]);
+    plan.assert_unmatched_allowed_tools(&["tool_search"]);
+}
+
+#[test]
+fn tool_selection_stale_entries_are_derived_from_available_inventory() {
+    let mut planned_tools = super::PlannedTools::default();
+    planned_tools.add(crate::tools::handlers::PlanHandler);
+    planned_tools.add_hosted_spec(ToolSpec::WebSearch {
+        external_web_access: Some(true),
+        filters: None,
+        user_location: None,
+        search_context_size: None,
+        search_content_types: None,
+    });
+
+    let allowed_tools = [
+        ToolName::plain("missing_tool"),
+        ToolName::namespaced("mcp__stale", "lookup"),
+        ToolName::plain("update_plan"),
+        ToolName::plain("web_search"),
+    ]
+    .into_iter()
+    .collect::<HashSet<_>>();
+
+    assert_eq!(
+        super::stale_tool_selection_entries(&allowed_tools, &planned_tools),
+        vec!["mcp__stale/lookup".to_string(), "missing_tool".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn tool_selection_allowlist_does_not_enable_unavailable_tools() {
+    let plan = probe(|turn| {
+        turn.environments.turn_environments.clear();
+        set_tool_selection_allowlist(
+            turn,
+            [
+                ToolName::plain("update_plan"),
+                ToolName::plain("view_image"),
+            ],
+        );
+    })
+    .await;
+
+    plan.assert_visible_contains(&["update_plan"]);
+    plan.assert_registered_contains(&["update_plan"]);
+    plan.assert_visible_lacks(&["view_image"]);
+    plan.assert_registered_lacks(&["view_image"]);
+    plan.assert_unmatched_allowed_tools(&["view_image"]);
+}
+
+#[tokio::test]
+async fn tool_selection_blocked_tool_dispatch_uses_native_unsupported_path() {
+    let (session, mut turn) = make_session_and_context().await;
+    set_tool_selection_allowlist(&mut turn, [ToolName::plain("update_plan")]);
+    let router = ToolRouter::from_turn_context(
+        &turn,
+        ToolRouterParams {
+            mcp_tools: None,
+            deferred_mcp_tools: None,
+            discoverable_tools: None,
+            extension_tool_executors: Vec::new(),
+            dynamic_tools: &[],
+        },
+    );
+    assert!(
+        !router
+            .registered_tool_names_for_test()
+            .contains(&ToolName::plain("view_image"))
+    );
+
+    let result = router
+        .dispatch_tool_call_with_code_mode_result(
+            Arc::new(session),
+            Arc::new(turn),
+            CancellationToken::new(),
+            Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
+            ToolCall {
+                tool_name: ToolName::plain("view_image"),
+                call_id: "call-1".to_string(),
+                payload: ToolPayload::Function {
+                    arguments: "{}".to_string(),
+                },
+            },
+            ToolCallSource::Direct,
+        )
+        .await;
+    let Err(err) = result else {
+        panic!("blocked tool should not dispatch");
+    };
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("unsupported call: view_image".to_string())
+    );
+}
+
+#[tokio::test]
+async fn tool_selection_filters_deferred_tools_before_tool_search() {
+    let plan = probe_with(
+        |turn| {
+            turn.model_info.supports_search_tool = true;
+            set_tool_selection_allowlist(turn, [ToolName::plain("update_plan")]);
+        },
+        ToolPlanInputs {
+            extension_tool_executors: vec![Arc::new(DeferredExtensionTool)],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    plan.assert_visible_contains(&["update_plan"]);
+    plan.assert_visible_lacks(&["tool_search", "extension_echo"]);
+    plan.assert_registered_lacks(&["tool_search", "extension_echo"]);
+    plan.assert_unmatched_allowed_tools(&[]);
+}
+
+#[tokio::test]
+async fn tool_selection_filters_direct_and_deferred_mcp_tools() {
+    let direct_tool = ToolName::namespaced("mcp__direct", "lookup");
+    let direct_blocked = probe_with(
+        |turn| {
+            set_tool_selection_allowlist(turn, [ToolName::plain("update_plan")]);
+        },
+        ToolPlanInputs {
+            mcp_tools: Some(vec![mcp_tool("direct", "mcp__direct", "lookup")]),
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+    assert_eq!(
+        direct_blocked.namespace_function_names("mcp__direct"),
+        Vec::<String>::new().as_slice()
+    );
+    direct_blocked.assert_registered_lacks(&[&direct_tool.to_string()]);
+
+    let direct_allowed = probe_with(
+        |turn| {
+            set_tool_selection_allowlist(turn, [direct_tool.clone()]);
+        },
+        ToolPlanInputs {
+            mcp_tools: Some(vec![mcp_tool("direct", "mcp__direct", "lookup")]),
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+    assert_eq!(
+        direct_allowed.namespace_function_names("mcp__direct"),
+        &["lookup".to_string()]
+    );
+    direct_allowed.assert_registered_contains(&[&direct_tool.to_string()]);
+
+    let deferred_tool = ToolName::namespaced("mcp__searchable", "lookup");
+    let deferred_allowed = probe_with(
+        |turn| {
+            turn.model_info.supports_search_tool = true;
+            set_tool_selection_allowlist(
+                turn,
+                [deferred_tool.clone(), ToolName::plain("tool_search")],
+            );
+        },
+        ToolPlanInputs {
+            deferred_mcp_tools: Some(vec![mcp_tool("searchable", "mcp__searchable", "lookup")]),
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+    deferred_allowed.assert_visible_contains(&["tool_search"]);
+    deferred_allowed.assert_registered_contains(&["tool_search", &deferred_tool.to_string()]);
+    deferred_allowed.assert_unmatched_allowed_tools(&[]);
+
+    let deferred_without_tool_search = probe_with(
+        |turn| {
+            turn.model_info.supports_search_tool = true;
+            set_tool_selection_allowlist(turn, [deferred_tool.clone()]);
+        },
+        ToolPlanInputs {
+            deferred_mcp_tools: Some(vec![mcp_tool("searchable", "mcp__searchable", "lookup")]),
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+    deferred_without_tool_search.assert_visible_lacks(&["tool_search"]);
+    deferred_without_tool_search.assert_registered_contains(&[&deferred_tool.to_string()]);
+    deferred_without_tool_search.assert_registered_lacks(&["tool_search"]);
+    deferred_without_tool_search.assert_unmatched_allowed_tools(&[]);
+}
+
+#[tokio::test]
+async fn tool_selection_filters_code_mode_projection_strictly() {
+    let nested_tool = ToolName::namespaced("codex_app", "lookup");
+    let without_code_mode_tools = probe_with(
+        |turn| {
+            set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
+            set_tool_selection_allowlist(turn, [nested_tool.clone()]);
+        },
+        ToolPlanInputs {
+            dynamic_tools: vec![dynamic_tool(
+                Some("codex_app"),
+                "lookup",
+                /*defer_loading*/ false,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    without_code_mode_tools.assert_visible_lacks(&[
+        codex_code_mode::PUBLIC_TOOL_NAME,
+        codex_code_mode::WAIT_TOOL_NAME,
+        "codex_app",
+    ]);
+    without_code_mode_tools.assert_registered_contains(&[&nested_tool.to_string()]);
+    without_code_mode_tools.assert_registered_lacks(&[
+        codex_code_mode::PUBLIC_TOOL_NAME,
+        codex_code_mode::WAIT_TOOL_NAME,
+    ]);
+    without_code_mode_tools.assert_unmatched_allowed_tools(&[]);
+
+    let with_code_mode_tools = probe_with(
+        |turn| {
+            set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
+            set_tool_selection_allowlist(
+                turn,
+                [
+                    nested_tool.clone(),
+                    ToolName::plain(codex_code_mode::PUBLIC_TOOL_NAME),
+                    ToolName::plain(codex_code_mode::WAIT_TOOL_NAME),
+                ],
+            );
+        },
+        ToolPlanInputs {
+            dynamic_tools: vec![dynamic_tool(
+                Some("codex_app"),
+                "lookup",
+                /*defer_loading*/ false,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+
+    with_code_mode_tools.assert_visible_contains(&[
+        codex_code_mode::PUBLIC_TOOL_NAME,
+        codex_code_mode::WAIT_TOOL_NAME,
+    ]);
+    assert_eq!(
+        with_code_mode_tools.namespace_function_names("codex_app"),
+        Vec::<String>::new().as_slice()
+    );
+    with_code_mode_tools.assert_registered_contains(&[
+        &nested_tool.to_string(),
+        codex_code_mode::PUBLIC_TOOL_NAME,
+        codex_code_mode::WAIT_TOOL_NAME,
+    ]);
+    with_code_mode_tools.assert_unmatched_allowed_tools(&[]);
+}
+
+#[tokio::test]
+async fn tool_selection_filters_hosted_specs() {
+    let blocked = probe(|turn| {
+        set_web_search_mode(turn, WebSearchMode::Live);
+        turn.model_info.web_search_tool_type = WebSearchToolType::TextAndImage;
+        set_tool_selection_allowlist(turn, [ToolName::plain("update_plan")]);
+    })
+    .await;
+    blocked.assert_visible_lacks(&["web_search"]);
+    blocked.assert_unmatched_allowed_tools(&[]);
+
+    let allowed = probe(|turn| {
+        set_web_search_mode(turn, WebSearchMode::Live);
+        turn.model_info.web_search_tool_type = WebSearchToolType::TextAndImage;
+        set_tool_selection_allowlist(turn, [ToolName::plain("web_search")]);
+    })
+    .await;
+    allowed.assert_visible_contains(&["web_search"]);
+    allowed.assert_registered_lacks(&["web_search"]);
+    allowed.assert_unmatched_allowed_tools(&[]);
+}
+
+#[tokio::test]
 async fn invalid_mcp_tools_are_not_registered() {
     let plan = probe_with(
         |_| {},
@@ -1107,6 +1655,30 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
             Some(true)
         );
     }
+}
+
+#[tokio::test]
+async fn multi_agent_v2_wait_agent_schema_uses_configured_fork_timeout_defaults() {
+    let plan = probe(|turn| {
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+    })
+    .await;
+
+    let ToolSpec::Function(tool) = plan.visible_spec("wait_agent") else {
+        panic!("expected wait_agent function spec");
+    };
+    let properties = tool
+        .parameters
+        .properties
+        .as_ref()
+        .expect("wait_agent should use object params");
+
+    assert_eq!(
+        properties
+            .get("timeout_ms")
+            .and_then(|schema| schema.description.as_deref()),
+        Some("Timeout in milliseconds. Defaults to 300000, min 10000, max 3600000.")
+    );
 }
 
 #[tokio::test]

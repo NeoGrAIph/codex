@@ -9,4 +9,10 @@ export type ThreadMetadataUpdateParams = { threadId: string,
  * Omit a field to leave it unchanged, set it to `null` to clear it, or
  * provide a string to replace the stored value.
  */
-gitInfo?: ThreadMetadataGitInfoUpdateParams | null, };
+gitInfo?: ThreadMetadataGitInfoUpdateParams | null,
+/**
+ * Patch the short note attached to a thread-spawn sub-agent.
+ * Omit to leave it unchanged, set it to `null` or blank to clear it,
+ * or provide a string up to the shared thread-note limit.
+ */
+threadNote?: string | null, };

@@ -1,0 +1,15 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+▌ Create role template
+▌ $CODEX_HOME/agents/<role>.toml
+▌
+▌ name = "new-role"
+▌ description = "Custom sub-agent role template for `new-role`."
+▌ nickname_candidates = ["new"]
+▌ developer_instructions = "Define `new-role` responsibilities and completion criteria."
+▌ # Optional tool boundary: add [tool_selection] with allowed_tools = ["update_plan"].
+▌
+
+Press enter to confirm or esc to go back

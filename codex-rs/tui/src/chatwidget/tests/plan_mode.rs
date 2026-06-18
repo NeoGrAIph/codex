@@ -1392,6 +1392,24 @@ async fn plan_slash_command_switches_to_plan_mode() {
 }
 
 #[tokio::test]
+async fn interactive_slash_command_switches_to_interactive_mode() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);
+    let initial = chat.current_collaboration_mode().clone();
+
+    chat.dispatch_command(SlashCommand::Interactive);
+
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            matches!(event, AppEvent::InsertHistoryCell(_)),
+            "interactive should not emit a non-history app event: {event:?}"
+        );
+    }
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Interactive);
+    assert_eq!(chat.current_collaboration_mode(), &initial);
+}
+
+#[tokio::test]
 async fn plan_slash_command_with_args_submits_prompt_in_plan_mode() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.set_feature_enabled(Feature::CollaborationModes, /*enabled*/ true);

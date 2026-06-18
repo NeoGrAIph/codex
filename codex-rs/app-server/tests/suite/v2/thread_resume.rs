@@ -2011,6 +2011,7 @@ stream_max_retries = 0
                 branch: Some(Some("feature/pr-branch".to_string())),
                 origin_url: None,
             }),
+            thread_note: None,
         })
         .await?;
     timeout(

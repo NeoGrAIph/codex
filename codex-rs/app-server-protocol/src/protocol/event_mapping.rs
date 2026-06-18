@@ -104,7 +104,8 @@ pub fn item_event_to_server_notification(
             let (receiver_thread_ids, agents_states) = match end_event.new_thread_id {
                 Some(id) => {
                     let receiver_id = id.to_string();
-                    let received_status = CollabAgentState::from(end_event.status.clone());
+                    let received_status = CollabAgentState::from(end_event.status.clone())
+                        .with_thread_note(end_event.new_agent_thread_note);
                     (
                         vec![receiver_id.clone()],
                         [(receiver_id, received_status)].into_iter().collect(),
@@ -159,7 +160,8 @@ pub fn item_event_to_server_notification(
                 _ => CollabAgentToolCallStatus::Completed,
             };
             let receiver_id = end_event.receiver_thread_id.to_string();
-            let received_status = CollabAgentState::from(end_event.status);
+            let received_status = CollabAgentState::from(end_event.status)
+                .with_thread_note(end_event.receiver_agent_thread_note);
             let item = ThreadItem::CollabAgentToolCall {
                 id: end_event.call_id,
                 tool: CollabAgentTool::SendInput,
@@ -229,10 +231,21 @@ pub fn item_event_to_server_notification(
                 CollabAgentToolCallStatus::Completed
             };
             let receiver_thread_ids = end_event.statuses.keys().map(ToString::to_string).collect();
+            let metadata_by_thread_id = end_event
+                .agent_statuses
+                .iter()
+                .map(|entry| (entry.thread_id, entry.thread_note.clone()))
+                .collect::<HashMap<_, _>>();
             let agents_states = end_event
                 .statuses
                 .iter()
-                .map(|(id, status)| (id.to_string(), CollabAgentState::from(status.clone())))
+                .map(|(id, status)| {
+                    (
+                        id.to_string(),
+                        CollabAgentState::from(status.clone())
+                            .with_thread_note(metadata_by_thread_id.get(id).cloned().flatten()),
+                    )
+                })
                 .collect();
             let item = ThreadItem::CollabAgentToolCall {
                 id: end_event.call_id,
@@ -282,7 +295,8 @@ pub fn item_event_to_server_notification(
             let receiver_id = end_event.receiver_thread_id.to_string();
             let agents_states = [(
                 receiver_id.clone(),
-                CollabAgentState::from(end_event.status),
+                CollabAgentState::from(end_event.status)
+                    .with_thread_note(end_event.receiver_agent_thread_note),
             )]
             .into_iter()
             .collect();
@@ -334,7 +348,8 @@ pub fn item_event_to_server_notification(
             let receiver_id = end_event.receiver_thread_id.to_string();
             let agents_states = [(
                 receiver_id.clone(),
-                CollabAgentState::from(end_event.status),
+                CollabAgentState::from(end_event.status)
+                    .with_thread_note(end_event.receiver_agent_thread_note),
             )]
             .into_iter()
             .collect();
@@ -514,6 +529,7 @@ mod tests {
             receiver_thread_id: ThreadId::new(),
             receiver_agent_nickname: None,
             receiver_agent_role: None,
+            receiver_agent_thread_note: None,
         };
 
         let notification = item_event_to_server_notification(
@@ -551,6 +567,7 @@ mod tests {
             receiver_thread_id: ThreadId::new(),
             receiver_agent_nickname: None,
             receiver_agent_role: None,
+            receiver_agent_thread_note: Some("waiting on review".to_string()),
             status: codex_protocol::protocol::AgentStatus::NotFound,
         };
 
@@ -577,7 +594,8 @@ mod tests {
                     reasoning_effort: None,
                     agents_states: [(
                         receiver_id,
-                        CollabAgentState::from(codex_protocol::protocol::AgentStatus::NotFound),
+                        CollabAgentState::from(codex_protocol::protocol::AgentStatus::NotFound)
+                            .with_thread_note(Some("waiting on review".to_string())),
                     )]
                     .into_iter()
                     .collect(),

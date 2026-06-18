@@ -3,7 +3,7 @@
 ## Feature passport
 
 - Code name: `agent-runtime-limits`
-- Status: переносимая tuning-возможность.
+- Status: первая итерация перенесена на `fork/140` и локально проверена.
 - Goal: сделать multi-agent workflow практичнее за счет больших лимитов глубины spawn, количества threads и ожидания результатов.
 - Scope in: `agents.max_threads`, spawn depth, `wait_agent` default/max timeout.
 - Scope out: security enforcement и cwd.
@@ -36,7 +36,7 @@
 
 ## Native coverage in rust-v0.140.0
 
-Status: `partial`. Native release имеет defaults/config for `DEFAULT_AGENT_MAX_THREADS = Some(6)`, `DEFAULT_AGENT_MAX_DEPTH = 1`, `DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION = 4`, wait min/default/max `10_000/30_000/3_600_000`, `MultiAgentV2Config`, v2 wait options and tests. Не хватает fork exact tuning: legacy `agents.max_threads` conflicts with v2, v2 default concurrency is 4 threads/session including root rather than fork-style 12 agents, and v1 `agents.max_depth` default remains 1.
+Status: native upstream coverage was `partial` before the fork overlay. Native release имел defaults/config for `DEFAULT_AGENT_MAX_THREADS = Some(6)`, `DEFAULT_AGENT_MAX_DEPTH = 1`, `DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION = 4`, wait min/default/max `10_000/30_000/3_600_000`, `MultiAgentV2Config`, v2 wait options and tests. Fork/140 intentionally overlays exact tuning through native defaults: legacy `agents.max_threads = 12`, v2 default concurrency is root plus 12 spawned agents, and default spawn depth is 2.
 
 ## Porting/current-state notes
 
@@ -44,8 +44,12 @@ Status: `partial`. Native release имеет defaults/config for `DEFAULT_AGENT_
 
 ## Fork/140 implementation status
 
-Первая итерация задаёт fork defaults в native config constants: `DEFAULT_AGENT_MAX_THREADS = Some(12)`, `DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION = 13` (root плюс 12 spawned agents), `DEFAULT_AGENT_MAX_DEPTH = 2`, `DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS = 300_000`. Max wait window остаётся upstream hard max `3_600_000`, config overrides продолжают работать через существующий `MultiAgentV2Config`.
+Первая итерация задаёт fork defaults в native config constants: `DEFAULT_AGENT_MAX_THREADS = Some(12)`, `DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION = 13` (root плюс 12 spawned agents), `DEFAULT_AGENT_MAX_DEPTH = 2`, `DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS = 300_000`. Max wait window остаётся upstream hard max `3_600_000`, config overrides продолжают работать через существующий `MultiAgentV2Config`, а `wait_agent` получает эти значения через native `spec_plan` projection в model-visible schema.
 
 ## Doc changelog
 
 - 2026-06-17: Зафиксированы fork/140 runtime limits: 12 spawned agents, MAv2 concurrency 13 including root, spawn depth 2, default wait 300s.
+- 2026-06-18: Исправлен stale config test expectation для root-inclusive MAv2 cap; `multi_agent_v2_default_session_thread_cap_counts_root` and `multi_agent_v2_runtime_defaults_use_fork_limits` подтверждают 12 spawned agents, depth 2 and default wait 300s.
+- 2026-06-18: Добавлен runtime limiter regression `spawn_agent_v2_default_limit_allows_twelve_spawned_agents`: default MAv2 cap accepts 12 spawned agents and rejects the 13th with `AgentLimitReached { max_threads: 12 }`.
+- 2026-06-18: Уточнён статус feature doc: upstream native coverage remains partial relative to fork needs, but the `fork/140` first iteration is implemented through native config defaults and covered by focused runtime tests.
+- 2026-06-18: Добавлен schema projection regression `multi_agent_v2_wait_agent_schema_uses_configured_fork_timeout_defaults`: model-visible `wait_agent.timeout_ms` description now proves the native `spec_plan` path advertises default wait `300000` ms.

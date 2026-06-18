@@ -120,6 +120,8 @@ use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
 
+const MAX_TOOL_SELECTION_WARNING_TOOLS: usize = 20;
+
 /// Takes initial turn input and runs a loop where, at each sampling request,
 /// the model replies with either:
 ///
@@ -1136,6 +1138,16 @@ pub(crate) async fn built_tools(
     turn_context: &TurnContext,
     cancellation_token: &CancellationToken,
 ) -> CodexResult<Arc<ToolRouter>> {
+    let router = build_tool_router_for_turn(sess, turn_context, cancellation_token).await?;
+    maybe_emit_tool_selection_warning(sess, turn_context, &router).await;
+    Ok(router)
+}
+
+pub(crate) async fn build_tool_router_for_turn(
+    sess: &Session,
+    turn_context: &TurnContext,
+    cancellation_token: &CancellationToken,
+) -> CodexResult<Arc<ToolRouter>> {
     let mcp_connection_manager = sess.services.mcp_connection_manager.load_full();
     let has_mcp_servers = mcp_connection_manager.has_servers();
     let all_mcp_tools = mcp_connection_manager
@@ -1219,7 +1231,7 @@ pub(crate) async fn built_tools(
     );
     let mcp_tools = has_mcp_servers.then_some(mcp_tool_exposure.direct_tools);
     let deferred_mcp_tools = mcp_tool_exposure.deferred_tools;
-    Ok(Arc::new(ToolRouter::from_turn_context(
+    let router = ToolRouter::from_turn_context(
         turn_context,
         ToolRouterParams {
             mcp_tools,
@@ -1228,7 +1240,39 @@ pub(crate) async fn built_tools(
             extension_tool_executors: extension_tool_executors(sess),
             dynamic_tools: turn_context.dynamic_tools.as_slice(),
         },
-    )))
+    );
+    Ok(Arc::new(router))
+}
+
+async fn maybe_emit_tool_selection_warning(
+    sess: &Session,
+    turn_context: &TurnContext,
+    router: &ToolRouter,
+) {
+    let unmatched_allowed_tools = &router.tool_selection_diagnostics().unmatched_allowed_tools;
+    if unmatched_allowed_tools.is_empty()
+        || turn_context
+            .tool_selection_warning_emitted
+            .swap(true, Ordering::Relaxed)
+    {
+        return;
+    }
+
+    let shown_count = unmatched_allowed_tools
+        .len()
+        .min(MAX_TOOL_SELECTION_WARNING_TOOLS);
+    let mut message = format!(
+        "tool_selection.allowed_tools entries are not available in this turn and were ignored: {}",
+        unmatched_allowed_tools[..shown_count].join(", ")
+    );
+    if unmatched_allowed_tools.len() > shown_count {
+        let remaining = unmatched_allowed_tools.len() - shown_count;
+        message.push_str(&format!(" and {remaining} more"));
+    }
+    message.push_str(". They do not grant tool access.");
+
+    sess.send_event(turn_context, EventMsg::Warning(WarningEvent { message }))
+        .await;
 }
 
 #[derive(Debug)]

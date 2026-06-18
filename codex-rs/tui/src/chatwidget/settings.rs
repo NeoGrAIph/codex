@@ -198,6 +198,10 @@ impl ChatWidget {
         self.model_catalog.clone()
     }
 
+    pub(crate) fn set_model_catalog(&mut self, models: Vec<ModelPreset>) {
+        self.model_catalog = Arc::new(ModelCatalog::new(models));
+    }
+
     pub(crate) fn current_plan_type(&self) -> Option<PlanType> {
         self.plan_type
     }
@@ -589,6 +593,7 @@ impl ChatWidget {
         }
         match self.active_mode_kind() {
             ModeKind::Plan => Some(CollaborationModeIndicator::Plan),
+            ModeKind::Interactive => Some(CollaborationModeIndicator::Interactive),
             ModeKind::Default | ModeKind::PairProgramming | ModeKind::Execute => None,
         }
     }

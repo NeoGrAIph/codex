@@ -282,6 +282,7 @@ impl EventProcessorWithJsonOutput {
                                         }
                                     },
                                     message: state.message,
+                                    thread_note: state.thread_note,
                                 },
                             )
                         })

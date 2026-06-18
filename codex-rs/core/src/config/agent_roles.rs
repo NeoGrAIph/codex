@@ -1,4 +1,7 @@
 use super::AgentRoleConfig;
+use super::AgentRoleConfigFieldSource;
+use super::AgentRoleConfigMetadataSources;
+use super::AgentRoleConfigRuntimeFieldSource;
 use codex_config::ConfigLayerStack;
 use codex_config::ConfigLayerStackOrdering;
 use codex_config::config_toml::AgentRoleToml;
@@ -155,20 +158,148 @@ async fn read_declared_role(
         let parsed_file =
             read_resolved_agent_role_file(fs, &config_file, Some(declared_role_name)).await?;
         role_name = parsed_file.role_name;
-        role.description = parsed_file.description.or(role.description);
-        role.nickname_candidates = parsed_file.nickname_candidates.or(role.nickname_candidates);
+        if parsed_file.description.is_some() {
+            role.metadata_sources.description = AgentRoleConfigFieldSource::role_file_metadata();
+            role.description = parsed_file.description;
+        }
+        if parsed_file.nickname_candidates.is_some() {
+            role.metadata_sources.nickname_candidates =
+                AgentRoleConfigFieldSource::role_file_metadata();
+            role.nickname_candidates = parsed_file.nickname_candidates;
+        }
+        role.runtime_config_sources = agent_role_runtime_config_sources(&parsed_file.config);
     }
 
     Ok((role_name, role))
 }
 
 fn merge_missing_role_fields(role: &mut AgentRoleConfig, fallback: &AgentRoleConfig) {
-    role.description = role.description.clone().or(fallback.description.clone());
-    role.config_file = role.config_file.clone().or(fallback.config_file.clone());
-    role.nickname_candidates = role
-        .nickname_candidates
-        .clone()
-        .or(fallback.nickname_candidates.clone());
+    let role_has_config_file = role.config_file.is_some();
+    merge_role_field(
+        &mut role.description,
+        &mut role.metadata_sources.description,
+        &fallback.description,
+        fallback.metadata_sources.description,
+    );
+    merge_role_field(
+        &mut role.config_file,
+        &mut role.metadata_sources.config_file,
+        &fallback.config_file,
+        fallback.metadata_sources.config_file,
+    );
+    merge_role_field(
+        &mut role.nickname_candidates,
+        &mut role.metadata_sources.nickname_candidates,
+        &fallback.nickname_candidates,
+        fallback.metadata_sources.nickname_candidates,
+    );
+
+    merge_runtime_config_sources(role, fallback, role_has_config_file);
+}
+
+fn merge_role_field<T: Clone>(
+    field: &mut Option<T>,
+    source: &mut AgentRoleConfigFieldSource,
+    fallback_field: &Option<T>,
+    fallback_source: AgentRoleConfigFieldSource,
+) {
+    if field.is_some() {
+        if fallback_field.is_some() {
+            source.mark_overrides_lower_precedence();
+        }
+        return;
+    }
+
+    if let Some(fallback_field) = fallback_field {
+        *field = Some(fallback_field.clone());
+        *source = fallback_source.inherited_from();
+    }
+}
+
+fn merge_runtime_config_sources(
+    role: &mut AgentRoleConfig,
+    fallback: &AgentRoleConfig,
+    role_has_config_file: bool,
+) {
+    if role_has_config_file {
+        for (field_name, source) in &mut role.runtime_config_sources {
+            if fallback.runtime_config_sources.contains_key(field_name) {
+                source.mark_overrides_lower_precedence();
+            }
+        }
+        return;
+    }
+
+    role.runtime_config_sources = fallback
+        .runtime_config_sources
+        .iter()
+        .map(|(field_name, source)| (field_name.clone(), source.inherited_from()))
+        .collect();
+}
+
+pub(crate) fn agent_role_file_field_names(role_toml: &TomlValue) -> Vec<String> {
+    let mut fields = Vec::new();
+    push_present_field(&mut fields, role_toml, "name");
+    push_present_field(&mut fields, role_toml, "description");
+    push_present_field(&mut fields, role_toml, "nickname_candidates");
+    fields.extend(agent_role_runtime_config_field_names(role_toml));
+    fields
+}
+
+pub(crate) fn agent_role_runtime_config_sources(
+    role_toml: &TomlValue,
+) -> BTreeMap<String, AgentRoleConfigRuntimeFieldSource> {
+    agent_role_runtime_config_field_names(role_toml)
+        .into_iter()
+        .map(|field_name| {
+            (
+                field_name,
+                AgentRoleConfigRuntimeFieldSource::effective_role_file(),
+            )
+        })
+        .collect()
+}
+
+fn agent_role_runtime_config_field_names(role_toml: &TomlValue) -> Vec<String> {
+    let mut fields = Vec::new();
+    push_present_field(&mut fields, role_toml, "developer_instructions");
+    push_present_field(&mut fields, role_toml, "model");
+    push_present_field(&mut fields, role_toml, "model_provider");
+    push_present_field(&mut fields, role_toml, "model_reasoning_effort");
+    push_present_field(&mut fields, role_toml, "service_tier");
+    push_present_field(&mut fields, role_toml, "approval_policy");
+    push_present_field(&mut fields, role_toml, "sandbox_mode");
+    push_present_field(&mut fields, role_toml, "default_permissions");
+    push_present_field(&mut fields, role_toml, "sandbox_workspace_write");
+    push_present_field(&mut fields, role_toml, "permissions");
+    push_present_field(&mut fields, role_toml, "mcp_servers");
+    push_present_field(&mut fields, role_toml, "hooks");
+    if role_toml
+        .get("tool_selection")
+        .and_then(TomlValue::as_table)
+        .and_then(|tool_selection| tool_selection.get("allowed_tools"))
+        .is_some()
+    {
+        fields.push("tool_selection.allowed_tools".to_string());
+    }
+    if role_toml
+        .get("skills")
+        .and_then(TomlValue::as_table)
+        .and_then(|skills| skills.get("config"))
+        .is_some()
+    {
+        fields.push("skills.config".to_string());
+    }
+    if role_toml.get("apps").is_some() {
+        fields.push("apps".to_string());
+    }
+    fields
+}
+
+fn push_present_field(fields: &mut Vec<String>, role_toml: &TomlValue, field_name: &str) {
+    if role_toml.get(field_name).is_some() {
+        fields.push(field_name.to_string());
+    }
 }
 
 fn agents_toml_from_layer(
@@ -212,6 +343,24 @@ async fn agent_role_config_from_toml(
         description,
         config_file: config_file.map(AbsolutePathBuf::into_path_buf),
         nickname_candidates,
+        metadata_sources: AgentRoleConfigMetadataSources {
+            description: role
+                .description
+                .as_ref()
+                .map(|_| AgentRoleConfigFieldSource::config_layer())
+                .unwrap_or_default(),
+            config_file: role
+                .config_file
+                .as_ref()
+                .map(|_| AgentRoleConfigFieldSource::config_layer())
+                .unwrap_or_default(),
+            nickname_candidates: role
+                .nickname_candidates
+                .as_ref()
+                .map(|_| AgentRoleConfigFieldSource::config_layer())
+                .unwrap_or_default(),
+        },
+        runtime_config_sources: Default::default(),
     })
 }
 
@@ -267,6 +416,7 @@ pub(crate) fn parse_agent_role_file_contents(
         parsed.config.developer_instructions.as_deref(),
         role_name_hint.is_none(),
     )?;
+    super::validate_tool_selection_config_toml(&parsed.config)?;
 
     let role_name = parsed
         .name
@@ -508,6 +658,20 @@ async fn discover_agent_roles_in_dir(
         roles.insert(
             role_name,
             AgentRoleConfig {
+                metadata_sources: AgentRoleConfigMetadataSources {
+                    description: parsed_file
+                        .description
+                        .as_ref()
+                        .map(|_| AgentRoleConfigFieldSource::role_file_metadata())
+                        .unwrap_or_default(),
+                    config_file: AgentRoleConfigFieldSource::discovered_role_file(),
+                    nickname_candidates: parsed_file
+                        .nickname_candidates
+                        .as_ref()
+                        .map(|_| AgentRoleConfigFieldSource::role_file_metadata())
+                        .unwrap_or_default(),
+                },
+                runtime_config_sources: agent_role_runtime_config_sources(&parsed_file.config),
                 description: parsed_file.description,
                 config_file: Some(agent_file.to_path_buf()),
                 nickname_candidates: parsed_file.nickname_candidates,

@@ -21,18 +21,18 @@ use codex_protocol::protocol::CollabAgentStatusEntry;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::normalize_thread_note_value;
 use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use std::fs;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
 pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
-pub(crate) const MAX_THREAD_NOTE_CHARS: usize = 500;
-
 pub(crate) fn function_arguments(payload: ToolPayload) -> Result<String, FunctionCallError> {
     match payload {
         ToolPayload::Function { arguments } => Ok(arguments),
@@ -91,6 +91,7 @@ pub(crate) fn build_wait_agent_statuses(
                 thread_id: receiver_agent.thread_id,
                 agent_nickname: receiver_agent.agent_nickname.clone(),
                 agent_role: receiver_agent.agent_role.clone(),
+                thread_note: receiver_agent.thread_note.clone(),
                 status: status.clone(),
             });
         }
@@ -103,6 +104,7 @@ pub(crate) fn build_wait_agent_statuses(
             thread_id: *thread_id,
             agent_nickname: None,
             agent_role: None,
+            thread_note: None,
             status: status.clone(),
         })
         .collect::<Vec<_>>();
@@ -167,19 +169,7 @@ pub(crate) fn thread_spawn_source(
 pub(crate) fn normalize_thread_note(
     thread_note: Option<String>,
 ) -> Result<Option<String>, FunctionCallError> {
-    let Some(thread_note) = thread_note else {
-        return Ok(None);
-    };
-    let note = thread_note.trim().to_string();
-    if note.is_empty() {
-        return Ok(None);
-    }
-    if note.chars().count() > MAX_THREAD_NOTE_CHARS {
-        return Err(FunctionCallError::RespondToModel(format!(
-            "thread_note must be at most {MAX_THREAD_NOTE_CHARS} characters"
-        )));
-    }
-    Ok(Some(note))
+    normalize_thread_note_value(thread_note).map_err(FunctionCallError::RespondToModel)
 }
 
 pub(crate) fn parse_collab_input(
@@ -329,6 +319,29 @@ pub(crate) fn apply_spawn_agent_cwd_override(
         return Err(FunctionCallError::RespondToModel(format!(
             "spawn_agent.cwd must exist and be a directory: {}",
             requested_cwd.as_path().display()
+        )));
+    }
+    let canonical_requested_cwd = fs::canonicalize(requested_cwd.as_path()).map_err(|err| {
+        FunctionCallError::RespondToModel(format!(
+            "spawn_agent.cwd must exist and be a directory: {} ({err})",
+            requested_cwd.as_path().display()
+        ))
+    })?;
+    let canonical_roots = workspace_roots
+        .iter()
+        .filter_map(|root| fs::canonicalize(root.as_path()).ok())
+        .collect::<Vec<_>>();
+    if !canonical_roots
+        .iter()
+        .any(|root| canonical_requested_cwd.starts_with(root))
+    {
+        let roots = workspace_roots
+            .iter()
+            .map(|root| root.as_path().display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(FunctionCallError::RespondToModel(format!(
+            "spawn_agent.cwd must be inside the current workspace roots: {roots}"
         )));
     }
     config.cwd = requested_cwd;

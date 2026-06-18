@@ -6,11 +6,12 @@ The canonical cwd for a spawned agent remains the native thread config/environme
 
 ## Data flow
 
-`spawn_agent.cwd` is parsed as a trimmed string, rejected unless it is an absolute path, checked against the parent turn's effective workspace roots, and then verified to exist as a directory. On success, the child config receives the requested cwd and keeps the same workspace roots and permission profile. `spawn_new_thread_with_source` and forked spawn then use the existing environment selection path to synchronize the primary environment cwd.
+`spawn_agent.cwd` is parsed as a trimmed string, rejected unless it is an absolute path, checked against the parent turn's effective workspace roots, verified to exist as a directory, and then checked again with canonicalized paths so a symlink inside the workspace cannot escape to an outside directory. On success, the child config receives the requested cwd and keeps the same workspace roots and permission profile. `spawn_new_thread_with_source` and forked spawn then use the existing environment selection path to synchronize the primary environment cwd.
 
 ## Invariants
 
 - Invalid, relative, non-workspace, nonexistent, or non-directory cwd fails before spawning.
+- A cwd symlink that is lexically inside the workspace but canonically resolves outside workspace roots fails before spawning.
 - Child cwd does not add workspace roots and does not mark a new path trusted.
 - Permission profile is re-applied through `Config.permissions.set_permission_profile`.
 - Full-history fork may set cwd because cwd is runtime environment state, not model/role history state.

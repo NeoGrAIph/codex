@@ -20,6 +20,7 @@ use codex_config::config_toml::RealtimeToml;
 use codex_config::config_toml::RealtimeTransport;
 use codex_config::config_toml::RealtimeWsMode;
 use codex_config::config_toml::RealtimeWsVersion;
+use codex_config::config_toml::ToolSelectionToml;
 use codex_config::config_toml::ToolsToml;
 use codex_config::loader::project_trust_key;
 use codex_config::permissions_toml::FilesystemPermissionToml;
@@ -71,6 +72,7 @@ use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
 use codex_model_provider_info::WireApi;
 use codex_models_manager::bundled_models_response;
 use codex_network_proxy::NetworkMode;
+use codex_protocol::ToolName;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::ActivePermissionProfile;
@@ -94,6 +96,7 @@ use serde::Deserialize;
 use tempfile::tempdir;
 
 use super::*;
+use crate::agent::role::apply_role_to_config;
 use core_test_support::PathBufExt;
 use core_test_support::PathExt;
 use core_test_support::TempDirExt;
@@ -6716,6 +6719,77 @@ async fn load_config_ignores_empty_requirements_guardian_policy_config() -> std:
 }
 
 #[tokio::test]
+async fn load_config_parses_tool_selection_allowlist() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg = ConfigToml {
+        tool_selection: Some(ToolSelectionToml {
+            allowed_tools: Some(vec![
+                "update_plan".to_string(),
+                "codex_app/lookup".to_string(),
+            ]),
+        }),
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides {
+            cwd: Some(codex_home.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.tool_selection.allowed,
+        Some(
+            [
+                ToolName::plain("update_plan"),
+                ToolName::namespaced("codex_app", "lookup"),
+            ]
+            .into_iter()
+            .collect()
+        )
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_invalid_tool_selection_allowlist_entries() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    for allowed_tools in [
+        vec!["".to_string()],
+        vec!["codex_app/".to_string()],
+        vec!["codex_app/lookup/extra".to_string()],
+        vec!["update_plan".to_string(), " update_plan ".to_string()],
+    ] {
+        let cfg = ConfigToml {
+            tool_selection: Some(ToolSelectionToml {
+                allowed_tools: Some(allowed_tools),
+            }),
+            ..Default::default()
+        };
+
+        let err = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides {
+                cwd: Some(codex_home.path().to_path_buf()),
+                ..Default::default()
+            },
+            codex_home.abs(),
+        )
+        .await
+        .expect_err("invalid tool selection should be rejected");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn load_config_rejects_missing_agent_role_config_file() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let missing_path = codex_home.path().join("agents").join("researcher.toml");
@@ -6797,6 +6871,115 @@ nickname_candidates = ["Hypatia", "Noether"]
             .map(|candidates| candidates.iter().map(String::as_str).collect::<Vec<_>>()),
         Some(vec!["Hypatia", "Noether"])
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_role_config_file_applies_tool_selection_allowlist() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let role_config_path = codex_home.path().join("agents").join("researcher.toml");
+    tokio::fs::create_dir_all(
+        role_config_path
+            .parent()
+            .expect("role config should have a parent directory"),
+    )
+    .await?;
+    tokio::fs::write(
+        &role_config_path,
+        r#"developer_instructions = "Research carefully"
+
+[tool_selection]
+allowed_tools = ["update_plan", "codex_app/lookup"]
+"#,
+    )
+    .await?;
+    tokio::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[agents.researcher]
+description = "Research role"
+config_file = "./agents/researcher.toml"
+"#,
+    )
+    .await?;
+
+    let mut config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+    assert_eq!(config.tool_selection.allowed, None);
+
+    apply_role_to_config(&mut config, Some("researcher"))
+        .await
+        .expect("role config should apply");
+
+    assert_eq!(
+        config.tool_selection.allowed,
+        Some(
+            [
+                ToolName::plain("update_plan"),
+                ToolName::namespaced("codex_app", "lookup"),
+            ]
+            .into_iter()
+            .collect()
+        )
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_role_tool_selection_survives_config_restart_reload() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let role_config_path = codex_home.path().join("agents").join("researcher.toml");
+    tokio::fs::create_dir_all(
+        role_config_path
+            .parent()
+            .expect("role config should have a parent directory"),
+    )
+    .await?;
+    tokio::fs::write(
+        &role_config_path,
+        r#"developer_instructions = "Research carefully"
+
+[tool_selection]
+allowed_tools = ["update_plan", "codex_app/lookup"]
+"#,
+    )
+    .await?;
+    tokio::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[agents.researcher]
+description = "Research role"
+config_file = "./agents/researcher.toml"
+"#,
+    )
+    .await?;
+
+    for _ in 0..2 {
+        let mut config = ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(codex_home.path().to_path_buf()))
+            .build()
+            .await?;
+
+        apply_role_to_config(&mut config, Some("researcher"))
+            .await
+            .expect("role config should apply after a fresh config load");
+
+        assert_eq!(
+            config.tool_selection.allowed,
+            Some(
+                [
+                    ToolName::plain("update_plan"),
+                    ToolName::namespaced("codex_app", "lookup"),
+                ]
+                .into_iter()
+                .collect()
+            )
+        );
+    }
 
     Ok(())
 }
@@ -9790,7 +9973,7 @@ enabled = true
             config.agent_max_threads,
             config.effective_agent_max_threads(MultiAgentVersion::V2)
         ),
-        (None, Some(3))
+        (None, Some(12))
     );
 
     Ok(())

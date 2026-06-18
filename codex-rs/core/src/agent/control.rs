@@ -34,6 +34,8 @@ use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use codex_thread_store::ReadThreadParams;
+use codex_thread_store::ThreadMetadataPatch;
+use codex_thread_store::ThreadStoreError;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -75,7 +77,7 @@ pub(crate) struct LiveAgent {
     pub(crate) status: AgentStatus,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, serde::Deserialize, PartialEq, Eq)]
 pub(crate) struct ListedAgent {
     pub(crate) agent_name: String,
     pub(crate) agent_status: AgentStatus,
@@ -197,6 +199,42 @@ impl AgentControl {
             state.send_op(agent_id, Op::Interrupt).await,
         )
         .await
+    }
+
+    pub(crate) async fn set_thread_note(
+        &self,
+        agent_id: ThreadId,
+        thread_note: Option<String>,
+    ) -> CodexResult<()> {
+        let state = self.upgrade()?;
+        let thread = state.get_thread(agent_id).await?;
+        let snapshot = thread.config_snapshot().await;
+        if snapshot.ephemeral {
+            return Err(CodexErr::InvalidRequest(format!(
+                "ephemeral thread does not support metadata updates: {agent_id}"
+            )));
+        }
+        if !matches!(
+            snapshot.session_source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        ) {
+            return Err(CodexErr::UnsupportedOperation(
+                "thread notes can only be set on spawned sub-agent threads".to_string(),
+            ));
+        }
+
+        thread
+            .update_thread_metadata(
+                ThreadMetadataPatch {
+                    thread_note: Some(thread_note.clone()),
+                    ..Default::default()
+                },
+                /*include_archived*/ false,
+            )
+            .await
+            .map_err(|err| thread_store_metadata_update_error(agent_id, err))?;
+        self.state.update_thread_note(agent_id, thread_note);
+        Ok(())
     }
 
     async fn handle_thread_request_result(
@@ -717,6 +755,20 @@ fn thread_spawn_depth(session_source: &SessionSource) -> Option<i32> {
         _ => None,
     }
 }
+
+fn thread_store_metadata_update_error(thread_id: ThreadId, err: ThreadStoreError) -> CodexErr {
+    match err {
+        ThreadStoreError::ThreadNotFound { thread_id } => CodexErr::ThreadNotFound(thread_id),
+        ThreadStoreError::InvalidRequest { message } => CodexErr::InvalidRequest(message),
+        ThreadStoreError::Unsupported { operation } => CodexErr::UnsupportedOperation(format!(
+            "thread metadata update is not supported by this store: {operation}"
+        )),
+        err => CodexErr::Fatal(format!(
+            "failed to update thread metadata {thread_id}: {err}"
+        )),
+    }
+}
+
 #[cfg(test)]
 #[path = "control_tests.rs"]
 mod tests;

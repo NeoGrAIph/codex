@@ -801,6 +801,60 @@ pub struct ThreadMetadataUpdateParams {
     /// provide a string to replace the stored value.
     #[ts(optional = nullable)]
     pub git_info: Option<ThreadMetadataGitInfoUpdateParams>,
+    /// Patch the short note attached to a thread-spawn sub-agent.
+    /// Omit to leave it unchanged, set it to `null` or blank to clear it,
+    /// or provide a string up to the shared thread-note limit.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::protocol::serde_helpers::serialize_double_option",
+        deserialize_with = "crate::protocol::serde_helpers::deserialize_double_option"
+    )]
+    #[ts(optional = nullable, type = "string | null")]
+    pub thread_note: Option<Option<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AgentMessageSendParams {
+    pub author_thread_id: String,
+    pub target_thread_id: String,
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AgentMessageSendResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AgentFollowupSendParams {
+    pub author_thread_id: String,
+    pub target_thread_id: String,
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AgentFollowupSendResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AgentCloseParams {
+    pub author_thread_id: String,
+    pub target_thread_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AgentCloseResponse {
+    pub previous_status: super::CollabAgentState,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -1424,6 +1478,14 @@ pub struct ThreadNameUpdatedNotification {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub thread_name: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ThreadNoteUpdatedNotification {
+    pub thread_id: String,
+    pub thread_note: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

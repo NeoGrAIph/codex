@@ -1738,14 +1738,238 @@ impl App {
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker(app_server).await;
             }
+            AppEvent::OpenAgentInterruptConfirmation { thread_id } => {
+                self.open_agent_interrupt_confirmation(thread_id);
+            }
+            AppEvent::InterruptAgentThreadConfirmed { thread_id } => {
+                self.interrupt_agent_thread_confirmed(app_server, thread_id)
+                    .await?;
+            }
+            AppEvent::OpenAgentMessagePrompt { thread_id } => {
+                self.open_agent_message_prompt(thread_id);
+            }
+            AppEvent::SendAgentMessage { thread_id, message } => {
+                self.send_agent_message(app_server, thread_id, message)
+                    .await?;
+            }
+            AppEvent::OpenAgentFollowupPrompt { thread_id } => {
+                self.open_agent_followup_prompt(thread_id);
+            }
+            AppEvent::OpenAgentFollowupConfirmation { thread_id, message } => {
+                self.open_agent_followup_confirmation(thread_id, message);
+            }
+            AppEvent::FollowupAgentThreadConfirmed { thread_id, message } => {
+                self.followup_agent_thread_confirmed(app_server, thread_id, message)
+                    .await?;
+            }
+            AppEvent::OpenAgentCloseConfirmation { thread_id } => {
+                self.open_agent_close_confirmation(thread_id);
+            }
+            AppEvent::CloseAgentThreadConfirmed { thread_id } => {
+                self.close_agent_thread_confirmed(app_server, thread_id)
+                    .await?;
+            }
             AppEvent::OpenAgentRoleTemplates => {
-                self.chat_widget.open_agent_role_templates_popup();
+                let runtime_catalog = match self.chat_widget.thread_id() {
+                    Some(thread_id) => Some(
+                        app_server
+                            .agent_role_tool_selection_catalog_read(thread_id)
+                            .await
+                            .map_err(|err| format!("{err:#}")),
+                    ),
+                    None => None,
+                };
+                let runtime_usage = self
+                    .agent_navigation
+                    .role_runtime_usage(self.primary_thread_id, self.active_thread_id);
+                self.chat_widget
+                    .open_agent_role_templates_popup_with_runtime_context(
+                        runtime_catalog,
+                        runtime_usage,
+                    );
             }
             AppEvent::OpenAgentRoleTemplateCreatePrompt => {
                 self.chat_widget.open_agent_role_template_create_prompt();
             }
-            AppEvent::CreateAgentRoleTemplate { raw_name } => {
-                self.chat_widget.create_agent_role_template(raw_name);
+            AppEvent::OpenAgentRoleTemplateToolSelectionPicker { catalog_entries } => {
+                self.chat_widget
+                    .open_agent_role_template_tool_selection_picker(catalog_entries);
+            }
+            AppEvent::OpenAgentRoleTemplateToolSelectionPickerForRole {
+                role_name,
+                role_path,
+                selected_tools,
+                catalog_entries,
+            } => {
+                self.chat_widget
+                    .open_agent_role_template_tool_selection_picker_for_role(
+                        role_name,
+                        role_path,
+                        selected_tools,
+                        catalog_entries,
+                    );
+            }
+            AppEvent::OpenAgentRoleTemplateCreatePromptWithAllowedTools { allowed_tools } => {
+                self.chat_widget
+                    .open_agent_role_template_create_prompt_with_allowed_tools(allowed_tools);
+            }
+            AppEvent::OpenAgentRoleTemplateEditPromptWithAllowedTools {
+                role_name,
+                role_path,
+                allowed_tools,
+            } => {
+                self.chat_widget
+                    .open_agent_role_template_edit_prompt_with_allowed_tools(
+                        role_name,
+                        role_path,
+                        allowed_tools,
+                    );
+            }
+            AppEvent::CreateAgentRoleTemplateFromDraft { draft } => {
+                if self
+                    .chat_widget
+                    .create_agent_role_template_from_draft(draft)
+                {
+                    match app_server.reload_user_config().await {
+                        Ok(()) => self.chat_widget.add_info_message(
+                            "Reloaded loaded threads for agent role templates.".to_string(),
+                            Some(
+                                "New spawn_agent.agent_type calls can use the saved role without restarting Codex."
+                                    .to_string(),
+                            ),
+                        ),
+                        Err(err) => self.chat_widget.add_error_message(format!(
+                            "Created role template, but failed to reload loaded threads: {err:#}"
+                        )),
+                    }
+                }
+            }
+            AppEvent::UpdateAgentRoleTemplateFromDraft {
+                role_name,
+                role_path,
+                draft,
+            } => {
+                if self
+                    .chat_widget
+                    .update_agent_role_template_from_draft(role_name, role_path, draft)
+                {
+                    match app_server.reload_user_config().await {
+                        Ok(()) => self.chat_widget.add_info_message(
+                            "Reloaded loaded threads for agent role templates.".to_string(),
+                            Some(
+                                "New spawn_agent.agent_type calls can use the updated role without restarting Codex."
+                                    .to_string(),
+                            ),
+                        ),
+                        Err(err) => self.chat_widget.add_error_message(format!(
+                            "Updated role template, but failed to reload loaded threads: {err:#}"
+                        )),
+                    }
+                }
+            }
+            AppEvent::OpenModelProviders => match app_server.model_provider_list().await {
+                Ok(response) => self.chat_widget.open_model_providers_popup(response.data),
+                Err(err) => self
+                    .chat_widget
+                    .add_error_message(format!("Failed to load model providers: {err:#}")),
+            },
+            AppEvent::OpenModelProviderDetail { provider } => {
+                self.chat_widget.open_model_provider_detail_popup(provider);
+            }
+            AppEvent::SetModelProviderEnabled {
+                provider_id,
+                enabled,
+            } => {
+                match app_server
+                    .model_provider_config_write(
+                        codex_app_server_protocol::ModelProviderConfigWriteParams {
+                            provider_id: provider_id.clone(),
+                            enabled_in_picker: Some(enabled),
+                            set_active: false,
+                        },
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        self.refresh_model_provider_menu(app_server).await;
+                    }
+                    Err(err) => self.chat_widget.add_error_message(format!(
+                        "Failed to update provider `{provider_id}`: {err:#}"
+                    )),
+                }
+            }
+            AppEvent::SetActiveModelProvider { provider_id } => {
+                match app_server
+                    .model_provider_config_write(
+                        codex_app_server_protocol::ModelProviderConfigWriteParams {
+                            provider_id: provider_id.clone(),
+                            enabled_in_picker: Some(true),
+                            set_active: true,
+                        },
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        self.chat_widget.add_info_message(
+                            format!("Default model provider changed to `{provider_id}`."),
+                            /*hint*/ None,
+                        );
+                        self.refresh_model_provider_menu(app_server).await;
+                    }
+                    Err(err) => self.chat_widget.add_error_message(format!(
+                        "Failed to set default provider `{provider_id}`: {err:#}"
+                    )),
+                }
+            }
+            AppEvent::OpenModelProviderApiKeyPrompt { provider_id } => {
+                self.chat_widget
+                    .open_model_provider_api_key_prompt(provider_id);
+            }
+            AppEvent::SaveModelProviderApiKey {
+                provider_id,
+                api_key,
+            } => {
+                match app_server
+                    .model_provider_auth_write(
+                        codex_app_server_protocol::ModelProviderAuthWriteParams {
+                            provider_id: provider_id.clone(),
+                            api_key: api_key.into_inner(),
+                        },
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        self.chat_widget.add_info_message(
+                            format!("Saved managed API key for `{provider_id}`."),
+                            /*hint*/ None,
+                        );
+                        self.refresh_model_provider_menu(app_server).await;
+                    }
+                    Err(err) => self.chat_widget.add_error_message(format!(
+                        "Failed to save API key for `{provider_id}`: {err:#}"
+                    )),
+                }
+            }
+            AppEvent::ClearModelProviderApiKey { provider_id } => {
+                match app_server
+                    .model_provider_auth_remove(
+                        codex_app_server_protocol::ModelProviderAuthRemoveParams {
+                            provider_id: provider_id.clone(),
+                        },
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        self.chat_widget.add_info_message(
+                            format!("Cleared managed API key for `{provider_id}`."),
+                            /*hint*/ None,
+                        );
+                        self.refresh_model_provider_menu(app_server).await;
+                    }
+                    Err(err) => self.chat_widget.add_error_message(format!(
+                        "Failed to clear API key for `{provider_id}`: {err:#}"
+                    )),
+                }
             }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread_and_discard_side(tui, app_server, thread_id)
@@ -2268,6 +2492,21 @@ impl App {
                     .add_error_message(format!("Failed to archive current thread: {err}"));
                 AppRunControl::Continue
             }
+        }
+    }
+
+    async fn refresh_model_provider_menu(&mut self, app_server: &mut AppServerSession) {
+        match app_server.refresh_available_models().await {
+            Ok(models) => self.chat_widget.set_model_catalog(models),
+            Err(err) => self
+                .chat_widget
+                .add_error_message(format!("Failed to refresh model catalog: {err:#}")),
+        }
+        match app_server.model_provider_list().await {
+            Ok(response) => self.chat_widget.open_model_providers_popup(response.data),
+            Err(err) => self
+                .chat_widget
+                .add_error_message(format!("Failed to reload model providers: {err:#}")),
         }
     }
 

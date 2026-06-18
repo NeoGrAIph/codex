@@ -1,14 +1,22 @@
 use super::*;
 use crate::app_event::ConnectorsSnapshot;
+use crate::app_event::SensitiveString;
 use crate::chatwidget::connectors::ConnectorsCacheState;
+use crate::multi_agents::AgentRoleRuntimeUsage;
+use codex_app_server_protocol::AgentRoleToolSelectionCatalogEntry;
+use codex_app_server_protocol::AgentRoleToolSelectionCatalogExposure;
+use codex_app_server_protocol::AgentRoleToolSelectionCatalogReadResponse;
 use codex_app_server_protocol::AppInfo;
 use codex_app_server_protocol::HookErrorInfo;
 use codex_app_server_protocol::HooksListEntry;
 use codex_app_server_protocol::HooksListResponse;
 use codex_app_server_protocol::MarketplaceRemoveResponse;
+use codex_app_server_protocol::ModelProvider;
+use codex_app_server_protocol::ModelProviderAuthStatus;
 use codex_app_server_protocol::PluginAvailability;
 use codex_features::Stage;
 use pretty_assertions::assert_eq;
+use std::collections::BTreeMap;
 
 #[tokio::test]
 async fn experimental_mode_plan_is_ignored_on_startup() {
@@ -2445,29 +2453,60 @@ async fn multi_agent_enable_prompt_snapshot() {
 #[tokio::test]
 async fn agent_role_templates_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    let role_path = chat.config.codex_home.join("agents/code-reviewer.toml");
+    let role_path = chat.config.codex_home.join("agents/explorer.toml");
     std::fs::create_dir_all(role_path.parent().expect("role path parent")).expect("create dir");
     std::fs::write(
         &role_path,
-        r#"name = "code-reviewer"
-description = "Review code changes before handoff."
+        r#"name = "explorer"
+description = "Custom explorer role for codebase discovery."
 nickname_candidates = ["Ada"]
-developer_instructions = "Review code changes and report concrete risks."
+developer_instructions = "Explore the codebase and report concrete evidence."
 model = "gpt-5.3-codex"
+model_provider = "deepseek"
 model_reasoning_effort = "high"
+approval_policy = "on-request"
+default_permissions = ":read-only"
+
+[tool_selection]
+allowed_tools = ["update_plan", "codex_app/lookup"]
+
+[permissions.reviewer]
+description = "Reviewer read-only profile"
+
+[mcp_servers.local]
+command = "codex-mcp"
+
+[hooks]
+PreToolUse = [{ matcher = "*", hooks = [{ type = "command", command = "echo safe" }] }]
+
+[skills]
+include_instructions = false
+
+[[skills.config]]
+name = "rust"
+enabled = true
+
+[apps._default]
+default_tools_enabled = false
+
+[apps.linear]
+enabled = true
 "#,
     )
     .expect("write role");
     chat.config.agent_roles.insert(
-        "code-reviewer".to_string(),
+        "explorer".to_string(),
         crate::legacy_core::config::AgentRoleConfig {
-            description: Some("Review code changes before handoff.".to_string()),
+            description: Some("Custom explorer role for codebase discovery.".to_string()),
             config_file: Some(role_path.to_path_buf()),
             nickname_candidates: Some(vec!["Ada".to_string()]),
+            metadata_sources: Default::default(),
+            runtime_config_sources: Default::default(),
         },
     );
 
     chat.open_agent_role_templates_popup();
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
 
     let codex_home = chat.config.codex_home.display().to_string();
     let popup = render_bottom_popup(&chat, /*width*/ 100).replace(&codex_home, "$CODEX_HOME");
@@ -2475,17 +2514,304 @@ model_reasoning_effort = "high"
 }
 
 #[tokio::test]
-async fn agent_role_template_create_updates_session_catalog() {
+async fn agent_role_templates_popup_runtime_catalog_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let role_path = chat.config.codex_home.join("agents/explorer.toml");
+    std::fs::create_dir_all(role_path.parent().expect("role path parent")).expect("create dir");
+    std::fs::write(
+        &role_path,
+        r#"name = "explorer"
+description = "Custom explorer role for codebase discovery."
+developer_instructions = "Explore the codebase and report concrete evidence."
+
+[tool_selection]
+allowed_tools = ["update_plan", "missing_tool"]
+"#,
+    )
+    .expect("write role");
+    chat.config.agent_roles.insert(
+        "explorer".to_string(),
+        crate::legacy_core::config::AgentRoleConfig {
+            description: Some("Custom explorer role for codebase discovery.".to_string()),
+            config_file: Some(role_path.to_path_buf()),
+            nickname_candidates: None,
+            metadata_sources: Default::default(),
+            runtime_config_sources: Default::default(),
+        },
+    );
+
+    let runtime_catalog = AgentRoleToolSelectionCatalogReadResponse {
+        data: vec![
+            AgentRoleToolSelectionCatalogEntry {
+                name: "update_plan".to_string(),
+                selected: true,
+                exposure: AgentRoleToolSelectionCatalogExposure::Direct,
+            },
+            AgentRoleToolSelectionCatalogEntry {
+                name: "tool_search".to_string(),
+                selected: false,
+                exposure: AgentRoleToolSelectionCatalogExposure::Deferred,
+            },
+            AgentRoleToolSelectionCatalogEntry {
+                name: "exec".to_string(),
+                selected: false,
+                exposure: AgentRoleToolSelectionCatalogExposure::Hidden,
+            },
+        ],
+        unmatched_allowed_tools: vec!["missing_tool".to_string()],
+    };
+
+    let mut runtime_usage = BTreeMap::new();
+    runtime_usage.insert(
+        "explorer".to_string(),
+        AgentRoleRuntimeUsage {
+            total: 3,
+            running: 1,
+            waiting: 1,
+            errors: 0,
+            closed: 1,
+            current_view: true,
+        },
+    );
+
+    chat.open_agent_role_templates_popup_with_runtime_context(
+        Some(Ok(runtime_catalog)),
+        runtime_usage,
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+
+    let codex_home = chat.config.codex_home.display().to_string();
+    let popup = render_bottom_popup(&chat, /*width*/ 104).replace(&codex_home, "$CODEX_HOME");
+    assert_chatwidget_snapshot!("agent_role_templates_popup_runtime_catalog", popup);
+}
+
+#[tokio::test]
+async fn agent_role_template_create_prompt_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
-    chat.create_agent_role_template("Code Reviewer".to_string());
+    chat.open_agent_role_template_create_prompt();
 
-    let role_path = chat.config.codex_home.join("agents/code-reviewer.toml");
-    assert!(role_path.exists());
-    assert!(chat.config.agent_roles.contains_key("code-reviewer"));
     let codex_home = chat.config.codex_home.display().to_string();
     let popup = render_bottom_popup(&chat, /*width*/ 100).replace(&codex_home, "$CODEX_HOME");
-    assert!(popup.contains("code-reviewer"));
+    assert_chatwidget_snapshot!("agent_role_template_create_prompt", popup);
+}
+
+#[tokio::test]
+async fn agent_role_template_create_prompt_submits_native_toml_draft() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.open_agent_role_template_create_prompt();
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::CreateAgentRoleTemplateFromDraft { draft })
+            if draft.contains("name = \"new-role\"")
+                && draft.contains("developer_instructions")
+    );
+}
+
+#[tokio::test]
+async fn agent_role_template_create_prompt_with_allowed_tools_submits_native_toml_draft() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.open_agent_role_template_create_prompt_with_allowed_tools(vec![
+        "update_plan".to_string(),
+        "codex_app/lookup".to_string(),
+    ]);
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::CreateAgentRoleTemplateFromDraft { draft })
+            if draft.contains("[tool_selection]")
+                && draft.contains("\"update_plan\"")
+                && draft.contains("\"codex_app/lookup\"")
+    );
+}
+
+#[tokio::test]
+async fn agent_role_template_tool_selection_picker_submits_selected_tools() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.open_agent_role_template_tool_selection_picker(vec![
+        AgentRoleToolSelectionCatalogEntry {
+            name: "tool_search".to_string(),
+            selected: false,
+            exposure: AgentRoleToolSelectionCatalogExposure::Deferred,
+        },
+        AgentRoleToolSelectionCatalogEntry {
+            name: "update_plan".to_string(),
+            selected: false,
+            exposure: AgentRoleToolSelectionCatalogExposure::Direct,
+        },
+    ]);
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenAgentRoleTemplateCreatePromptWithAllowedTools { allowed_tools })
+            if allowed_tools == vec!["update_plan".to_string(), "tool_search".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn agent_role_template_tool_selection_picker_for_role_submits_selected_tools() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let role_path = chat
+        .config
+        .codex_home
+        .join("agents/reviewer.toml")
+        .to_path_buf();
+
+    chat.open_agent_role_template_tool_selection_picker_for_role(
+        "reviewer".to_string(),
+        role_path.clone(),
+        vec!["update_plan".to_string()],
+        vec![
+            AgentRoleToolSelectionCatalogEntry {
+                name: "tool_search".to_string(),
+                selected: false,
+                exposure: AgentRoleToolSelectionCatalogExposure::Deferred,
+            },
+            AgentRoleToolSelectionCatalogEntry {
+                name: "update_plan".to_string(),
+                selected: false,
+                exposure: AgentRoleToolSelectionCatalogExposure::Direct,
+            },
+        ],
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenAgentRoleTemplateEditPromptWithAllowedTools {
+            role_name,
+            role_path: event_role_path,
+            allowed_tools,
+        }) if role_name == "reviewer"
+            && event_role_path == role_path
+            && allowed_tools == vec!["update_plan".to_string(), "tool_search".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn agent_role_template_edit_prompt_with_allowed_tools_submits_native_toml_draft() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let draft = r#"name = "reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+"#;
+    assert!(chat.create_agent_role_template_from_draft(draft.to_string()));
+    while rx.try_recv().is_ok() {}
+    let role_path = chat
+        .config
+        .codex_home
+        .join("agents/reviewer.toml")
+        .to_path_buf();
+
+    chat.open_agent_role_template_edit_prompt_with_allowed_tools(
+        "reviewer".to_string(),
+        role_path.clone(),
+        vec!["update_plan".to_string(), "tool_search".to_string()],
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UpdateAgentRoleTemplateFromDraft {
+            role_name,
+            role_path: event_role_path,
+            draft,
+        }) if role_name == "reviewer"
+            && event_role_path == role_path
+            && draft.contains("[tool_selection]")
+            && draft.contains("\"update_plan\"")
+            && draft.contains("\"tool_search\"")
+    );
+}
+
+#[tokio::test]
+async fn agent_role_template_create_from_draft_updates_session_catalog() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let draft = r#"name = "reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+model_provider = "deepseek"
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+"#;
+
+    assert!(chat.create_agent_role_template_from_draft(draft.to_string()));
+
+    let role_path = chat
+        .config
+        .codex_home
+        .join("agents/reviewer.toml")
+        .to_path_buf();
+    assert!(role_path.exists());
+    assert!(chat.config.agent_roles.contains_key("reviewer"));
+    assert_eq!(
+        std::fs::read_to_string(role_path).expect("read role"),
+        format!("{}\n", draft.trim())
+    );
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(popup.contains("reviewer"));
+}
+
+#[tokio::test]
+async fn agent_role_template_update_from_draft_updates_session_catalog() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let draft = r#"name = "reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+"#;
+    assert!(chat.create_agent_role_template_from_draft(draft.to_string()));
+    let role_path = chat
+        .config
+        .codex_home
+        .join("agents/reviewer.toml")
+        .to_path_buf();
+    let updated = r#"name = "reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+
+[tool_selection]
+allowed_tools = ["tool_search"]
+"#;
+
+    assert!(chat.update_agent_role_template_from_draft(
+        "reviewer".to_string(),
+        role_path.clone(),
+        updated.to_string(),
+    ));
+
+    assert!(chat.config.agent_roles.contains_key("reviewer"));
+    assert_eq!(
+        std::fs::read_to_string(role_path).expect("read role"),
+        format!("{}\n", updated.trim())
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(popup.contains("reviewer"));
+    assert!(popup.contains("tool_selection=tool_search"));
 }
 
 #[tokio::test]
@@ -2613,6 +2939,144 @@ async fn model_selection_popup_snapshot() {
 }
 
 #[tokio::test]
+async fn model_providers_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    chat.open_model_providers_popup(sample_model_providers());
+
+    let popup = render_bottom_popup(&chat, /*width*/ 96);
+    assert_chatwidget_snapshot!("model_providers_popup", popup);
+}
+
+#[tokio::test]
+async fn model_provider_detail_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    let provider = sample_model_providers()
+        .into_iter()
+        .find(|provider| provider.id == "deepseek")
+        .expect("deepseek provider");
+    chat.open_model_provider_detail_popup(provider);
+
+    let popup = render_bottom_popup(&chat, /*width*/ 96);
+    assert_chatwidget_snapshot!("model_provider_detail_popup", popup);
+}
+
+#[tokio::test]
+async fn model_provider_list_toggles_with_space_and_opens_details_with_enter() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    while rx.try_recv().is_ok() {}
+
+    chat.open_model_providers_popup(sample_model_providers());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Char(' ')));
+    match rx.try_recv() {
+        Ok(AppEvent::SetModelProviderEnabled {
+            provider_id,
+            enabled,
+        }) => {
+            assert_eq!(provider_id, "deepseek");
+            assert!(enabled);
+        }
+        other => panic!("expected SetModelProviderEnabled event, got {other:?}"),
+    }
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    match rx.try_recv() {
+        Ok(AppEvent::OpenModelProviderDetail { provider }) => {
+            assert_eq!(provider.id, "deepseek");
+        }
+        other => panic!("expected OpenModelProviderDetail event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn model_provider_detail_actions_emit_expected_events() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+    while rx.try_recv().is_ok() {}
+    let provider = sample_model_providers()
+        .into_iter()
+        .find(|provider| provider.id == "deepseek")
+        .expect("deepseek provider");
+
+    chat.open_model_provider_detail_popup(provider.clone());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::SetActiveModelProvider { provider_id }) if provider_id == "deepseek"
+    );
+
+    chat.open_model_provider_detail_popup(provider.clone());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenModelProviderApiKeyPrompt { provider_id }) if provider_id == "deepseek"
+    );
+
+    chat.open_model_provider_detail_popup(provider);
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::ClearModelProviderApiKey { provider_id }) if provider_id == "deepseek"
+    );
+}
+
+#[test]
+fn model_provider_api_key_event_debug_is_redacted() {
+    let event = AppEvent::SaveModelProviderApiKey {
+        provider_id: "deepseek".to_string(),
+        api_key: SensitiveString::new("deepseek-secret".to_string()),
+    };
+
+    let rendered = format!("{event:?}");
+
+    assert!(rendered.contains("[REDACTED]"));
+    assert!(!rendered.contains("deepseek-secret"));
+}
+
+#[tokio::test]
+async fn model_provider_api_key_prompt_masks_input_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.2")).await;
+
+    chat.open_model_provider_api_key_prompt("deepseek".to_string());
+    for ch in "deepseek-secret-key".chars() {
+        chat.handle_key_event(KeyEvent::from(KeyCode::Char(ch)));
+    }
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("model_provider_api_key_prompt_masks_input", popup.clone());
+    assert!(popup.contains("*******************"));
+    assert!(!popup.contains("deepseek-secret-key"));
+}
+
+fn sample_model_providers() -> Vec<ModelProvider> {
+    vec![
+        ModelProvider {
+            id: "openai".to_string(),
+            name: "OpenAI".to_string(),
+            active: true,
+            enabled_in_picker: true,
+            auth_status: ModelProviderAuthStatus::OpenAiAuth,
+            env_key: None,
+            base_url: None,
+            wire_api: "responses".to_string(),
+            model_count: 5,
+        },
+        ModelProvider {
+            id: "deepseek".to_string(),
+            name: "DeepSeek".to_string(),
+            active: false,
+            enabled_in_picker: false,
+            auth_status: ModelProviderAuthStatus::EnvKeyMissing,
+            env_key: Some("DEEPSEEK_API_KEY".to_string()),
+            base_url: Some("https://api.deepseek.com".to_string()),
+            wire_api: "chat_completions".to_string(),
+            model_count: 2,
+        },
+    ]
+}
+
+#[tokio::test]
 async fn personality_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
     chat.thread_id = Some(ThreadId::new());
@@ -2672,6 +3136,57 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
         !popup.contains("test-hidden-model"),
         "expected hidden model to be excluded from picker:\n{popup}"
     );
+}
+
+#[tokio::test]
+async fn all_models_popup_disambiguates_duplicate_model_slugs_by_provider() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("shared-model")).await;
+    chat.thread_id = Some(ThreadId::new());
+    let preset = |model_provider: &str| ModelPreset {
+        id: format!("shared-model-{model_provider}"),
+        model_provider: model_provider.to_string(),
+        model: "shared-model".to_string(),
+        display_name: "shared-model".to_string(),
+        description: format!("Shared model from {model_provider}"),
+        default_reasoning_effort: ReasoningEffortConfig::Medium,
+        supported_reasoning_efforts: vec![ReasoningEffortPreset {
+            effort: ReasoningEffortConfig::Medium,
+            description: "medium".to_string(),
+        }],
+        supports_personality: false,
+        additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
+        default_service_tier: None,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        availability_nux: None,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    };
+
+    chat.open_all_models_popup(vec![preset("openai"), preset("deepseek")]);
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(
+        popup.contains("shared-model (openai)"),
+        "expected OpenAI duplicate to be provider-disambiguated:\n{popup}"
+    );
+    assert!(
+        popup.contains("shared-model (deepseek)"),
+        "expected DeepSeek duplicate to be provider-disambiguated:\n{popup}"
+    );
+
+    while rx.try_recv().is_ok() {}
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let selected = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|event| match event {
+        AppEvent::OpenReasoningPopup { model } => Some(model),
+        _ => None,
+    });
+    let selected = selected.expect("expected OpenReasoningPopup event");
+    assert_eq!(selected.model_provider, "deepseek");
+    assert_eq!(selected.model, "shared-model");
 }
 
 #[tokio::test]

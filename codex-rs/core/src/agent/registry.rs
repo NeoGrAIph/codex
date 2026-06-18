@@ -181,6 +181,20 @@ impl AgentRegistry {
         }
     }
 
+    pub(crate) fn update_thread_note(&self, thread_id: ThreadId, thread_note: Option<String>) {
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(metadata) = active_agents
+            .agent_tree
+            .values_mut()
+            .find(|metadata| metadata.agent_id == Some(thread_id))
+        {
+            metadata.thread_note = thread_note;
+        }
+    }
+
     pub(crate) fn clear_last_task_message(&self, thread_id: ThreadId) {
         let mut active_agents = self
             .active_agents

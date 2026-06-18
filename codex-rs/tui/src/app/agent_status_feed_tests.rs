@@ -2,6 +2,7 @@ use super::*;
 use codex_app_server_protocol::CommandExecutionSource;
 use codex_app_server_protocol::CommandExecutionStatus;
 use codex_app_server_protocol::ItemCompletedNotification;
+use codex_app_server_protocol::ThreadItem;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
 #[test]

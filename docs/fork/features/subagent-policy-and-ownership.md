@@ -5,7 +5,7 @@
 - Code name: `subagent-policy-and-ownership`
 - Status: переносимая security/ownership возможность.
 - Goal: не дать sub-agent обходить allow/deny policies, trust boundaries и ownership своего subtree.
-- Scope in: policy metadata propagation, MCP allowlist/denylist, caller subtree close ownership, trust gating, read-only `.agents`.
+- Scope in: current `fork/140` MAv2 interrupt ownership guard, workbench/app-server close-one ownership guard, canonical `AgentPath` subtree checks, root/non-root/self/cross-subtree diagnostics and focused ownership tests. Historical/future scope still includes durable policy metadata propagation, MCP allowlist/denylist, trust gating and read-only `.agents`, but those surfaces are not claimed by the first `fork/140` slices.
 - Scope out: пользовательские role templates и cwd, кроме мест пересечения.
 
 ## Как работает для пользователя
@@ -39,7 +39,7 @@ Sub-agent получает права в рамках контекста, из �
 
 ## Native coverage in rust-v0.140.0
 
-Status: `partial`. Native release имеет protected metadata paths (`.git`, `.agents`, `.codex`), workspace-write protected subpaths, MCP `ToolFilter` with `enabled_tools`/`disabled_tools`, requirements/identity filtering for MCP servers, root-tree scoped `AgentControl`, subagent metadata and close handler. Не хватает durable policy metadata propagation, role-template `read_only`/`allow_list`/`deny_list` as subagent contract, caller-subtree close ownership validation, negative tests for cross-subtree close denial and app-server protocol/schema fields for policy/ownership state.
+Status: `partial`. Native release имеет protected metadata paths (`.git`, `.agents`, `.codex`), workspace-write protected subpaths, MCP `ToolFilter` with `enabled_tools`/`disabled_tools`, requirements/identity filtering for MCP servers, root-tree scoped `AgentControl`, subagent metadata and close handler. Текущий `fork/140` добавляет path-based ownership для MAv2 `interrupt_agent` и для workbench/app-server `close one` через `ThreadManager::close_agent_from_workbench`. Не хватает durable policy metadata propagation, role-template `read_only`/`allow_list`/`deny_list` as subagent contract, V1 legacy close tool parity and app-server protocol/schema fields for policy metadata state.
 
 ## Porting/current-state notes
 
@@ -47,8 +47,11 @@ Status: `partial`. Native release имеет protected metadata paths (`.git`, `
 
 ## Fork/140 implementation status
 
-Первая итерация не вводит новую policy metadata model и не меняет MCP allow/deny enforcement. Она добавляет native ownership guard для MAv2 `interrupt_agent`: root может interrupt non-root agents, а sub-agent может interrupt только targets внутри своего canonical `agent_path` subtree; absolute sibling/root обходы fail-fast. Durable role-template policy metadata, app-server schema fields и close-agent legacy parity остаются gap для следующего этапа.
+Первые `fork/140` slices не вводят новую policy metadata model и не меняют MCP allow/deny enforcement. Они добавляют native ownership guard для MAv2 `interrupt_agent` и workbench/app-server `close one`: root может управлять non-root agents, а sub-agent может interrupt/close только targets внутри своего canonical `agent_path` subtree; descendant target разрешён, а sibling/root/self/pathless/root обходы fail-fast. Durable role-template policy metadata, app-server schema fields for policy metadata и V1 close-agent legacy parity остаются gap для следующего этапа.
 
 ## Doc changelog
 
 - 2026-06-17: Зафиксирован fork/140 first iteration: MAv2 cross-subtree interrupt denial через `AgentControl` metadata/`SessionSource`, без parallel ownership store.
+- 2026-06-18: Focused MAv2 ownership verification passed for cross-subtree, root target and self-target interrupt denial.
+- 2026-06-18: Добавлен positive descendant ownership test: non-root agent can interrupt a descendant inside its own `AgentPath` subtree while sibling/root/self targets remain denied.
+- 2026-06-18: Workbench/app-server `close one` добавлен в ownership scope: `ThreadManager::close_agent_from_workbench` enforces author/target `AgentPath` descendant ownership before delegating to native `AgentControl::close_agent`.

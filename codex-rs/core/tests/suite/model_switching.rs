@@ -241,6 +241,14 @@ async fn provider_and_model_change_uses_chat_completions_next_turn() -> Result<(
             .as_array()
             .expect("messages should be an array")
             .iter()
+            .all(|message| message["role"] != "developer"),
+        "DeepSeek chat completions requests must not send Responses API developer roles"
+    );
+    assert!(
+        body["messages"]
+            .as_array()
+            .expect("messages should be an array")
+            .iter()
             .any(|message| message["role"] == "user"
                 && message["content"]
                     .as_str()

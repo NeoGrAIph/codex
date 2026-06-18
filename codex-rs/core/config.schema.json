@@ -2714,6 +2714,19 @@
         }
       ]
     },
+    "ToolSelectionToml": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_tools": {
+          "description": "Allowlist of runtime tool identifiers. Entries use `name` for plain tools and `namespace/name` for namespaced tools.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "ToolSuggestConfig": {
       "additionalProperties": false,
       "properties": {
@@ -4373,7 +4386,7 @@
           "type": "string"
         },
         {
-          "description": "The OpenAI-compatible Chat Completions API exposed at `/chat/completions`.",
+          "description": "DeepSeek-compatible Chat Completions transport exposed at `/chat/completions`.\n\nThe first implementation serializes DeepSeek request options such as `thinking` and DeepSeek reasoning effort. Do not treat this as a generic provider-neutral Chat Completions contract without adding provider-specific request options first.",
           "enum": [
             "chat_completions"
           ],
@@ -4508,6 +4521,14 @@
     "disable_paste_burst": {
       "description": "When true, disables burst-paste detection for typed input entirely. All characters are inserted as they are received, and no buffering or placeholder replacement will occur for fast keypress bursts.",
       "type": "boolean"
+    },
+    "disabled_model_providers": {
+      "default": [],
+      "description": "Provider IDs hidden from provider-aware model pickers.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
     },
     "experimental_compact_prompt_file": {
       "$ref": "#/definitions/AbsolutePathBuf"
@@ -5236,6 +5257,14 @@
       "format": "uint",
       "minimum": 0.0,
       "type": "integer"
+    },
+    "tool_selection": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ToolSelectionToml"
+        }
+      ],
+      "description": "Restricts the effective runtime tool set. Intended for role-applied config layers; absent means all native tools remain available."
     },
     "tool_suggest": {
       "allOf": [

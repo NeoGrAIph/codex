@@ -18,11 +18,30 @@ use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
+use serde_json::Value;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 use wiremock::MockServer;
+
+fn tool_names(body: &Value) -> Vec<String> {
+    body.get("tools")
+        .and_then(Value::as_array)
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| {
+                    tool.get("name")
+                        .or_else(|| tool.get("type"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 async fn resume_until_initial_messages(
     builder: &mut TestCodexBuilder,
@@ -364,6 +383,91 @@ async fn resume_switches_models_preserves_base_instructions() -> Result<()> {
         second_model_switch_count, 1,
         "did not expect duplicate model switch message after first post-resume turn"
     );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_retains_tool_selection_policy_in_resumed_turn() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_pre_build_hook(|home| {
+        fs::write(
+            home.join("config.toml"),
+            r#"
+[tool_selection]
+allowed_tools = ["update_plan"]
+"#,
+        )
+        .expect("write tool selection config");
+    });
+    let initial = builder.build(&server).await?;
+    let codex = Arc::clone(&initial.codex);
+    let home = initial.home.clone();
+    let rollout_path = initial
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("rollout path");
+
+    let initial_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-initial"),
+            ev_assistant_message("msg-1", "Completed first turn"),
+            ev_completed("resp-initial"),
+        ]),
+    )
+    .await;
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "Record initial tool policy".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let initial_tools = tool_names(&initial_mock.single_request().body_json());
+    assert_eq!(initial_tools, vec!["update_plan".to_string()]);
+
+    let resumed_mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-resume"),
+            ev_assistant_message("msg-2", "Resumed turn"),
+            ev_completed("resp-resume"),
+        ]),
+    )
+    .await;
+    let mut resume_builder = test_codex();
+    let resumed = resume_builder.resume(&server, home, rollout_path).await?;
+    resumed
+        .codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "Check resumed tool policy".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&resumed.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let resumed_tools = tool_names(&resumed_mock.single_request().body_json());
+    assert_eq!(resumed_tools, vec!["update_plan".to_string()]);
 
     Ok(())
 }

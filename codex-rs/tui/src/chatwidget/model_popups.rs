@@ -178,11 +178,26 @@ impl ChatWidget {
             return;
         }
 
+        let mut model_slug_counts = std::collections::BTreeMap::new();
+        for preset in &presets {
+            *model_slug_counts
+                .entry(preset.model.clone())
+                .or_insert(0usize) += 1;
+        }
+
         let mut items: Vec<SelectionItem> = Vec::new();
         for preset in presets.into_iter() {
             let description =
                 (!preset.description.is_empty()).then_some(preset.description.to_string());
             let is_current = preset.model.as_str() == self.current_model();
+            let duplicate_slug = model_slug_counts
+                .get(preset.model.as_str())
+                .is_some_and(|count| *count > 1);
+            let name = if duplicate_slug {
+                format!("{} ({})", preset.model, preset.model_provider)
+            } else {
+                preset.model.clone()
+            };
             let single_supported_effort = preset.supported_reasoning_efforts.len() == 1;
             let preset_for_action = preset.clone();
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
@@ -192,7 +207,7 @@ impl ChatWidget {
                 });
             })];
             items.push(SelectionItem {
-                name: preset.model.clone(),
+                name,
                 description,
                 is_current,
                 is_default: preset.is_default,

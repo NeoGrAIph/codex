@@ -5,7 +5,7 @@
 - Code name: `thread-notes`
 - Status: переносимая и неоднократно усиленная fork-возможность.
 - Goal: дать thread/sub-agent короткую устойчивую заметку, видимую в runtime, TUI и app-server surfaces.
-- Scope in: metadata-only notes, persistence, resume/restart reconstruction, TUI/app-server rendering, `set_thread_note`.
+- Scope in: metadata-only notes, persistence, resume/restart reconstruction, TUI workbench rendering, app-server source metadata projection, post-spawn app-server updates through `thread/metadata/update.threadNote`, and model-visible MAv2 `set_thread_note` set/clear.
 - Scope out: role templates и cwd.
 
 ## Как работает для пользователя
@@ -36,7 +36,7 @@ Agent может закрепить короткую заметку за thread/
 
 ## Native coverage in rust-v0.140.0
 
-Status: `partial`, но собственно note surface отсутствует. Native release уже хранит thread metadata (`parent_thread_id`, `cwd`, `thread_source`, `agent_nickname`, `agent_role`, `agent_path`, permissions), но не имеет `thread_note`/`threadNote`, `set_thread_note`, `Thread.threadNote`, `CollabAgentState.threadNote`, `thread/note/updated`, TUI/list/wait projection and metadata-only 500-char normalized note contract.
+Status: `partial, expanded locally`. Native release уже хранит thread metadata (`parent_thread_id`, `cwd`, `thread_source`, `agent_nickname`, `agent_role`, `agent_path`, permissions), но не имеет fork-level note contract: `thread_note`/`threadNote`, `set_thread_note`, `CollabAgentState.threadNote`, `thread/note/updated`, TUI/list/wait projection and metadata-only 500-char normalized note contract. Текущий `fork/140` worktree добавляет metadata-only `thread_note` substrate, exposes it through native MAv2 `list_agents`, MAv2 `wait_agent` visible-agent snapshot, app-server `Thread.threadNote`, app-server `CollabAgentState.threadNote`, generated schemas and `/agent` workbench selected detail, lets app-server clients update or clear the note through the existing native `thread/metadata/update.threadNote` contract, and lets the orchestrating model update/clear visible spawned sub-agent notes through MAv2 `set_thread_note`. SQLite migration or old `thread_note_index.jsonl` port are not required.
 
 ## Porting/current-state notes
 
@@ -44,8 +44,16 @@ Status: `partial`, но собственно note surface отсутствует
 
 ## Fork/140 implementation status
 
-Первая итерация добавляет metadata-only `thread_note` в `SubAgentSource::ThreadSpawn`, `SessionMeta`, thread-store read model/patch и live `AgentMetadata`, нормализует `spawn_agent.thread_note` до непустой строки максимум 500 символов и показывает note через MAv2 `list_agents`. Старые sessions остаются читаемыми через `serde(default)`. Не реализовано в этой итерации: `set_thread_note`, app-server `threadNote`/notification surface, TUI rendering, sqlite column migration и wait-agent projection.
+Первая итерация добавляет metadata-only `thread_note` в `SubAgentSource::ThreadSpawn`, `SessionMeta`, thread-store read model/patch и live `AgentMetadata`, нормализует `spawn_agent.thread_note` до непустой строки максимум 500 символов и показывает note через MAv2 `list_agents`. MAv2 `wait_agent` returns the same visible-agent metadata snapshot when it completes or times out; it does not expose mailbox content or final answers. Старые sessions остаются читаемыми через `serde(default)`. Generated app-server protocol schemas включают `SubAgentSource.thread_note`, top-level `Thread.threadNote`, `CollabAgentState.threadNote` and `thread/note/updated`: первое поле сохраняет source metadata, второе даёт клиентам удобную read projection без отдельного storage, третье переносит note в существующие collab tool-call notifications/history для spawn/send/wait/close/resume, четвёртое сообщает app-server clients о post-spawn set/clear. Текущий `/agent` workbench гидрирует `thread_note` из `Thread.threadNote` with fallback to existing `Thread.source` / `SessionSource::SubAgent(ThreadSpawn)` and renders it as bounded selected-detail `Note:` recovery anchor; live `thread/note/updated` обновляет тот же picker cache without thread/read. Post-spawn app-server update реализован как расширение native `thread/metadata/update`: поле `threadNote` uses omit/`null`/string semantics, updates rollout `SessionMeta.thread_note` and the nested `ThreadSpawn.thread_note`, then reuses existing metadata read/projection paths without sqlite column migration. MAv2 `set_thread_note` uses the same normalization and `ThreadMetadataPatch` path, updates only visible spawned sub-agents, rejects root/non-sub-agent targets, and refreshes live `AgentMetadata` so `list_agents`/`wait_agent` see the new note immediately.
 
 ## Doc changelog
 
-- 2026-06-17: Зафиксирован fork/140 metadata-only substrate: spawn-time `thread_note`, rollout/session metadata, live list projection, старые rollout records без note читаются как `None`.
+- 2026-06-17: Зафиксирован fork/140 metadata-only substrate: spawn-time `thread_note`, rollout/session metadata, live list projection, generated app-server protocol schema projection, старые rollout records без note читаются как `None`.
+- 2026-06-18: Focused verification passed for spawn-time note propagation, over-500-character fail-fast validation, thread-store resume reconstruction and generated app-server protocol schema sync.
+- 2026-06-18: Синхронизирован contract с текущим `/agent` workbench: note теперь отображается в selected-detail `Inspect` block через native `Thread.source` hydration; post-spawn update, `set_thread_note` and wait-agent projection оставались follow-up work на этом checkpoint. SQLite column/migration не является частью metadata-only contract.
+- 2026-06-18: Добавлен native post-spawn app-server update path: `thread/metadata/update.threadNote` updates/clears metadata-only notes through rollout `SessionMeta` and `Thread.source` projection without sqlite migration; at that checkpoint `set_thread_note` model tool and notification surfaces remained future work.
+- 2026-06-18: Добавлена top-level app-server read projection `Thread.threadNote` generated in JSON/TypeScript schemas. It is derived from the same metadata source and does not add sqlite storage or a parallel note index.
+- 2026-06-18: MAv2 `wait_agent` output now includes the same visible-agent snapshot shape as `list_agents`, including `thread_note`. This is metadata-only status projection; mailbox/final-answer content remains excluded.
+- 2026-06-18: Added MAv2 model-visible `set_thread_note` set/clear through native `ThreadMetadataPatch` and live `AgentMetadata` refresh. Root/non-sub-agent targets are rejected; no sqlite migration or `thread_note_index.jsonl` port was added.
+- 2026-06-18: Added `CollabAgentState.threadNote` through existing app-server collab tool-call event/history projections. Spawn/send/wait/close/resume states can carry the current metadata note without adding a dedicated notification or sqlite storage.
+- 2026-06-18: Added dedicated app-server `thread/note/updated` notification emitted after successful `thread/metadata/update.threadNote` set/clear and consumed by TUI `/agent` cache without an extra `thread/read`.

@@ -1,0 +1,21 @@
+---
+source: tui/src/app/tests.rs
+expression: rendered.clone()
+---
+  Subagents
+  Select a thread to watch. ⌥ + ← previous, ⌥ + → next.
+  Agents: 1 total · 1 running · 0 waiting · 0 error · 0 closed
+
+› 1. • Main [default] (current)       Status: closed
+                                      Current view: yes
+                                      Kind: main thread
+                                      Inspect:
+                                      - Thread: 00000000-0000-0000-0000-000000000101
+                                      Actions:
+                                      - Enter: watch this thread
+  2. • Robie [explorer]               running · role explorer · /root/worker
+  3. > Send message Robie [explorer]  running · /root/worker · queue message only
+  4. ! Interrupt Robie [explorer]     running · /root/worker · stop current turn only
+  5. x Close Robie [explorer]         running · /root/worker · close agent subtree
+
+  Press enter to confirm or esc to go back

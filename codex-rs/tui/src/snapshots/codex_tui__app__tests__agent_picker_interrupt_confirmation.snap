@@ -1,0 +1,12 @@
+---
+source: tui/src/app/tests.rs
+expression: rendered.clone()
+---
+  Interrupt this agent?
+  Robie [explorer] · /root/worker · current status: running
+
+› 1. Cancel             Leave the agent turn running.
+  2. ! Interrupt agent  Current status: running. Stop the current turn only. It does not close or
+                        delete the thread.
+
+  Press enter to confirm or esc to go back

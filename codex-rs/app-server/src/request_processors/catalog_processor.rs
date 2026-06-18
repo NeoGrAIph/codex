@@ -2,7 +2,13 @@ use super::*;
 use crate::models::model_from_preset;
 use codex_app_server_protocol::Model;
 use codex_config::config_toml::ConfigToml;
+use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_models_manager::manager::RefreshStrategy;
+use codex_secrets::SecretName;
+use codex_secrets::SecretScope;
+use codex_secrets::SecretsBackendKind;
+use codex_secrets::SecretsManager;
 use futures::StreamExt;
 
 #[derive(Clone)]
@@ -165,6 +171,51 @@ impl CatalogRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn model_provider_list(
+        &self,
+        params: ModelProviderListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.list_model_providers(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn agent_role_tool_selection_catalog_read(
+        &self,
+        params: AgentRoleToolSelectionCatalogReadParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.read_agent_role_tool_selection_catalog(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn model_provider_config_write(
+        &self,
+        params: ModelProviderConfigWriteParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.write_model_provider_config(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn model_provider_auth_write(
+        &self,
+        params: ModelProviderAuthWriteParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.write_model_provider_auth(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
+    pub(crate) async fn model_provider_auth_remove(
+        &self,
+        params: ModelProviderAuthRemoveParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        self.remove_model_provider_auth(params)
+            .await
+            .map(|response| Some(response.into()))
+    }
+
     pub(crate) async fn experimental_feature_list(
         &self,
         params: ExperimentalFeatureListParams,
@@ -282,6 +333,15 @@ impl CatalogRequestProcessor {
                 continue;
             };
             let is_active_provider = provider_id == config.model_provider_id;
+            if provider_id != OPENAI_PROVIDER_ID
+                && !is_active_provider
+                && config.disabled_model_providers.contains(&provider_id)
+            {
+                continue;
+            }
+            if !is_active_provider && !has_authoritative_inactive_catalog(&provider_info) {
+                continue;
+            }
             let config_model_catalog = is_active_provider
                 .then(|| config.model_catalog.clone())
                 .flatten();
@@ -307,6 +367,264 @@ impl CatalogRequestProcessor {
         }
 
         Ok(models)
+    }
+
+    async fn list_model_providers(
+        &self,
+        _params: ModelProviderListParams,
+    ) -> Result<ModelProviderListResponse, JSONRPCErrorError> {
+        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        let mut provider_ids = config.model_providers.keys().cloned().collect::<Vec<_>>();
+        provider_ids.sort();
+        let mut data = Vec::with_capacity(provider_ids.len());
+        for provider_id in provider_ids {
+            if provider_id == OPENAI_PROVIDER_ID {
+                continue;
+            }
+            let Some(provider_info) = config.model_providers.get(&provider_id).cloned() else {
+                continue;
+            };
+            let config_model_catalog = (provider_id == config.model_provider_id)
+                .then(|| config.model_catalog.clone())
+                .flatten();
+            let model_count =
+                create_model_provider(provider_info.clone(), Some(self.auth_manager.clone()))
+                    .models_manager(config.codex_home.to_path_buf(), config_model_catalog)
+                    .list_models(RefreshStrategy::Offline)
+                    .await
+                    .into_iter()
+                    .filter(|preset| preset.show_in_picker)
+                    .count() as u32;
+            data.push(codex_app_server_protocol::ModelProvider {
+                id: provider_id.clone(),
+                name: provider_info.name.clone(),
+                active: provider_id == config.model_provider_id,
+                enabled_in_picker: !config.disabled_model_providers.contains(&provider_id),
+                auth_status: model_provider_auth_status(
+                    &provider_id,
+                    &provider_info,
+                    config.codex_home.as_path(),
+                ),
+                env_key: provider_info.env_key.clone(),
+                base_url: provider_info.base_url.clone(),
+                wire_api: provider_info.wire_api.to_string(),
+                model_count,
+            });
+        }
+
+        Ok(ModelProviderListResponse { data })
+    }
+
+    async fn read_agent_role_tool_selection_catalog(
+        &self,
+        params: AgentRoleToolSelectionCatalogReadParams,
+    ) -> Result<AgentRoleToolSelectionCatalogReadResponse, JSONRPCErrorError> {
+        let AgentRoleToolSelectionCatalogReadParams { thread_id } = params;
+        let thread_id = ThreadId::from_string(&thread_id)
+            .map_err(|err| invalid_request(format!("invalid thread id: {err}")))?;
+        let thread = self
+            .thread_manager
+            .get_thread(thread_id)
+            .await
+            .map_err(|_| invalid_request(format!("thread not found: {thread_id}")))?;
+        let catalog = thread.tool_selection_catalog().await.map_err(|err| {
+            internal_error(format!("failed to read tool selection catalog: {err}"))
+        })?;
+
+        Ok(AgentRoleToolSelectionCatalogReadResponse {
+            data: catalog
+                .entries
+                .into_iter()
+                .map(|entry| AgentRoleToolSelectionCatalogEntry {
+                    name: entry.name,
+                    selected: entry.selected,
+                    exposure: match entry.exposure {
+                        CoreToolSelectionCatalogExposure::Direct => {
+                            AgentRoleToolSelectionCatalogExposure::Direct
+                        }
+                        CoreToolSelectionCatalogExposure::Deferred => {
+                            AgentRoleToolSelectionCatalogExposure::Deferred
+                        }
+                        CoreToolSelectionCatalogExposure::DirectModelOnly => {
+                            AgentRoleToolSelectionCatalogExposure::DirectModelOnly
+                        }
+                        CoreToolSelectionCatalogExposure::Hidden => {
+                            AgentRoleToolSelectionCatalogExposure::Hidden
+                        }
+                        CoreToolSelectionCatalogExposure::Hosted => {
+                            AgentRoleToolSelectionCatalogExposure::Hosted
+                        }
+                    },
+                })
+                .collect(),
+            unmatched_allowed_tools: catalog.unmatched_allowed_tools,
+        })
+    }
+
+    async fn write_model_provider_config(
+        &self,
+        params: ModelProviderConfigWriteParams,
+    ) -> Result<ConfigWriteResponse, JSONRPCErrorError> {
+        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        let Some(provider_info) = config.model_providers.get(&params.provider_id).cloned() else {
+            return Err(invalid_request(format!(
+                "model provider `{}` not found",
+                params.provider_id
+            )));
+        };
+        if params.set_active && params.enabled_in_picker == Some(false) {
+            return Err(invalid_request(
+                "model provider cannot be made active and hidden from /model in the same request",
+            ));
+        }
+
+        let mut edits = Vec::new();
+        if let Some(enabled_in_picker) = params.enabled_in_picker {
+            if params.provider_id == OPENAI_PROVIDER_ID && !enabled_in_picker {
+                return Err(invalid_request(
+                    "OpenAI is a native model provider and cannot be disabled",
+                ));
+            }
+            if !enabled_in_picker && params.provider_id == config.model_provider_id {
+                return Err(invalid_request(
+                    "active model provider cannot be disabled; select another provider first",
+                ));
+            }
+            let mut disabled = config
+                .disabled_model_providers
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            if enabled_in_picker {
+                disabled.retain(|provider_id| provider_id != &params.provider_id);
+            } else if !disabled.contains(&params.provider_id) {
+                disabled.push(params.provider_id.clone());
+            }
+            disabled.sort();
+            edits.push(codex_app_server_protocol::ConfigEdit {
+                key_path: "disabled_model_providers".to_string(),
+                value: serde_json::json!(disabled),
+                merge_strategy: MergeStrategy::Replace,
+            });
+        }
+
+        if params.set_active {
+            let default_model = self
+                .default_model_for_provider(&config, &params.provider_id, provider_info)
+                .await?;
+            edits.push(codex_app_server_protocol::ConfigEdit {
+                key_path: "model_provider".to_string(),
+                value: serde_json::json!(&params.provider_id),
+                merge_strategy: MergeStrategy::Replace,
+            });
+            edits.push(codex_app_server_protocol::ConfigEdit {
+                key_path: "model".to_string(),
+                value: serde_json::json!(default_model),
+                merge_strategy: MergeStrategy::Replace,
+            });
+        }
+
+        let response = self
+            .config_manager
+            .batch_write(ConfigBatchWriteParams {
+                edits,
+                file_path: None,
+                expected_version: None,
+                reload_user_config: true,
+            })
+            .await
+            .map_err(|err| internal_error(err.to_string()))?;
+        self.handle_model_provider_config_mutation().await;
+        Ok(response)
+    }
+
+    async fn default_model_for_provider(
+        &self,
+        config: &Config,
+        provider_id: &str,
+        provider_info: ModelProviderInfo,
+    ) -> Result<String, JSONRPCErrorError> {
+        let config_model_catalog = (provider_id == config.model_provider_id)
+            .then(|| config.model_catalog.clone())
+            .flatten();
+        let models = create_model_provider(provider_info, Some(self.auth_manager.clone()))
+            .models_manager(config.codex_home.to_path_buf(), config_model_catalog)
+            .list_models(RefreshStrategy::Offline)
+            .await
+            .into_iter()
+            .filter(|preset| preset.show_in_picker)
+            .collect::<Vec<_>>();
+        models
+            .iter()
+            .find(|preset| preset.is_default)
+            .or_else(|| models.first())
+            .map(|preset| preset.model.clone())
+            .ok_or_else(|| {
+                invalid_request(format!(
+                    "model provider `{provider_id}` does not expose a picker model to set as default"
+                ))
+            })
+    }
+
+    async fn write_model_provider_auth(
+        &self,
+        params: ModelProviderAuthWriteParams,
+    ) -> Result<ModelProviderAuthWriteResponse, JSONRPCErrorError> {
+        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        let Some(provider) = config.model_providers.get(&params.provider_id) else {
+            return Err(invalid_request(format!(
+                "model provider `{}` not found",
+                params.provider_id
+            )));
+        };
+        if params.provider_id == OPENAI_PROVIDER_ID || provider.requires_openai_auth {
+            return Err(invalid_request(
+                "OpenAI is a native model provider; use account login to manage its auth",
+            ));
+        }
+        let secret_name = model_provider_secret_name(&params.provider_id, provider)?;
+        SecretsManager::new(config.codex_home.to_path_buf(), SecretsBackendKind::Local)
+            .set(&SecretScope::Global, &secret_name, &params.api_key)
+            .map_err(|err| internal_error(format!("failed to save model provider key: {err:#}")))?;
+        self.handle_model_provider_config_mutation().await;
+        Ok(ModelProviderAuthWriteResponse {
+            provider_id: params.provider_id,
+            managed_key_present: true,
+        })
+    }
+
+    async fn remove_model_provider_auth(
+        &self,
+        params: ModelProviderAuthRemoveParams,
+    ) -> Result<ModelProviderAuthRemoveResponse, JSONRPCErrorError> {
+        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        let Some(provider) = config.model_providers.get(&params.provider_id) else {
+            return Err(invalid_request(format!(
+                "model provider `{}` not found",
+                params.provider_id
+            )));
+        };
+        if params.provider_id == OPENAI_PROVIDER_ID || provider.requires_openai_auth {
+            return Err(invalid_request(
+                "OpenAI is a native model provider; use account login to manage its auth",
+            ));
+        }
+        let secret_name = model_provider_secret_name(&params.provider_id, provider)?;
+        SecretsManager::new(config.codex_home.to_path_buf(), SecretsBackendKind::Local)
+            .delete(&SecretScope::Global, &secret_name)
+            .map_err(|err| {
+                internal_error(format!("failed to remove model provider key: {err:#}"))
+            })?;
+        self.handle_model_provider_config_mutation().await;
+        Ok(ModelProviderAuthRemoveResponse {
+            provider_id: params.provider_id,
+            managed_key_present: false,
+        })
+    }
+
+    async fn handle_model_provider_config_mutation(&self) {
+        self.thread_manager.plugins_manager().clear_cache();
+        self.thread_manager.skills_manager().clear_cache();
     }
 
     fn paginate_models(
@@ -769,4 +1087,76 @@ impl CatalogRequestProcessor {
             })
             .map_err(|err| internal_error(format!("failed to update skill settings: {err}")))
     }
+}
+
+fn has_authoritative_inactive_catalog(provider_info: &ModelProviderInfo) -> bool {
+    provider_info.is_openai() || provider_info.is_amazon_bedrock() || provider_info.is_deepseek()
+}
+
+fn model_provider_auth_status(
+    provider_id: &str,
+    provider: &ModelProviderInfo,
+    codex_home: &std::path::Path,
+) -> ModelProviderAuthStatus {
+    if provider.requires_openai_auth {
+        return ModelProviderAuthStatus::OpenAiAuth;
+    }
+    if provider.auth.is_some() {
+        return ModelProviderAuthStatus::Command;
+    }
+    if provider.aws.is_some() {
+        return ModelProviderAuthStatus::Aws;
+    }
+    let env_key_present = provider
+        .env_key
+        .as_deref()
+        .is_some_and(|env_key| std::env::var(env_key).is_ok_and(|value| !value.trim().is_empty()));
+    if env_key_present {
+        return ModelProviderAuthStatus::EnvKeyPresent;
+    }
+
+    let managed_key_present = model_provider_secret_name(provider_id, provider)
+        .ok()
+        .and_then(|secret_name| {
+            SecretsManager::new(codex_home.to_path_buf(), SecretsBackendKind::Local)
+                .get(&SecretScope::Global, &secret_name)
+                .ok()
+                .flatten()
+        })
+        .is_some_and(|value| !value.trim().is_empty());
+    if managed_key_present {
+        return ModelProviderAuthStatus::ManagedKeyPresent;
+    }
+    if provider.experimental_bearer_token.is_some() {
+        return ModelProviderAuthStatus::InlineBearer;
+    }
+
+    if provider.env_key.is_some() {
+        ModelProviderAuthStatus::EnvKeyMissing
+    } else {
+        ModelProviderAuthStatus::None
+    }
+}
+
+fn model_provider_secret_name(
+    provider_id: &str,
+    provider: &ModelProviderInfo,
+) -> Result<SecretName, JSONRPCErrorError> {
+    if let Some(env_key) = provider.env_key.as_deref() {
+        return SecretName::new(env_key)
+            .map_err(|err| invalid_request(format!("invalid provider env key: {err}")));
+    }
+
+    let suffix = provider_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    SecretName::new(&format!("MODEL_PROVIDER_{suffix}_API_KEY"))
+        .map_err(|err| invalid_request(format!("invalid model provider id: {err}")))
 }

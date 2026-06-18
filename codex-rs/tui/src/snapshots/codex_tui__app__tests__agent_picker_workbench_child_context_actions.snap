@@ -1,0 +1,27 @@
+---
+source: tui/src/app/tests.rs
+expression: rendered.clone()
+---
+  Subagents
+  Select a thread to watch. ⌥ + ← previous, ⌥ + → next.
+  Agents: 4 total · 3 running · 0 waiting · 0 error · 0 closed
+
+  1. • Main [default]                closed · main thread · 00000000
+› 2. • Owner [planner] (current)     Status: running
+                                     Current view: yes
+                                     Kind: sub-agent thread
+                                     Inspect:
+                                     - Nickname: Owner
+                                     - Role: planner
+                                     - Agent path: /root/owner
+                                     - Thread: 00000000-0000-0000-0000-000000000202
+                                     Actions:
+                                     - Enter: watch this thread
+  3. • Child [worker]                running · role worker · /root/owner/child
+  4. • Idle [worker]                 idle · role worker · /root/owner/idle
+  5. • Sibling [reviewer]            running · role reviewer · /root/sibling
+  6. > Follow up Idle [worker]       idle · /root/owner/idle · starts a turn
+  7. ! Interrupt Child [worker]      running · /root/owner/child · stop current turn only
+  8. x Close Child [worker]          running · /root/owner/child · close agent subtree
+
+  Press enter to confirm or esc to go back

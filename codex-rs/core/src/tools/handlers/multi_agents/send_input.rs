@@ -99,6 +99,7 @@ impl Handler {
                     receiver_thread_id,
                     receiver_agent_nickname: receiver_agent.agent_nickname,
                     receiver_agent_role: receiver_agent.agent_role,
+                    receiver_agent_thread_note: receiver_agent.thread_note,
                     prompt,
                     status,
                 }

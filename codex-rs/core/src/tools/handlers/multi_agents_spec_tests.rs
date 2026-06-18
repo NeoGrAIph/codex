@@ -383,9 +383,23 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         Some("Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000.")
     );
     assert_eq!(parameters.required.as_ref(), None);
+    let output_schema = output_schema.expect("wait output schema");
     assert_eq!(
-        output_schema.expect("wait output schema")["properties"]["message"]["description"],
+        output_schema["properties"]["message"]["description"],
         json!("Brief wait summary without the agent's final content.")
+    );
+    assert_eq!(
+        output_schema["required"],
+        json!(["message", "timed_out", "agents"])
+    );
+    assert_eq!(
+        output_schema["properties"]["agents"]["allOf"][0]["items"]["required"],
+        json!([
+            "agent_name",
+            "agent_status",
+            "last_task_message",
+            "thread_note"
+        ])
     );
 }
 
@@ -416,7 +430,49 @@ fn list_agents_tool_includes_path_prefix_and_agent_fields() {
     );
     assert_eq!(
         output_schema.expect("list_agents output schema")["properties"]["agents"]["items"]["required"],
-        json!(["agent_name", "agent_status", "last_task_message"])
+        json!([
+            "agent_name",
+            "agent_status",
+            "last_task_message",
+            "thread_note"
+        ])
+    );
+}
+
+#[test]
+fn set_thread_note_tool_requires_nullable_thread_note() {
+    let ToolSpec::Function(ResponsesApiTool {
+        parameters,
+        output_schema,
+        ..
+    }) = create_set_thread_note_tool()
+    else {
+        panic!("set_thread_note should be a function tool");
+    };
+    assert_eq!(
+        parameters.schema_type,
+        Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Object))
+    );
+    let properties = parameters
+        .properties
+        .as_ref()
+        .expect("set_thread_note should use object params");
+    assert!(properties.contains_key("target"));
+    let thread_note = properties
+        .get("thread_note")
+        .expect("thread_note property should exist");
+    assert_eq!(
+        thread_note
+            .any_of
+            .as_ref()
+            .expect("thread_note should be nullable")
+            .len(),
+        2
+    );
+    assert_eq!(parameters.required, Some(vec!["thread_note".to_string()]));
+    assert_eq!(
+        output_schema.expect("set_thread_note output schema")["required"],
+        json!(["target", "thread_note"])
     );
 }
 

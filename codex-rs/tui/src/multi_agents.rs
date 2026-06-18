@@ -7,13 +7,21 @@
 use crate::history_cell::PlainHistoryCell;
 use crate::render::line_utils::prefix_lines;
 use crate::text_formatting::truncate_text;
+use chrono::TimeZone;
+use chrono::Utc;
 use codex_app_server_protocol::CollabAgentState;
 use codex_app_server_protocol::CollabAgentStatus;
 use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::SubAgentActivityKind;
+use codex_app_server_protocol::ThreadActiveFlag;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadStatus;
+use codex_app_server_protocol::ThreadTokenUsage;
+use codex_app_server_protocol::TurnPlanStep;
+use codex_app_server_protocol::TurnPlanStepStatus;
 use codex_protocol::ThreadId;
+use codex_protocol::num_format::format_with_separators;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -29,6 +37,9 @@ use std::collections::HashSet;
 const COLLAB_PROMPT_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
+const AGENT_ACTIVITY_PREVIEW_GRAPHEMES: usize = 240;
+const AGENT_PICKER_DETAIL_ACTIVITY_ITEMS: usize = 3;
+const AGENT_PICKER_PROMPT_PREVIEW_GRAPHEMES: usize = 160;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentPickerThreadEntry {
@@ -38,10 +49,80 @@ pub(crate) struct AgentPickerThreadEntry {
     pub(crate) agent_role: Option<String>,
     /// Canonical v2 agent path, when the thread was observed through v2 activity.
     pub(crate) agent_path: Option<String>,
-    /// Whether the latest liveness refresh says the agent thread is actively working.
-    pub(crate) is_running: bool,
-    /// Whether the thread has emitted a close event and should render dimmed.
-    pub(crate) is_closed: bool,
+    /// Bounded app-server preview, usually the first prompt for this thread.
+    pub(crate) prompt_preview: Option<String>,
+    /// Thread note captured in native sub-agent spawn metadata.
+    pub(crate) thread_note: Option<String>,
+    /// Working directory captured for this thread by app-server thread metadata.
+    pub(crate) cwd: Option<String>,
+    /// Model provider captured for this thread by app-server thread metadata.
+    pub(crate) model_provider: Option<String>,
+    /// Thread creation timestamp from native app-server thread metadata.
+    pub(crate) created_at: Option<i64>,
+    /// Thread last-updated timestamp from native app-server thread metadata.
+    pub(crate) updated_at: Option<i64>,
+    /// Model captured from the TUI thread session state when available.
+    pub(crate) model: Option<String>,
+    /// Reasoning effort captured from the TUI thread session state when available.
+    pub(crate) reasoning_effort: Option<String>,
+    /// Service tier captured from the TUI thread session state when available.
+    pub(crate) service_tier: Option<String>,
+    /// Latest status derived from native app-server/runtime state.
+    pub(crate) status: AgentPickerThreadStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentPickerThreadStatus {
+    Idle,
+    Running,
+    WaitingApproval,
+    WaitingUser,
+    Error,
+    Closed,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AgentRoleRuntimeUsage {
+    pub(crate) total: usize,
+    pub(crate) running: usize,
+    pub(crate) waiting: usize,
+    pub(crate) errors: usize,
+    pub(crate) closed: usize,
+    pub(crate) current_view: bool,
+}
+
+impl AgentPickerThreadStatus {
+    pub(crate) fn from_thread_status(status: &ThreadStatus) -> Self {
+        match status {
+            ThreadStatus::NotLoaded => Self::Closed,
+            ThreadStatus::Idle => Self::Idle,
+            ThreadStatus::SystemError => Self::Error,
+            ThreadStatus::Active { active_flags } => {
+                if active_flags.contains(&ThreadActiveFlag::WaitingOnApproval) {
+                    Self::WaitingApproval
+                } else if active_flags.contains(&ThreadActiveFlag::WaitingOnUserInput) {
+                    Self::WaitingUser
+                } else {
+                    Self::Running
+                }
+            }
+        }
+    }
+
+    pub(crate) fn is_closed(self) -> bool {
+        matches!(self, Self::Closed)
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Running => "running",
+            Self::WaitingApproval => "waiting approval",
+            Self::WaitingUser => "waiting user",
+            Self::Error => "error",
+            Self::Closed => "closed",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,13 +153,258 @@ pub(crate) struct SpawnRequestSummary {
     pub(crate) reasoning_effort: ReasoningEffortConfig,
 }
 
-pub(crate) fn agent_picker_status_dot_spans(is_closed: bool) -> Vec<Span<'static>> {
-    let dot = if is_closed {
+pub(crate) fn agent_picker_status_dot_spans(status: AgentPickerThreadStatus) -> Vec<Span<'static>> {
+    let dot = if status.is_closed() {
         "•".into()
+    } else if matches!(status, AgentPickerThreadStatus::Error) {
+        "•".red()
+    } else if matches!(
+        status,
+        AgentPickerThreadStatus::WaitingApproval | AgentPickerThreadStatus::WaitingUser
+    ) {
+        "•".cyan()
     } else {
         "•".green()
     };
     vec![dot, " ".into()]
+}
+
+pub(crate) fn agent_picker_item_description(
+    thread_id: ThreadId,
+    entry: &AgentPickerThreadEntry,
+    is_primary: bool,
+) -> String {
+    let mut parts = vec![agent_picker_status_label(entry).to_string()];
+    if is_primary {
+        parts.push("main thread".to_string());
+    } else if let Some(role) = entry
+        .agent_role
+        .as_deref()
+        .filter(|role| !role.trim().is_empty())
+    {
+        parts.push(format!("role {role}"));
+    } else {
+        parts.push("agent".to_string());
+    }
+    if let Some(agent_path) = entry
+        .agent_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|agent_path| !agent_path.is_empty())
+    {
+        parts.push(agent_path.to_string());
+    } else {
+        parts.push(short_thread_id(thread_id));
+    }
+    parts.join(" · ")
+}
+
+pub(crate) fn agent_picker_summary_line(
+    threads: &[(ThreadId, &AgentPickerThreadEntry)],
+    primary_thread_id: Option<ThreadId>,
+) -> String {
+    let mut total = 0usize;
+    let mut running = 0usize;
+    let mut waiting = 0usize;
+    let mut errors = 0usize;
+    let mut closed = 0usize;
+    for (thread_id, entry) in threads {
+        if Some(*thread_id) == primary_thread_id {
+            continue;
+        }
+        total += 1;
+        match entry.status {
+            AgentPickerThreadStatus::Idle => {}
+            AgentPickerThreadStatus::Running => running += 1,
+            AgentPickerThreadStatus::WaitingApproval | AgentPickerThreadStatus::WaitingUser => {
+                waiting += 1;
+            }
+            AgentPickerThreadStatus::Error => errors += 1,
+            AgentPickerThreadStatus::Closed => closed += 1,
+        }
+    }
+    format!(
+        "Agents: {total} total · {running} running · {waiting} waiting · {errors} error · {closed} closed"
+    )
+}
+
+pub(crate) struct AgentPickerSelectedDescriptionContext<'a> {
+    pub(crate) prompt_context: &'a [String],
+    pub(crate) recent_activity: &'a [String],
+    pub(crate) token_usage_summary: Option<&'a str>,
+    pub(crate) plan_progress_summary: Option<&'a str>,
+}
+
+pub(crate) fn agent_picker_selected_description(
+    thread_id: ThreadId,
+    entry: &AgentPickerThreadEntry,
+    is_primary: bool,
+    is_current: bool,
+    context: AgentPickerSelectedDescriptionContext<'_>,
+) -> String {
+    let mut lines = vec![
+        format!("Status: {}", agent_picker_status_label(entry)),
+        format!("Current view: {}", if is_current { "yes" } else { "no" }),
+    ];
+    if is_primary {
+        lines.push("Kind: main thread".to_string());
+    } else {
+        lines.push("Kind: sub-agent thread".to_string());
+    }
+
+    let mut inspect_lines = Vec::new();
+    if let Some(nickname) = entry
+        .agent_nickname
+        .as_deref()
+        .map(str::trim)
+        .filter(|nickname| !nickname.is_empty())
+    {
+        inspect_lines.push(format!("Nickname: {nickname}"));
+    }
+    if let Some(role) = entry
+        .agent_role
+        .as_deref()
+        .map(str::trim)
+        .filter(|role| !role.is_empty())
+    {
+        inspect_lines.push(format!("Role: {role}"));
+    }
+    if let Some(agent_path) = entry
+        .agent_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|agent_path| !agent_path.is_empty())
+    {
+        inspect_lines.push(format!("Agent path: {agent_path}"));
+    }
+    if let Some(prompt_preview) = agent_picker_prompt_preview(entry) {
+        inspect_lines.push(format!("Prompt: {prompt_preview}"));
+    }
+    if let Some(thread_note) = entry
+        .thread_note
+        .as_deref()
+        .map(str::trim)
+        .filter(|thread_note| !thread_note.is_empty())
+    {
+        inspect_lines.push(format!("Note: {thread_note}"));
+    }
+    if let Some(cwd) = entry
+        .cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|cwd| !cwd.is_empty())
+    {
+        inspect_lines.push(format!("Cwd: {cwd}"));
+    }
+    if let Some(model_provider) = entry
+        .model_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|model_provider| !model_provider.is_empty())
+    {
+        inspect_lines.push(format!("Model provider: {model_provider}"));
+    }
+    if let Some(created_at) = entry.created_at.and_then(format_agent_picker_timestamp) {
+        inspect_lines.push(format!("Created: {created_at}"));
+    }
+    if let Some(updated_at) = entry.updated_at.and_then(format_agent_picker_timestamp) {
+        inspect_lines.push(format!("Updated: {updated_at}"));
+    }
+    if let Some(model) = entry
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        inspect_lines.push(format!("Model: {model}"));
+    }
+    if let Some(reasoning_effort) = entry
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|reasoning_effort| !reasoning_effort.is_empty())
+    {
+        inspect_lines.push(format!("Reasoning: {reasoning_effort}"));
+    }
+    if let Some(service_tier) = entry
+        .service_tier
+        .as_deref()
+        .map(str::trim)
+        .filter(|service_tier| !service_tier.is_empty())
+    {
+        inspect_lines.push(format!("Service tier: {service_tier}"));
+    }
+    if let Some(token_usage_summary) = context
+        .token_usage_summary
+        .map(str::trim)
+        .filter(|token_usage_summary| !token_usage_summary.is_empty())
+    {
+        inspect_lines.push(format!("Tokens: {token_usage_summary}"));
+    }
+    if let Some(plan_progress_summary) = context
+        .plan_progress_summary
+        .map(str::trim)
+        .filter(|plan_progress_summary| !plan_progress_summary.is_empty())
+    {
+        inspect_lines.push(format!("Plan: {plan_progress_summary}"));
+    }
+    inspect_lines.push(format!("Thread: {thread_id}"));
+    lines.push("Inspect:".to_string());
+    lines.extend(
+        inspect_lines
+            .into_iter()
+            .map(|detail| format!("- {detail}")),
+    );
+    if !context.prompt_context.is_empty() {
+        lines.push("Context:".to_string());
+        lines.extend(
+            context
+                .prompt_context
+                .iter()
+                .map(|context| format!("- {context}")),
+        );
+    }
+    if !context.recent_activity.is_empty() {
+        lines.push("Recent activity:".to_string());
+        lines.extend(
+            context
+                .recent_activity
+                .iter()
+                .map(|activity| format!("- {activity}")),
+        );
+    }
+    lines.push("Actions:".to_string());
+    lines.push("- Enter: watch this thread".to_string());
+    lines.join("\n")
+}
+
+fn agent_picker_status_label(entry: &AgentPickerThreadEntry) -> &'static str {
+    entry.status.label()
+}
+
+fn short_thread_id(thread_id: ThreadId) -> String {
+    thread_id.to_string().chars().take(8).collect::<String>()
+}
+
+fn agent_picker_prompt_preview(entry: &AgentPickerThreadEntry) -> Option<String> {
+    bounded_prompt_preview(entry.prompt_preview.as_deref()?)
+}
+
+fn format_agent_picker_timestamp(timestamp_seconds: i64) -> Option<String> {
+    Utc.timestamp_opt(timestamp_seconds, 0)
+        .single()
+        .map(|timestamp| timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+}
+
+fn bounded_prompt_preview(preview: &str) -> Option<String> {
+    let preview = preview.trim();
+    if preview.is_empty() {
+        return None;
+    }
+    bounded_activity_summary(&truncate_text(
+        preview,
+        AGENT_PICKER_PROMPT_PREVIEW_GRAPHEMES,
+    ))
 }
 
 pub(crate) fn format_agent_picker_item_name(
@@ -198,6 +524,182 @@ pub(crate) fn spawn_request_summary(item: &ThreadItem) -> Option<SpawnRequestSum
         }),
         _ => None,
     }
+}
+
+pub(crate) fn agent_picker_recent_activity_summaries<'a>(
+    items_newest_first: impl Iterator<Item = &'a ThreadItem>,
+) -> Vec<String> {
+    let mut seen_item_ids = HashSet::new();
+    let mut activity = Vec::new();
+    for item in items_newest_first {
+        if !seen_item_ids.insert(item.id().to_string()) {
+            continue;
+        }
+        if let Some(summary) = thread_item_activity_summary(item) {
+            activity.push(summary);
+            if activity.len() == AGENT_PICKER_DETAIL_ACTIVITY_ITEMS {
+                break;
+            }
+        }
+    }
+    activity.reverse();
+    activity
+}
+
+pub(crate) fn agent_picker_prompt_context_summaries<'a>(
+    receiver_thread_id: ThreadId,
+    items_newest_first: impl Iterator<Item = &'a ThreadItem>,
+) -> Vec<String> {
+    let receiver_thread_id = receiver_thread_id.to_string();
+    let mut initial_request = None;
+    let mut latest_input = None;
+    for item in items_newest_first {
+        let ThreadItem::CollabAgentToolCall {
+            tool,
+            receiver_thread_ids,
+            prompt,
+            ..
+        } = item
+        else {
+            continue;
+        };
+        if !receiver_thread_ids
+            .iter()
+            .any(|thread_id| thread_id == &receiver_thread_id)
+        {
+            continue;
+        }
+        let Some(prompt) = prompt.as_deref().and_then(bounded_prompt_preview) else {
+            continue;
+        };
+        match tool {
+            CollabAgentTool::SpawnAgent if initial_request.is_none() => {
+                initial_request = Some(format!("Initial request: {prompt}"));
+            }
+            CollabAgentTool::SendInput if latest_input.is_none() => {
+                latest_input = Some(format!("Latest input: {prompt}"));
+            }
+            CollabAgentTool::ResumeAgent
+            | CollabAgentTool::Wait
+            | CollabAgentTool::CloseAgent
+            | CollabAgentTool::SpawnAgent
+            | CollabAgentTool::SendInput => {}
+        }
+        if initial_request.is_some() && latest_input.is_some() {
+            break;
+        }
+    }
+    [initial_request, latest_input]
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+pub(crate) fn thread_item_activity_summary(item: &ThreadItem) -> Option<String> {
+    let summary = match item {
+        ThreadItem::AgentMessage { text, .. } | ThreadItem::Plan { text, .. } => text,
+        ThreadItem::Reasoning { summary, .. } => summary.last()?,
+        ThreadItem::CommandExecution { command, .. } => {
+            let command = truncate_text(
+                command,
+                AGENT_ACTIVITY_PREVIEW_GRAPHEMES.saturating_sub("$ ".len()),
+            );
+            return bounded_activity_summary(&format!("$ {command}"));
+        }
+        ThreadItem::FileChange { changes, .. } => {
+            return bounded_activity_summary(&format!("Updated {} file(s)", changes.len()));
+        }
+        ThreadItem::McpToolCall { server, tool, .. } => {
+            return bounded_activity_summary(&format!("MCP {server}/{tool}"));
+        }
+        ThreadItem::DynamicToolCall {
+            namespace, tool, ..
+        } => {
+            let tool = namespace
+                .as_ref()
+                .map(|namespace| format!("{namespace}/{tool}"))
+                .unwrap_or_else(|| tool.clone());
+            return bounded_activity_summary(&format!("Tool {tool}"));
+        }
+        ThreadItem::CollabAgentToolCall { tool, .. } => {
+            let action = match tool {
+                CollabAgentTool::SpawnAgent => "Spawned an agent",
+                CollabAgentTool::SendInput => "Sent input to an agent",
+                CollabAgentTool::ResumeAgent => "Resumed an agent",
+                CollabAgentTool::Wait => "Waited for an agent",
+                CollabAgentTool::CloseAgent => "Closed an agent",
+            };
+            return Some(action.to_string());
+        }
+        ThreadItem::SubAgentActivity {
+            kind, agent_path, ..
+        } => return bounded_activity_summary(&sub_agent_activity_summary(*kind, agent_path)),
+        ThreadItem::WebSearch { query, .. } => {
+            return bounded_activity_summary(&format!("Web search: {query}"));
+        }
+        ThreadItem::ImageView { path, .. } => {
+            return bounded_activity_summary(&format!("Viewed {}", path.display()));
+        }
+        ThreadItem::ImageGeneration { .. } => return Some("Generated an image".to_string()),
+        ThreadItem::EnteredReviewMode { .. } => return Some("Entered review mode".to_string()),
+        ThreadItem::ExitedReviewMode { .. } => return Some("Exited review mode".to_string()),
+        ThreadItem::ContextCompaction { .. } => return Some("Compacted context".to_string()),
+        ThreadItem::UserMessage { .. } | ThreadItem::HookPrompt { .. } => return None,
+    };
+    bounded_activity_summary(summary)
+}
+
+fn bounded_activity_summary(summary: &str) -> Option<String> {
+    let summary = truncate_text(summary, AGENT_ACTIVITY_PREVIEW_GRAPHEMES);
+    let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!summary.is_empty()).then_some(summary)
+}
+
+pub(crate) fn agent_picker_token_usage_summary(token_usage: &ThreadTokenUsage) -> Option<String> {
+    let total = token_usage.total.total_tokens.max(0);
+    let last = token_usage.last.total_tokens.max(0);
+    if total == 0 && last == 0 && token_usage.model_context_window.is_none() {
+        return None;
+    }
+
+    let mut parts = vec![
+        format!("total {}", format_with_separators(total)),
+        format!("last {}", format_with_separators(last)),
+    ];
+    if let Some(model_context_window) = token_usage.model_context_window {
+        parts.push(format!(
+            "context {}/{}",
+            format_with_separators(last),
+            format_with_separators(model_context_window.max(0))
+        ));
+    }
+    Some(parts.join(" · "))
+}
+
+pub(crate) fn agent_picker_plan_progress_summary(plan: &[TurnPlanStep]) -> Option<String> {
+    if plan.is_empty() {
+        return None;
+    }
+
+    let total = plan.len();
+    let completed = plan
+        .iter()
+        .filter(|step| matches!(step.status, TurnPlanStepStatus::Completed))
+        .count();
+    let mut summary = if completed == total {
+        format!("all {total} complete")
+    } else {
+        format!("{completed}/{total} complete")
+    };
+    if let Some(current_step) = plan
+        .iter()
+        .find(|step| matches!(step.status, TurnPlanStepStatus::InProgress))
+        .and_then(|step| bounded_activity_summary(&step.step))
+    {
+        summary.push_str(" · now: ");
+        summary.push_str(&current_step);
+    }
+    Some(summary)
 }
 
 pub(crate) fn tool_call_history_cell(
@@ -674,6 +1176,368 @@ mod tests {
     use ratatui::style::Modifier;
     use std::collections::HashMap;
 
+    fn summary_entry(status: AgentPickerThreadStatus) -> AgentPickerThreadEntry {
+        AgentPickerThreadEntry {
+            agent_nickname: None,
+            agent_role: None,
+            agent_path: None,
+            prompt_preview: None,
+            thread_note: None,
+            cwd: None,
+            model_provider: None,
+            created_at: None,
+            updated_at: None,
+            model: None,
+            reasoning_effort: None,
+            service_tier: None,
+            status,
+        }
+    }
+
+    #[test]
+    fn agent_picker_item_description_summarizes_status_role_and_path() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000102").expect("valid thread id");
+        let entry = AgentPickerThreadEntry {
+            agent_nickname: Some("Robie".to_string()),
+            agent_role: Some("explorer".to_string()),
+            agent_path: Some("/root/explorer".to_string()),
+            prompt_preview: None,
+            thread_note: None,
+            cwd: None,
+            model_provider: None,
+            created_at: None,
+            updated_at: None,
+            model: None,
+            reasoning_effort: None,
+            service_tier: None,
+            status: AgentPickerThreadStatus::Running,
+        };
+
+        assert_eq!(
+            agent_picker_item_description(thread_id, &entry, /*is_primary*/ false),
+            "running · role explorer · /root/explorer"
+        );
+    }
+
+    #[test]
+    fn agent_picker_summary_counts_sub_agent_statuses() {
+        let primary =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000101").expect("valid thread id");
+        let running =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000102").expect("valid thread id");
+        let waiting =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000103").expect("valid thread id");
+        let error =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000104").expect("valid thread id");
+        let closed =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000105").expect("valid thread id");
+        let primary_entry = summary_entry(AgentPickerThreadStatus::Idle);
+        let running_entry = summary_entry(AgentPickerThreadStatus::Running);
+        let waiting_entry = summary_entry(AgentPickerThreadStatus::WaitingUser);
+        let error_entry = summary_entry(AgentPickerThreadStatus::Error);
+        let closed_entry = summary_entry(AgentPickerThreadStatus::Closed);
+        let threads = vec![
+            (primary, &primary_entry),
+            (running, &running_entry),
+            (waiting, &waiting_entry),
+            (error, &error_entry),
+            (closed, &closed_entry),
+        ];
+
+        assert_eq!(
+            agent_picker_summary_line(&threads, Some(primary)),
+            "Agents: 4 total · 1 running · 1 waiting · 1 error · 1 closed"
+        );
+    }
+
+    #[test]
+    fn agent_picker_selected_description_includes_workbench_detail() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000102").expect("valid thread id");
+        let entry = AgentPickerThreadEntry {
+            agent_nickname: Some("Robie".to_string()),
+            agent_role: Some("explorer".to_string()),
+            agent_path: Some("/root/explorer".to_string()),
+            prompt_preview: Some(
+                "Inspect the parser state\nand report concise evidence.".to_string(),
+            ),
+            thread_note: Some("Investigate parser state".to_string()),
+            cwd: Some("/workspace/project".to_string()),
+            model_provider: Some("deepseek".to_string()),
+            created_at: Some(1_735_689_600),
+            updated_at: Some(1_735_693_200),
+            model: Some("deepseek-v4-flash".to_string()),
+            reasoning_effort: Some("high".to_string()),
+            service_tier: Some("priority".to_string()),
+            status: AgentPickerThreadStatus::Closed,
+        };
+
+        assert_eq!(
+            agent_picker_selected_description(
+                thread_id,
+                &entry,
+                /*is_primary*/ false,
+                /*is_current*/ true,
+                AgentPickerSelectedDescriptionContext {
+                    prompt_context: &[
+                        "Initial request: Map parser entry points.".to_string(),
+                        "Latest input: Focus on app-server projection.".to_string(),
+                    ],
+                    recent_activity: &[
+                        "$ cargo test -p codex-tui agent_picker_workbench_snapshot".to_string(),
+                        "Checked the bounded detail projection.".to_string(),
+                    ],
+                    token_usage_summary: Some("total 10 · last 4 · context 4/950,000"),
+                    plan_progress_summary: Some("1/3 complete · now: Verify TUI workbench anchors",),
+                },
+            ),
+            "Status: closed\nCurrent view: yes\nKind: sub-agent thread\nInspect:\n- Nickname: Robie\n- Role: explorer\n- Agent path: /root/explorer\n- Prompt: Inspect the parser state and report concise evidence.\n- Note: Investigate parser state\n- Cwd: /workspace/project\n- Model provider: deepseek\n- Created: 2025-01-01 00:00:00 UTC\n- Updated: 2025-01-01 01:00:00 UTC\n- Model: deepseek-v4-flash\n- Reasoning: high\n- Service tier: priority\n- Tokens: total 10 · last 4 · context 4/950,000\n- Plan: 1/3 complete · now: Verify TUI workbench anchors\n- Thread: 00000000-0000-0000-0000-000000000102\nContext:\n- Initial request: Map parser entry points.\n- Latest input: Focus on app-server projection.\nRecent activity:\n- $ cargo test -p codex-tui agent_picker_workbench_snapshot\n- Checked the bounded detail projection.\nActions:\n- Enter: watch this thread"
+        );
+    }
+
+    #[test]
+    fn agent_picker_status_labels_cover_waiting_and_error_states() {
+        let thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000102").expect("valid thread id");
+        let mut entry = AgentPickerThreadEntry {
+            agent_nickname: Some("Robie".to_string()),
+            agent_role: Some("explorer".to_string()),
+            agent_path: Some("/root/explorer".to_string()),
+            prompt_preview: None,
+            thread_note: None,
+            cwd: None,
+            model_provider: None,
+            created_at: None,
+            updated_at: None,
+            model: None,
+            reasoning_effort: None,
+            service_tier: None,
+            status: AgentPickerThreadStatus::WaitingApproval,
+        };
+
+        assert_eq!(
+            agent_picker_item_description(thread_id, &entry, /*is_primary*/ false),
+            "waiting approval · role explorer · /root/explorer"
+        );
+
+        entry.status = AgentPickerThreadStatus::WaitingUser;
+        assert_eq!(
+            agent_picker_selected_description(
+                thread_id,
+                &entry,
+                /*is_primary*/ false,
+                /*is_current*/ false,
+                AgentPickerSelectedDescriptionContext {
+                    prompt_context: &[],
+                    recent_activity: &[],
+                    token_usage_summary: None,
+                    plan_progress_summary: None,
+                },
+            ),
+            "Status: waiting user\nCurrent view: no\nKind: sub-agent thread\nInspect:\n- Nickname: Robie\n- Role: explorer\n- Agent path: /root/explorer\n- Thread: 00000000-0000-0000-0000-000000000102\nActions:\n- Enter: watch this thread"
+        );
+
+        entry.status = AgentPickerThreadStatus::Error;
+        assert_eq!(
+            agent_picker_item_description(thread_id, &entry, /*is_primary*/ false),
+            "error · role explorer · /root/explorer"
+        );
+    }
+
+    #[test]
+    fn agent_picker_prompt_context_matches_receiver_and_hides_raw_messages() {
+        let receiver =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000102").expect("valid thread id");
+        let other_receiver =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000103").expect("valid thread id");
+        let spawn = ThreadItem::CollabAgentToolCall {
+            id: "spawn-1".to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::Completed,
+            sender_thread_id: ThreadId::new().to_string(),
+            receiver_thread_ids: vec![receiver.to_string()],
+            prompt: Some("Map parser entry points.\nReport evidence.".to_string()),
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::new(),
+        };
+        let send = ThreadItem::CollabAgentToolCall {
+            id: "send-1".to_string(),
+            tool: CollabAgentTool::SendInput,
+            status: CollabAgentToolCallStatus::Completed,
+            sender_thread_id: ThreadId::new().to_string(),
+            receiver_thread_ids: vec![receiver.to_string()],
+            prompt: Some("Focus on app-server projection.".to_string()),
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::new(),
+        };
+        let other = ThreadItem::CollabAgentToolCall {
+            id: "spawn-other".to_string(),
+            tool: CollabAgentTool::SpawnAgent,
+            status: CollabAgentToolCallStatus::Completed,
+            sender_thread_id: ThreadId::new().to_string(),
+            receiver_thread_ids: vec![other_receiver.to_string()],
+            prompt: Some("Do not show this other agent prompt.".to_string()),
+            model: None,
+            reasoning_effort: None,
+            agents_states: HashMap::new(),
+        };
+        let user_message = ThreadItem::UserMessage {
+            id: "user-1".to_string(),
+            client_id: None,
+            content: vec![codex_app_server_protocol::UserInput::Text {
+                text: "raw user message should stay hidden".to_string(),
+                text_elements: Vec::new(),
+            }],
+        };
+
+        let context = agent_picker_prompt_context_summaries(
+            receiver,
+            [&send, &user_message, &other, &spawn].into_iter(),
+        );
+
+        assert_eq!(
+            context,
+            vec![
+                "Initial request: Map parser entry points. Report evidence.".to_string(),
+                "Latest input: Focus on app-server projection.".to_string(),
+            ]
+        );
+        let rendered = context.join("\n");
+        assert!(!rendered.contains("other agent prompt"));
+        assert!(!rendered.contains("raw user message"));
+    }
+
+    #[test]
+    fn agent_picker_recent_activity_is_bounded_and_privacy_safe() {
+        let command = ThreadItem::CommandExecution {
+            id: "command-1".to_string(),
+            command: "cargo test -p codex-tui".to_string(),
+            cwd: codex_utils_absolute_path::AbsolutePathBuf::try_from("/workspace")
+                .expect("absolute path"),
+            process_id: None,
+            source: codex_app_server_protocol::CommandExecutionSource::Agent,
+            status: codex_app_server_protocol::CommandExecutionStatus::Completed,
+            command_actions: Vec::new(),
+            aggregated_output: Some("secret output\n".repeat(100)),
+            exit_code: Some(0),
+            duration_ms: Some(12),
+        };
+        let reasoning = ThreadItem::Reasoning {
+            id: "reasoning-1".to_string(),
+            summary: vec!["safe reasoning summary".to_string()],
+            content: vec!["hidden raw reasoning".to_string()],
+        };
+        let raw_user_message = ThreadItem::UserMessage {
+            id: "user-1".to_string(),
+            client_id: None,
+            content: vec![codex_app_server_protocol::UserInput::Text {
+                text: "do not show user prompt".to_string(),
+                text_elements: Vec::new(),
+            }],
+        };
+
+        let activity = agent_picker_recent_activity_summaries(
+            [&reasoning, &raw_user_message, &command].into_iter(),
+        );
+
+        assert_eq!(
+            activity,
+            vec![
+                "$ cargo test -p codex-tui".to_string(),
+                "safe reasoning summary".to_string()
+            ]
+        );
+        let rendered = activity.join("\n");
+        assert!(!rendered.contains("secret output"));
+        assert!(!rendered.contains("hidden raw reasoning"));
+        assert!(!rendered.contains("do not show user prompt"));
+    }
+
+    #[test]
+    fn agent_picker_plan_progress_summary_is_bounded_and_structured() {
+        let plan = vec![
+            TurnPlanStep {
+                step: "Inspect native notification source".to_string(),
+                status: TurnPlanStepStatus::Completed,
+            },
+            TurnPlanStep {
+                step: format!(
+                    "{} {}",
+                    "Verify workbench projection",
+                    "carefully ".repeat(80)
+                ),
+                status: TurnPlanStepStatus::InProgress,
+            },
+            TurnPlanStep {
+                step: "Update docs".to_string(),
+                status: TurnPlanStepStatus::Pending,
+            },
+        ];
+
+        let summary = agent_picker_plan_progress_summary(&plan).expect("summary");
+
+        assert!(summary.starts_with("1/3 complete · now: Verify workbench projection"));
+        assert!(summary.len() < 280);
+        assert!(!summary.contains("Update docs"));
+        assert_eq!(agent_picker_plan_progress_summary(&[]), None);
+        assert_eq!(
+            agent_picker_plan_progress_summary(&[TurnPlanStep {
+                step: "Done".to_string(),
+                status: TurnPlanStepStatus::Completed,
+            }]),
+            Some("all 1 complete".to_string())
+        );
+    }
+
+    #[test]
+    fn agent_picker_token_usage_summary_is_bounded_and_optional() {
+        let token_usage = ThreadTokenUsage {
+            total: codex_app_server_protocol::TokenUsageBreakdown {
+                total_tokens: 12_345,
+                input_tokens: 4,
+                cached_input_tokens: 1,
+                output_tokens: 5,
+                reasoning_output_tokens: 0,
+            },
+            last: codex_app_server_protocol::TokenUsageBreakdown {
+                total_tokens: 678,
+                input_tokens: 4,
+                cached_input_tokens: 1,
+                output_tokens: 5,
+                reasoning_output_tokens: 0,
+            },
+            model_context_window: Some(950_000),
+        };
+
+        assert_eq!(
+            agent_picker_token_usage_summary(&token_usage),
+            Some("total 12,345 · last 678 · context 678/950,000".to_string())
+        );
+
+        let empty_token_usage = ThreadTokenUsage {
+            total: codex_app_server_protocol::TokenUsageBreakdown {
+                total_tokens: 0,
+                input_tokens: 0,
+                cached_input_tokens: 0,
+                output_tokens: 0,
+                reasoning_output_tokens: 0,
+            },
+            last: codex_app_server_protocol::TokenUsageBreakdown {
+                total_tokens: 0,
+                input_tokens: 0,
+                cached_input_tokens: 0,
+                output_tokens: 0,
+                reasoning_output_tokens: 0,
+            },
+            model_context_window: None,
+        };
+
+        assert_eq!(agent_picker_token_usage_summary(&empty_token_usage), None);
+    }
+
     #[test]
     fn collab_events_snapshot() {
         let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
@@ -916,6 +1780,7 @@ mod tests {
         CollabAgentState {
             status,
             message: message.map(str::to_string),
+            thread_note: None,
         }
     }
 

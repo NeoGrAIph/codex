@@ -38,8 +38,11 @@ Status: `partial`. Native release имеет `TurnEnvironmentSelection`, `TurnSt
 
 ## Fork/140 implementation status
 
-Первая итерация добавляет `spawn_agent.cwd` в MAv2 tool schema/handler, валидирует только existing absolute directory внутри текущих workspace roots, применяет cwd через native child `Config`/`TurnEnvironmentSelections`, сохраняет исходный permission profile/workspace roots без auto-trust и fail-fast возвращает ошибку модели для cwd вне workspace roots, nonexistent path или file path. Не реализовано в этой итерации: отдельный app-server RPC surface для cwd, replay-time restore failure policy для устаревшего cwd и расширенная TUI-индикация child cwd.
+Первая итерация добавляет `spawn_agent.cwd` в MAv2 tool schema/handler, валидирует только existing absolute directory внутри текущих workspace roots, дополнительно проверяет canonical containment после symlink resolution, применяет cwd через native child `Config`/`TurnEnvironmentSelections`, сохраняет исходный permission profile/workspace roots без auto-trust и fail-fast возвращает ошибку модели для cwd вне workspace roots, symlink escape, nonexistent path или file path. Не реализовано в этой итерации: отдельный app-server RPC surface для cwd, replay-time restore failure policy для устаревшего cwd и расширенная TUI-индикация child cwd.
 
 ## Doc changelog
 
 - 2026-06-17: Зафиксирован fork/140 first iteration: MAv2 `spawn_agent.cwd`, workspace-root and existing-directory validation, no permission widening, known resume/TUI gaps.
+- 2026-06-18: Focused core verification passed for MAv2 schema visibility, positive cwd application and invalid/nonexistent cwd fail-fast behavior.
+- 2026-06-18: Symlink escape guard added: cwd inside workspace lexically but resolving outside workspace roots is rejected before spawn; focused cwd tests passed 4/4.
+- 2026-06-18: Added explicit file-path cwd regression test so an existing non-directory inside workspace roots is covered by the same fail-fast contract.

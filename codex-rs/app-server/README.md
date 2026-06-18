@@ -494,7 +494,7 @@ This method currently returns JSON-RPC `-32601` with message `thread/turns/items
 
 ### Example: Update stored thread metadata
 
-Use `thread/metadata/update` to patch sqlite-backed metadata for a thread without resuming it. Today this supports persisted `gitInfo`; omitted fields are left unchanged, while explicit `null` clears a stored value.
+Use `thread/metadata/update` to patch stored metadata for a thread without resuming it. Today this supports persisted `gitInfo` and metadata-only `threadNote`; omitted fields are left unchanged, while explicit `null` clears a stored value. When `threadNote` is set or cleared successfully, subscribers receive `thread/note/updated` after the response.
 
 ```json
 { "method": "thread/metadata/update", "id": 24, "params": {
@@ -518,23 +518,38 @@ Use `thread/metadata/update` to patch sqlite-backed metadata for a thread withou
         "gitInfo": null
     }
 } }
+
+{ "method": "thread/metadata/update", "id": 26, "params": {
+    "threadId": "thr_123",
+    "threadNote": "Inspect parser state"
+} }
+{ "id": 26, "result": {
+    "thread": {
+        "id": "thr_123",
+        "threadNote": "Inspect parser state"
+    }
+} }
+{ "method": "thread/note/updated", "params": {
+    "threadId": "thr_123",
+    "threadNote": "Inspect parser state"
+} }
 ```
 
 Experimental: use `thread/memoryMode/set` to change whether a thread remains eligible for future memory generation.
 
 ```json
-{ "method": "thread/memoryMode/set", "id": 26, "params": {
+{ "method": "thread/memoryMode/set", "id": 27, "params": {
     "threadId": "thr_123",
     "mode": "disabled"
 } }
-{ "id": 26, "result": {} }
+{ "id": 27, "result": {} }
 ```
 
 Experimental: use `memory/reset` to clear local memory artifacts and sqlite-backed memory stage data for the current Codex home. This preserves existing thread memory modes; use `thread/memoryMode/set` separately when a thread's future memory eligibility should change.
 
 ```json
-{ "method": "memory/reset", "id": 27 }
-{ "id": 27, "result": {} }
+{ "method": "memory/reset", "id": 28 }
+{ "id": 28, "result": {} }
 ```
 
 ### Example: Set and update a thread goal

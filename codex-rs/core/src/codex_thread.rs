@@ -3,6 +3,8 @@ use crate::config::ConstraintResult;
 use crate::session::Codex;
 use crate::session::SessionSettingsUpdate;
 use crate::session::SteerInputError;
+use crate::session::turn::build_tool_router_for_turn;
+use crate::tools::router::ToolSelectionCatalogExposure as RouterToolSelectionCatalogExposure;
 use codex_features::Feature;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
@@ -48,6 +50,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use codex_rollout::state_db::StateDbHandle;
 
@@ -72,6 +75,40 @@ pub struct ThreadConfigSnapshot {
     pub forked_from_thread_id: Option<ThreadId>,
     pub parent_thread_id: Option<ThreadId>,
     pub thread_source: Option<ThreadSource>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolSelectionCatalog {
+    pub entries: Vec<ToolSelectionCatalogEntry>,
+    pub unmatched_allowed_tools: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolSelectionCatalogEntry {
+    pub name: String,
+    pub selected: bool,
+    pub exposure: ToolSelectionCatalogExposure,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolSelectionCatalogExposure {
+    Direct,
+    Deferred,
+    DirectModelOnly,
+    Hidden,
+    Hosted,
+}
+
+impl From<RouterToolSelectionCatalogExposure> for ToolSelectionCatalogExposure {
+    fn from(value: RouterToolSelectionCatalogExposure) -> Self {
+        match value {
+            RouterToolSelectionCatalogExposure::Direct => Self::Direct,
+            RouterToolSelectionCatalogExposure::Deferred => Self::Deferred,
+            RouterToolSelectionCatalogExposure::DirectModelOnly => Self::DirectModelOnly,
+            RouterToolSelectionCatalogExposure::Hidden => Self::Hidden,
+            RouterToolSelectionCatalogExposure::Hosted => Self::Hosted,
+        }
+    }
 }
 
 /// Explains why `CodexThread::try_start_turn_if_idle` rejected an automatic
@@ -551,6 +588,33 @@ impl CodexThread {
 
     pub async fn config(&self) -> Arc<crate::config::Config> {
         self.codex.session.get_config().await
+    }
+
+    pub async fn tool_selection_catalog(&self) -> CodexResult<ToolSelectionCatalog> {
+        let turn_context = self
+            .codex
+            .session
+            .new_default_turn_with_sub_id("tool-selection-catalog-read".to_string())
+            .await;
+        let router = build_tool_router_for_turn(
+            self.codex.session.as_ref(),
+            turn_context.as_ref(),
+            &CancellationToken::new(),
+        )
+        .await?;
+        let diagnostics = router.tool_selection_diagnostics();
+        Ok(ToolSelectionCatalog {
+            entries: diagnostics
+                .catalog_entries
+                .iter()
+                .map(|entry| ToolSelectionCatalogEntry {
+                    name: entry.name.clone(),
+                    selected: entry.selected,
+                    exposure: entry.exposure.into(),
+                })
+                .collect(),
+            unmatched_allowed_tools: diagnostics.unmatched_allowed_tools.clone(),
+        })
     }
 
     /// Resolves the MCP runtime configuration using this thread's extension data.

@@ -178,6 +178,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             cwd: absolute_path("tmp"),
             cli_version: "0.0.0".to_string(),
             source: SessionSource::Exec,
+            thread_note: None,
             thread_source: None,
             agent_nickname: None,
             agent_role: None,
@@ -302,6 +303,7 @@ fn collab_agent_state_maps_interrupted_status() {
         CollabAgentState {
             status: CollabAgentStatus::Interrupted,
             message: None,
+            thread_note: None,
         }
     );
 }
@@ -1622,6 +1624,7 @@ fn config_granular_approval_policy_is_marked_experimental() {
         model_auto_compact_token_limit: None,
         model_auto_compact_token_limit_scope: None,
         model_provider: None,
+        disabled_model_providers: Vec::new(),
         approval_policy: Some(AskForApproval::Granular {
             sandbox_approval: false,
             rules: true,
@@ -1661,6 +1664,7 @@ fn config_approvals_reviewer_is_marked_experimental() {
         model_auto_compact_token_limit: None,
         model_auto_compact_token_limit_scope: None,
         model_provider: None,
+        disabled_model_providers: Vec::new(),
         approval_policy: None,
         approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
         sandbox_mode: None,

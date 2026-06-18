@@ -3,14 +3,14 @@
 ## Feature passport
 
 - Code name: `mcp-on-demand-discovery`
-- Status: первая итерация переноса на `fork/140` реализована в `feature/140/tools-mcp-skills`.
+- Status: первая итерация переноса на `fork/140` реализована и локально проверена.
 - Goal: дать Codex model-visible путь для обнаружения MCP servers по требованию без предварительной загрузки всех MCP tools в основной контекст.
 - Scope in: tool registry wiring, read-only server discovery tool, deferred/direct MCP tool visibility, docs, focused tests.
 - Scope out: запуск новых MCP servers из tool call, plugin marketplace discovery/install flow, app-server protocol/schema changes, MCP startup/refresh lifecycle changes.
 
 ## Как работает для пользователя
 
-Codex получает tool `list_mcp_servers`, когда в текущей сессии есть configured MCP servers. Tool возвращает имена server, origin/plugin metadata и, по `include_tools=true`, bounded список model-visible MCP tool names. Tool summaries capped per server: default `max_tools_per_server=50`, hard cap `200`, а output содержит `tools_total` и `tools_truncated`. Для поиска конкретного deferred MCP tool agent использует native `tool_search`; сами MCP tool calls продолжают идти через `McpHandler`.
+Codex получает tool `list_mcp_servers`, когда в текущей сессии есть configured MCP servers. Tool возвращает имена server, origin/plugin metadata и, по `include_tools=true`, bounded список model-visible MCP tool names: canonical `namespace.name` плюс исходный `raw_name` там, где он нужен для диагностики. Tool summaries capped per server: default `max_tools_per_server=50`, hard cap `200`, а output содержит `tools_total` и `tools_truncated`. Для поиска конкретного deferred MCP tool agent использует native `tool_search`; сами MCP tool calls продолжают идти через `McpHandler`.
 
 Польза: agent может сначала увидеть доступные MCP servers и только затем искать или вызывать нужные MCP tools, не требуя hardcoded tool lists и не расширяя основной контекст всеми deferred tools.
 
@@ -53,4 +53,5 @@ Status: `implemented-first-iteration`. Native release имеет deferred MCP/to
 
 ## Doc changelog
 
+- 2026-06-18: Актуализирован verification evidence для `fork/140`: `cargo check -p codex-core`, focused `codex-core` MCP/run_skill pass 15/15 и `just test -p codex-mcp` 82/82.
 - 2026-06-17: Зафиксирована первая `fork/140` итерация: `list_mcp_servers` через native tool registry и read-only `McpConnectionManager` metadata with bounded optional tool summaries.

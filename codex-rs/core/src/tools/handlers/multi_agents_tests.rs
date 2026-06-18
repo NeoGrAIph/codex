@@ -8,12 +8,14 @@ use crate::function_tool::FunctionCallError;
 use crate::init_state_db;
 use crate::session::tests::make_session_and_context;
 use crate::session_prefix::format_subagent_notification_message;
+use crate::thread_manager::StartThreadOptions;
 use crate::thread_manager::thread_store_from_config;
 use crate::tools::context::ToolOutput;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
 use crate::tools::handlers::multi_agents_v2::InterruptAgentHandler;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
+use crate::tools::handlers::multi_agents_v2::SetThreadNoteHandler as SetThreadNoteHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::turn_diff_tracker::TurnDiffTracker;
@@ -131,6 +133,8 @@ model_reasoning_effort = "minimal"
             description: Some("Role with model overrides".to_string()),
             config_file: Some(role_config_path),
             nickname_candidates: None,
+            metadata_sources: Default::default(),
+            runtime_config_sources: Default::default(),
         },
     );
     turn.config = Arc::new(config);
@@ -185,6 +189,12 @@ struct ListedAgentResult {
 #[derive(Debug, Deserialize)]
 struct InterruptAgentResult {
     previous_status: AgentStatus,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetThreadNoteResult {
+    target: String,
+    thread_note: Option<String>,
 }
 
 #[tokio::test]
@@ -681,6 +691,8 @@ service_tier = "priority"
                 description: Some("Role with a child service tier".to_string()),
                 config_file: Some(role_config_path),
                 nickname_candidates: None,
+                metadata_sources: Default::default(),
+                runtime_config_sources: Default::default(),
             },
         );
         turn.config = Arc::new(config);
@@ -754,6 +766,8 @@ service_tier = "turbo"
             description: Some("Role with an unsupported child tier".to_string()),
             config_file: Some(role_config_path),
             nickname_candidates: None,
+            metadata_sources: Default::default(),
+            runtime_config_sources: Default::default(),
         },
     );
     turn.config = Arc::new(config);
@@ -817,6 +831,8 @@ service_tier = "priority"
             description: Some("Role with a supported child tier".to_string()),
             config_file: Some(role_config_path),
             nickname_candidates: None,
+            metadata_sources: Default::default(),
+            runtime_config_sources: Default::default(),
         },
     );
     turn.config = Arc::new(config);
@@ -1232,6 +1248,522 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
 }
 
 #[tokio::test]
+async fn thread_manager_agent_message_send_queues_without_triggering_turn() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should accept v2 path");
+
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker path should resolve");
+    manager
+        .queue_inter_agent_message(
+            root.thread_id,
+            child_thread_id,
+            "queued from workbench".to_string(),
+        )
+        .await
+        .expect("message should be queued");
+
+    assert!(manager.captured_ops().iter().any(|(id, op)| {
+        *id == child_thread_id
+            && matches!(
+                op,
+                Op::InterAgentCommunication { communication }
+                    if communication.author == AgentPath::root()
+                        && communication.recipient.as_str() == "/root/worker"
+                        && communication.other_recipients.is_empty()
+                        && communication.content.is_empty()
+                        && communication.encrypted_content.as_deref() == Some("queued from workbench")
+                        && !communication.trigger_turn
+            )
+    }));
+}
+
+#[tokio::test]
+async fn thread_manager_agent_message_send_allows_subtree_owner_descendant() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker"
+            })),
+        ))
+        .await
+        .expect("worker spawn should succeed");
+
+    let worker_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker path should resolve");
+    let worker_thread = manager
+        .get_thread(worker_thread_id)
+        .await
+        .expect("worker thread should be resident");
+    let worker_session = worker_thread.codex.session.clone();
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            worker_session.clone(),
+            worker_session.new_default_turn().await,
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect child task",
+                "task_name": "child"
+            })),
+        ))
+        .await
+        .expect("child spawn should succeed");
+
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker/child")
+        .await
+        .expect("child path should resolve");
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect sibling task",
+                "task_name": "sibling"
+            })),
+        ))
+        .await
+        .expect("sibling spawn should succeed");
+    let sibling_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "sibling")
+        .await
+        .expect("sibling path should resolve");
+    let err = manager
+        .queue_inter_agent_message(
+            worker_thread_id,
+            sibling_thread_id,
+            "queue sibling work".to_string(),
+        )
+        .await
+        .expect_err("subtree owner message should reject siblings");
+    assert!(
+        err.to_string()
+            .contains("Agent messaging can only target descendants of the current agent.")
+    );
+    let pathless_author = manager
+        .start_thread_with_options(StartThreadOptions {
+            config: (*turn.config).clone(),
+            initial_history: InitialHistory::New,
+            session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: Some("Pathless".to_string()),
+                agent_role: Some("worker".to_string()),
+                thread_note: None,
+            })),
+            thread_source: None,
+            dynamic_tools: Vec::new(),
+            metrics_service_name: None,
+            parent_trace: None,
+            environments: Vec::new(),
+            thread_extension_init: codex_extension_api::ExtensionDataInit::default(),
+        })
+        .await
+        .expect("pathless author thread should start");
+    let err = manager
+        .queue_inter_agent_message(
+            pathless_author.thread_id,
+            child_thread_id,
+            "queue child work".to_string(),
+        )
+        .await
+        .expect_err("pathless non-root author should be rejected");
+    assert!(
+        err.to_string()
+            .contains("Agent messaging requires a path-backed author.")
+    );
+
+    manager
+        .queue_inter_agent_message(
+            worker_thread_id,
+            child_thread_id,
+            "queue child work".to_string(),
+        )
+        .await
+        .expect("subtree owner message should queue");
+
+    assert!(manager.captured_ops().iter().any(|(id, op)| {
+        *id == child_thread_id
+            && matches!(
+                op,
+                Op::InterAgentCommunication { communication }
+                    if communication.author.as_str() == "/root/worker"
+                        && communication.recipient.as_str() == "/root/worker/child"
+                        && communication.other_recipients.is_empty()
+                        && communication.content.is_empty()
+                        && communication.encrypted_content.as_deref() == Some("queue child work")
+                        && !communication.trigger_turn
+            )
+    }));
+}
+
+#[tokio::test]
+async fn thread_manager_agent_followup_starts_trigger_turn() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should accept v2 path");
+
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker path should resolve");
+    let child_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("worker thread should exist");
+    let child_turn = child_thread.codex.session.new_default_turn().await;
+    child_thread
+        .codex
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: child_turn.sub_id.clone(),
+                last_agent_message: Some("ready".to_string()),
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    manager
+        .send_inter_agent_followup(
+            root.thread_id,
+            child_thread_id,
+            "continue from workbench".to_string(),
+        )
+        .await
+        .expect("follow-up should start");
+
+    assert!(manager.captured_ops().iter().any(|(id, op)| {
+        *id == child_thread_id
+            && matches!(
+                op,
+                Op::InterAgentCommunication { communication }
+                    if communication.author == AgentPath::root()
+                        && communication.recipient.as_str() == "/root/worker"
+                        && communication.other_recipients.is_empty()
+                        && communication.content.is_empty()
+                        && communication.encrypted_content.as_deref() == Some("continue from workbench")
+                        && communication.trigger_turn
+            )
+    }));
+}
+
+#[tokio::test]
+async fn thread_manager_agent_followup_allows_subtree_owner_descendant() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker"
+            })),
+        ))
+        .await
+        .expect("worker spawn should succeed");
+
+    let worker_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker path should resolve");
+    let worker_thread = manager
+        .get_thread(worker_thread_id)
+        .await
+        .expect("worker thread should be resident");
+    let worker_session = worker_thread.codex.session.clone();
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            worker_session.clone(),
+            worker_session.new_default_turn().await,
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect child task",
+                "task_name": "child"
+            })),
+        ))
+        .await
+        .expect("child spawn should succeed");
+
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker/child")
+        .await
+        .expect("child path should resolve");
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect sibling task",
+                "task_name": "sibling"
+            })),
+        ))
+        .await
+        .expect("sibling spawn should succeed");
+    let sibling_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "sibling")
+        .await
+        .expect("sibling path should resolve");
+    let err = manager
+        .send_inter_agent_followup(
+            worker_thread_id,
+            sibling_thread_id,
+            "continue sibling work".to_string(),
+        )
+        .await
+        .expect_err("subtree owner follow-up should reject siblings");
+    assert!(
+        err.to_string()
+            .contains("Agent follow-up can only target descendants of the current agent.")
+    );
+    let pathless_author = manager
+        .start_thread_with_options(StartThreadOptions {
+            config: (*turn.config).clone(),
+            initial_history: InitialHistory::New,
+            session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: Some("Pathless".to_string()),
+                agent_role: Some("worker".to_string()),
+                thread_note: None,
+            })),
+            thread_source: None,
+            dynamic_tools: Vec::new(),
+            metrics_service_name: None,
+            parent_trace: None,
+            environments: Vec::new(),
+            thread_extension_init: codex_extension_api::ExtensionDataInit::default(),
+        })
+        .await
+        .expect("pathless author thread should start");
+    let err = manager
+        .send_inter_agent_followup(
+            pathless_author.thread_id,
+            child_thread_id,
+            "continue child work".to_string(),
+        )
+        .await
+        .expect_err("pathless non-root author should be rejected");
+    assert!(
+        err.to_string()
+            .contains("Agent follow-up requires a path-backed author.")
+    );
+
+    let child_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    let child_turn = child_thread.codex.session.new_default_turn().await;
+    child_thread
+        .codex
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: child_turn.sub_id.clone(),
+                last_agent_message: Some("ready".to_string()),
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    manager
+        .send_inter_agent_followup(
+            worker_thread_id,
+            child_thread_id,
+            "continue child work".to_string(),
+        )
+        .await
+        .expect("subtree owner follow-up should start");
+
+    assert!(manager.captured_ops().iter().any(|(id, op)| {
+        *id == child_thread_id
+            && matches!(
+                op,
+                Op::InterAgentCommunication { communication }
+                    if communication.author.as_str() == "/root/worker"
+                        && communication.recipient.as_str() == "/root/worker/child"
+                        && communication.other_recipients.is_empty()
+                        && communication.content.is_empty()
+                        && communication.encrypted_content.as_deref() == Some("continue child work")
+                        && communication.trigger_turn
+            )
+    }));
+}
+
+#[tokio::test]
+async fn thread_manager_agent_close_closes_path_backed_descendant() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should accept v2 path");
+
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker path should resolve");
+    let previous_status = manager
+        .close_agent_from_workbench(root.thread_id, child_thread_id)
+        .await
+        .expect("agent should close");
+
+    assert_ne!(previous_status, AgentStatus::NotFound);
+    assert!(
+        manager
+            .captured_ops()
+            .iter()
+            .any(|(id, op)| { *id == child_thread_id && matches!(op, Op::Shutdown) })
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_v2_spawn_applies_cwd_and_thread_note_without_widening_permissions() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
@@ -1415,6 +1947,114 @@ async fn multi_agent_v2_spawn_rejects_nonexistent_cwd_inside_workspace_roots() {
             missing_cwd.display()
         ))
     );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_rejects_file_cwd_inside_workspace_roots() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let workspace_cwd = turn
+        .environments
+        .primary()
+        .expect("turn should have a primary environment")
+        .cwd()
+        .as_path()
+        .to_path_buf();
+    let workspace_temp =
+        tempfile::tempdir_in(&workspace_cwd).expect("workspace tempdir should be created");
+    let file_cwd = workspace_temp.path().join("worker-file");
+    tokio::fs::write(&file_cwd, b"not a directory")
+        .await
+        .expect("workspace file should be created");
+
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker",
+                "cwd": file_cwd.display().to_string()
+            })),
+        ))
+        .await
+        .err()
+        .expect("spawn_agent should reject file cwd");
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(format!(
+            "spawn_agent.cwd must exist and be a directory: {}",
+            file_cwd.display()
+        ))
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn multi_agent_v2_spawn_rejects_symlink_cwd_escape() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let outside = tempfile::tempdir().expect("outside tempdir should be created");
+    let workspace_cwd = turn
+        .environments
+        .primary()
+        .expect("turn should have a primary environment")
+        .cwd()
+        .as_path()
+        .to_path_buf();
+    let link_parent =
+        tempfile::tempdir_in(&workspace_cwd).expect("workspace tempdir should be created");
+    let workspace_link = link_parent.path().join("linked-outside");
+    std::os::unix::fs::symlink(outside.path(), &workspace_link)
+        .expect("symlink inside workspace should be created");
+
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker",
+                "cwd": workspace_link.display().to_string()
+            })),
+        ))
+        .await
+        .err()
+        .expect("spawn_agent should reject symlink cwd escaping workspace roots");
+
+    let FunctionCallError::RespondToModel(message) = err else {
+        panic!("expected respond-to-model error");
+    };
+    assert!(message.starts_with("spawn_agent.cwd must be inside the current workspace roots:"));
 }
 
 #[tokio::test]
@@ -1937,6 +2577,169 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
     assert_eq!(result.agents.len(), 1);
     assert_eq!(result.agents[0].agent_name, worker_path.as_str());
     assert_eq!(result.agents[0].last_task_message.as_deref(), Some("build"));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_set_thread_note_updates_metadata_and_live_agent_listing() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+    let agent_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker path should resolve");
+
+    let output = SetThreadNoteHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "set_thread_note",
+            function_payload(json!({
+                "target": "worker",
+                "thread_note": " Review parser state "
+            })),
+        ))
+        .await
+        .expect("set_thread_note should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: SetThreadNoteResult =
+        serde_json::from_str(&content).expect("set_thread_note result should be json");
+    assert_eq!(success, Some(true));
+    assert_eq!(result.target, "/root/worker");
+    assert_eq!(result.thread_note.as_deref(), Some("Review parser state"));
+
+    let child_thread = manager
+        .get_thread(agent_id)
+        .await
+        .expect("child thread should exist");
+    let history = child_thread
+        .load_history(/*include_archived*/ false)
+        .await
+        .expect("stored thread history should be readable");
+    let latest_thread_note = history.items.iter().rev().find_map(|item| match item {
+        RolloutItem::SessionMeta(meta_line) if meta_line.meta.id == agent_id => {
+            Some(meta_line.meta.thread_note.as_deref())
+        }
+        _ => None,
+    });
+    assert_eq!(latest_thread_note, Some(Some("Review parser state")));
+
+    let output = ListAgentsHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "list_agents",
+            function_payload(json!({})),
+        ))
+        .await
+        .expect("list_agents should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&content).expect("list_agents result should be json");
+    let worker = result
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == "/root/worker")
+        .expect("worker should be listed");
+    assert_eq!(worker.thread_note.as_deref(), Some("Review parser state"));
+
+    let output = SetThreadNoteHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "set_thread_note",
+            function_payload(json!({
+                "target": "worker",
+                "thread_note": null
+            })),
+        ))
+        .await
+        .expect("set_thread_note should clear note");
+    let (content, success) = expect_text_output(output);
+    let result: SetThreadNoteResult =
+        serde_json::from_str(&content).expect("set_thread_note result should be json");
+    assert_eq!(success, Some(true));
+    assert_eq!(result.thread_note, None);
+
+    let output = ListAgentsHandlerV2
+        .handle(invocation(
+            session,
+            turn,
+            "list_agents",
+            function_payload(json!({})),
+        ))
+        .await
+        .expect("list_agents should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&content).expect("list_agents result should be json");
+    let worker = result
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == "/root/worker")
+        .expect("worker should be listed");
+    assert_eq!(worker.thread_note, None);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_set_thread_note_rejects_root_target() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let result = SetThreadNoteHandlerV2
+        .handle(invocation(
+            session,
+            turn,
+            "set_thread_note",
+            function_payload(json!({
+                "target": "/root",
+                "thread_note": "root note"
+            })),
+        ))
+        .await;
+    let Err(err) = result else {
+        panic!("root is not a spawned agent");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("root is not a spawned agent".to_string())
+    );
 }
 
 #[tokio::test]
@@ -3285,12 +4088,13 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
+    assert_eq!(result.message, "Wait completed.");
+    assert!(!result.timed_out);
+    assert!(
+        result
+            .agents
+            .iter()
+            .any(|agent| agent.agent_name == "/root/worker")
     );
     assert_eq!(success, None);
 }
@@ -3355,6 +4159,7 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            agents: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -3410,6 +4215,7 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            agents: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -3450,6 +4256,7 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            agents: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -3515,6 +4322,7 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() 
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            agents: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -3715,7 +4523,8 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
-                "task_name": "test_process"
+                "task_name": "test_process",
+                "thread_note": "Mailbox observer"
             })),
         ))
         .await
@@ -3769,13 +4578,14 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
     let (content, success) = expect_text_output(wait_output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
-    );
+    assert_eq!(result.message, "Wait completed.");
+    assert!(!result.timed_out);
+    let worker = result
+        .agents
+        .iter()
+        .find(|agent| agent.agent_name == "/root/test_process")
+        .expect("worker snapshot should be present");
+    assert_eq!(worker.thread_note.as_deref(), Some("Mailbox observer"));
     assert_eq!(success, None);
 }
 
@@ -3850,12 +4660,13 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
+    assert_eq!(result.message, "Wait completed.");
+    assert!(!result.timed_out);
+    assert!(
+        result
+            .agents
+            .iter()
+            .any(|agent| agent.agent_name == "/root/worker")
     );
     assert_eq!(success, None);
 }
@@ -3941,12 +4752,13 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
+    assert_eq!(result.message, "Wait completed.");
+    assert!(!result.timed_out);
+    assert!(
+        result
+            .agents
+            .iter()
+            .any(|agent| agent.agent_name == "/root/worker_b")
     );
     assert_eq!(success, None);
 }
@@ -4029,12 +4841,13 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
     let (content, success) = expect_text_output(output);
     let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait completed.".to_string(),
-            timed_out: false,
-        }
+    assert_eq!(result.message, "Wait completed.");
+    assert!(!result.timed_out);
+    assert!(
+        result
+            .agents
+            .iter()
+            .any(|agent| agent.agent_name == "/root/worker")
     );
     assert!(!content.contains("sensitive child output"));
     assert_eq!(success, None);
@@ -4403,6 +5216,103 @@ async fn multi_agent_v2_interrupt_agent_rejects_cross_subtree_target() {
             .captured_ops()
             .iter()
             .any(|(id, op)| { *id != worker_thread_id && matches!(op, Op::Interrupt) })
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_interrupt_agent_allows_descendant_target() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+
+    let worker_path = AgentPath::try_from("/root/worker").expect("worker path");
+    let descendant_path = AgentPath::try_from("/root/worker/child").expect("descendant path");
+    let worker_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect this repo".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(worker_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("worker spawn should succeed")
+        .thread_id;
+    let descendant_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect this repo".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: worker_thread_id,
+                depth: 2,
+                agent_path: Some(descendant_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("descendant spawn should succeed")
+        .thread_id;
+    session.thread_id = worker_thread_id;
+    turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(worker_path),
+        agent_nickname: None,
+        agent_role: None,
+        thread_note: None,
+    });
+
+    let output = InterruptAgentHandler
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "interrupt_agent",
+            function_payload(json!({"target": descendant_path.to_string()})),
+        ))
+        .await
+        .expect("interrupt_agent should allow descendant target");
+    let (content, success) = expect_text_output(output);
+    let result: InterruptAgentResult =
+        serde_json::from_str(&content).expect("interrupt_agent result should be json");
+    assert_eq!(result.previous_status, AgentStatus::PendingInit);
+    assert_eq!(success, Some(true));
+    assert!(
+        manager
+            .captured_ops()
+            .iter()
+            .any(|(id, op)| { *id == descendant_thread_id && matches!(op, Op::Interrupt) })
     );
 }
 

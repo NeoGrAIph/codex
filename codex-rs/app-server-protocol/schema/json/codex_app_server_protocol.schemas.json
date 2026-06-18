@@ -4189,6 +4189,26 @@
           "properties": {
             "method": {
               "enum": [
+                "thread/note/updated"
+              ],
+              "title": "Thread/note/updatedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadNoteUpdatedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/note/updatedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "thread/goal/updated"
               ],
               "title": "Thread/goal/updatedNotificationMethod",
@@ -6099,6 +6119,35 @@
       "AgentPath": {
         "type": "string"
       },
+      "AgentRoleToolSelectionCatalogEntry": {
+        "properties": {
+          "exposure": {
+            "$ref": "#/definitions/v2/AgentRoleToolSelectionCatalogExposure"
+          },
+          "name": {
+            "type": "string"
+          },
+          "selected": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "exposure",
+          "name",
+          "selected"
+        ],
+        "type": "object"
+      },
+      "AgentRoleToolSelectionCatalogExposure": {
+        "enum": [
+          "direct",
+          "deferred",
+          "directModelOnly",
+          "hidden",
+          "hosted"
+        ],
+        "type": "string"
+      },
       "AnalyticsConfig": {
         "additionalProperties": true,
         "properties": {
@@ -7040,6 +7089,12 @@
           },
           "status": {
             "$ref": "#/definitions/v2/CollabAgentStatus"
+          },
+          "threadNote": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -7653,6 +7708,13 @@
               "string",
               "null"
             ]
+          },
+          "disabled_model_providers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "forced_chatgpt_workspace_id": {
             "anyOf": [
@@ -11846,6 +11908,7 @@
         "description": "Initial collaboration mode to use when the TUI starts.",
         "enum": [
           "plan",
+          "interactive",
           "default"
         ],
         "type": "string"
@@ -12029,6 +12092,69 @@
         ],
         "title": "ModelListResponse",
         "type": "object"
+      },
+      "ModelProvider": {
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "authStatus": {
+            "$ref": "#/definitions/v2/ModelProviderAuthStatus"
+          },
+          "baseUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabledInPicker": {
+            "type": "boolean"
+          },
+          "envKey": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "modelCount": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "wireApi": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "active",
+          "authStatus",
+          "enabledInPicker",
+          "id",
+          "modelCount",
+          "name",
+          "wireApi"
+        ],
+        "type": "object"
+      },
+      "ModelProviderAuthStatus": {
+        "enum": [
+          "openAiAuth",
+          "envKeyPresent",
+          "envKeyMissing",
+          "managedKeyPresent",
+          "managedKeyMissing",
+          "command",
+          "aws",
+          "inlineBearer",
+          "none"
+        ],
+        "type": "string"
       },
       "ModelProviderCapabilitiesReadParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -15837,6 +15963,13 @@
                   },
                   "parent_thread_id": {
                     "$ref": "#/definitions/v2/ThreadId"
+                  },
+                  "thread_note": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
@@ -16072,6 +16205,14 @@
               }
             ],
             "description": "Current runtime status for the thread."
+          },
+          "threadNote": {
+            "default": null,
+            "description": "Optional short note attached to an AgentControl-spawned sub-agent thread.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "threadSource": {
             "anyOf": [
@@ -17571,6 +17712,13 @@
           },
           "threadId": {
             "type": "string"
+          },
+          "threadNote": {
+            "description": "Patch the short note attached to a thread-spawn sub-agent. Omit to leave it unchanged, set it to `null` or blank to clear it, or provide a string up to the shared thread-note limit.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -17609,6 +17757,25 @@
           "threadId"
         ],
         "title": "ThreadNameUpdatedNotification",
+        "type": "object"
+      },
+      "ThreadNoteUpdatedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          },
+          "threadNote": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadNoteUpdatedNotification",
         "type": "object"
       },
       "ThreadReadParams": {

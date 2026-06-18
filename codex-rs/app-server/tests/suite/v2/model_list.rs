@@ -8,17 +8,28 @@ use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
 use app_test_support::write_models_cache;
 use app_test_support::write_models_cache_with_models;
+use codex_app_server_protocol::ConfigWriteResponse;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::Model;
 use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelListResponse;
+use codex_app_server_protocol::ModelProviderAuthRemoveParams;
+use codex_app_server_protocol::ModelProviderAuthStatus;
+use codex_app_server_protocol::ModelProviderAuthWriteParams;
+use codex_app_server_protocol::ModelProviderAuthWriteResponse;
+use codex_app_server_protocol::ModelProviderConfigWriteParams;
+use codex_app_server_protocol::ModelProviderListParams;
+use codex_app_server_protocol::ModelProviderListResponse;
 use codex_app_server_protocol::ModelServiceTier;
 use codex_app_server_protocol::ModelUpgradeInfo;
 use codex_app_server_protocol::ReasoningEffortOption;
 use codex_app_server_protocol::RequestId;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_model_provider_info::DEEPSEEK_PROVIDER_ID;
+use codex_model_provider_info::LMSTUDIO_OSS_PROVIDER_ID;
+use codex_model_provider_info::OLLAMA_OSS_PROVIDER_ID;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelsResponse;
@@ -309,7 +320,381 @@ async fn list_models_can_include_configured_provider_catalogs() -> Result<()> {
             .any(|item| item.model_provider == DEEPSEEK_PROVIDER_ID
                 && item.model.starts_with("deepseek-v4"))
     );
+    assert!(
+        !items
+            .iter()
+            .any(|item| item.model_provider == OLLAMA_OSS_PROVIDER_ID
+                || item.model_provider == LMSTUDIO_OSS_PROVIDER_ID),
+        "inactive local OSS providers must not expose bundled OpenAI models in provider-aware catalog"
+    );
     assert!(next_cursor.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn disabled_provider_is_hidden_from_provider_aware_model_list() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        r#"
+model = "gpt-5.4"
+approval_policy = "never"
+sandbox_mode = "read-only"
+"#,
+    )?;
+    write_models_cache(codex_home.path())?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let config_write_request_id = mcp
+        .send_model_provider_config_write_request(ModelProviderConfigWriteParams {
+            provider_id: DEEPSEEK_PROVIDER_ID.to_string(),
+            enabled_in_picker: Some(false),
+            set_active: false,
+        })
+        .await?;
+    let config_write_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(config_write_request_id)),
+    )
+    .await??;
+    let _ = to_response::<ConfigWriteResponse>(config_write_response)?;
+
+    let request_id = mcp
+        .send_list_models_request(ModelListParams {
+            limit: Some(100),
+            cursor: None,
+            include_hidden: None,
+            include_configured_providers: Some(true),
+        })
+        .await?;
+
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let ModelListResponse { data: items, .. } = to_response::<ModelListResponse>(response)?;
+
+    assert!(
+        !items
+            .iter()
+            .any(|item| item.model_provider == DEEPSEEK_PROVIDER_ID),
+        "disabled provider must be hidden from provider-aware model/list"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn openai_provider_is_native_and_not_manageable() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_models_cache(codex_home.path())?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let list_request_id = mcp
+        .send_model_provider_list_request(ModelProviderListParams {})
+        .await?;
+    let list_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_request_id)),
+    )
+    .await??;
+    let providers = to_response::<ModelProviderListResponse>(list_response)?;
+    assert!(
+        !providers
+            .data
+            .iter()
+            .any(|provider| provider.id == OPENAI_PROVIDER_ID),
+        "OpenAI is native and must not appear in the provider management list"
+    );
+
+    let disable_request_id = mcp
+        .send_model_provider_config_write_request(ModelProviderConfigWriteParams {
+            provider_id: OPENAI_PROVIDER_ID.to_string(),
+            enabled_in_picker: Some(false),
+            set_active: false,
+        })
+        .await?;
+    let error: JSONRPCError = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(disable_request_id)),
+    )
+    .await??;
+    assert_eq!(error.id, RequestId::Integer(disable_request_id));
+    assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        error.error.message,
+        "OpenAI is a native model provider and cannot be disabled"
+    );
+
+    let auth_write_request_id = mcp
+        .send_model_provider_auth_write_request(ModelProviderAuthWriteParams {
+            provider_id: OPENAI_PROVIDER_ID.to_string(),
+            api_key: "openai-secret".to_string(),
+        })
+        .await?;
+    let error: JSONRPCError = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(auth_write_request_id)),
+    )
+    .await??;
+    assert_eq!(error.id, RequestId::Integer(auth_write_request_id));
+    assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        error.error.message,
+        "OpenAI is a native model provider; use account login to manage its auth"
+    );
+
+    let auth_remove_request_id = mcp
+        .send_model_provider_auth_remove_request(ModelProviderAuthRemoveParams {
+            provider_id: OPENAI_PROVIDER_ID.to_string(),
+        })
+        .await?;
+    let error: JSONRPCError = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(auth_remove_request_id)),
+    )
+    .await??;
+    assert_eq!(error.id, RequestId::Integer(auth_remove_request_id));
+    assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        error.error.message,
+        "OpenAI is a native model provider; use account login to manage its auth"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_provider_set_active_writes_compatible_default_model() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        r#"
+model = "gpt-5.4"
+approval_policy = "never"
+sandbox_mode = "read-only"
+"#,
+    )?;
+    write_models_cache(codex_home.path())?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_model_provider_config_write_request(ModelProviderConfigWriteParams {
+            provider_id: DEEPSEEK_PROVIDER_ID.to_string(),
+            enabled_in_picker: None,
+            set_active: true,
+        })
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let _ = to_response::<ConfigWriteResponse>(response)?;
+
+    let config = std::fs::read_to_string(codex_home.path().join("config.toml"))?;
+    assert!(config.contains("model_provider = \"deepseek\""));
+    assert!(
+        config.contains("model = \"deepseek-v4-pro\"")
+            || config.contains("model = \"deepseek-v4-flash\""),
+        "expected set_active to persist a DeepSeek-compatible default model, got:\n{config}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_provider_cannot_be_set_active_and_hidden() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_models_cache(codex_home.path())?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_model_provider_config_write_request(ModelProviderConfigWriteParams {
+            provider_id: DEEPSEEK_PROVIDER_ID.to_string(),
+            enabled_in_picker: Some(false),
+            set_active: true,
+        })
+        .await?;
+    let error: JSONRPCError = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_eq!(error.id, RequestId::Integer(request_id));
+    assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        error.error.message,
+        "model provider cannot be made active and hidden from /model in the same request"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_disabled_openai_config_does_not_hide_openai_models() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        r#"
+model = "deepseek-v4"
+model_provider = "deepseek"
+disabled_model_providers = ["openai"]
+approval_policy = "never"
+sandbox_mode = "read-only"
+"#,
+    )?;
+    write_models_cache(codex_home.path())?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_list_models_request(ModelListParams {
+            limit: Some(100),
+            cursor: None,
+            include_hidden: None,
+            include_configured_providers: Some(true),
+        })
+        .await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let ModelListResponse { data: items, .. } = to_response::<ModelListResponse>(response)?;
+
+    assert!(
+        items
+            .iter()
+            .any(|item| item.model_provider == OPENAI_PROVIDER_ID),
+        "OpenAI models must remain available even if stale config lists OpenAI as disabled"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_provider_auth_write_and_remove_updates_managed_key_status() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_models_cache(codex_home.path())?;
+    let mut mcp =
+        TestAppServer::new_with_env(codex_home.path(), &[("DEEPSEEK_API_KEY", None)]).await?;
+
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let write_request_id = mcp
+        .send_model_provider_auth_write_request(ModelProviderAuthWriteParams {
+            provider_id: DEEPSEEK_PROVIDER_ID.to_string(),
+            api_key: "deepseek-secret".to_string(),
+        })
+        .await?;
+    let write_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(write_request_id)),
+    )
+    .await??;
+    let write = to_response::<ModelProviderAuthWriteResponse>(write_response)?;
+    assert_eq!(
+        write,
+        ModelProviderAuthWriteResponse {
+            provider_id: DEEPSEEK_PROVIDER_ID.to_string(),
+            managed_key_present: true,
+        }
+    );
+
+    let list_request_id = mcp
+        .send_model_provider_list_request(ModelProviderListParams {})
+        .await?;
+    let list_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_request_id)),
+    )
+    .await??;
+    let providers = to_response::<ModelProviderListResponse>(list_response)?;
+    let deepseek = providers
+        .data
+        .iter()
+        .find(|provider| provider.id == DEEPSEEK_PROVIDER_ID)
+        .expect("deepseek provider listed");
+    assert_eq!(
+        deepseek.auth_status,
+        ModelProviderAuthStatus::ManagedKeyPresent
+    );
+
+    let remove_request_id = mcp
+        .send_model_provider_auth_remove_request(ModelProviderAuthRemoveParams {
+            provider_id: DEEPSEEK_PROVIDER_ID.to_string(),
+        })
+        .await?;
+    let _: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(remove_request_id)),
+    )
+    .await??;
+
+    let list_request_id = mcp
+        .send_model_provider_list_request(ModelProviderListParams {})
+        .await?;
+    let list_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_request_id)),
+    )
+    .await??;
+    let providers = to_response::<ModelProviderListResponse>(list_response)?;
+    let deepseek = providers
+        .data
+        .iter()
+        .find(|provider| provider.id == DEEPSEEK_PROVIDER_ID)
+        .expect("deepseek provider listed after remove");
+    assert_eq!(deepseek.auth_status, ModelProviderAuthStatus::EnvKeyMissing);
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_provider_env_key_takes_precedence_over_managed_key_status() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    write_models_cache(codex_home.path())?;
+    let mut mcp = TestAppServer::new_with_env(
+        codex_home.path(),
+        &[("DEEPSEEK_API_KEY", Some("deepseek-env-secret"))],
+    )
+    .await?;
+
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let write_request_id = mcp
+        .send_model_provider_auth_write_request(ModelProviderAuthWriteParams {
+            provider_id: DEEPSEEK_PROVIDER_ID.to_string(),
+            api_key: "deepseek-managed-secret".to_string(),
+        })
+        .await?;
+    let _: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(write_request_id)),
+    )
+    .await??;
+
+    let list_request_id = mcp
+        .send_model_provider_list_request(ModelProviderListParams {})
+        .await?;
+    let list_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_request_id)),
+    )
+    .await??;
+    let providers = to_response::<ModelProviderListResponse>(list_response)?;
+    let deepseek = providers
+        .data
+        .iter()
+        .find(|provider| provider.id == DEEPSEEK_PROVIDER_ID)
+        .expect("deepseek provider listed");
+
+    assert_eq!(deepseek.auth_status, ModelProviderAuthStatus::EnvKeyPresent);
     Ok(())
 }
 
@@ -392,6 +777,10 @@ wire_api = "responses"
             .iter()
             .any(|item| item.model_provider == "inactive" && item.model == "active-cache-only"),
         "inactive provider must not inherit the active provider cache"
+    );
+    assert!(
+        !items.iter().any(|item| item.model_provider == "inactive"),
+        "inactive provider without an authoritative catalog must not expose bundled OpenAI models"
     );
     assert!(next_cursor.is_none());
     Ok(())

@@ -14,6 +14,7 @@ use crate::export_server_responses;
 use crate::protocol::common::EXPERIMENTAL_CLIENT_METHOD_PARAM_TYPES;
 use crate::protocol::common::EXPERIMENTAL_CLIENT_METHOD_RESPONSE_TYPES;
 use crate::protocol::common::EXPERIMENTAL_CLIENT_METHODS;
+use crate::protocol::common::STABLE_CLIENT_METHOD_RESPONSE_TYPES;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -557,8 +558,17 @@ fn filter_experimental_json_files(out_dir: &Path) -> Result<()> {
 
 fn experimental_method_types() -> HashSet<String> {
     let mut type_names = HashSet::new();
+    let mut stable_response_type_names = HashSet::new();
+    collect_experimental_type_names(
+        STABLE_CLIENT_METHOD_RESPONSE_TYPES,
+        &mut stable_response_type_names,
+    );
     collect_experimental_type_names(EXPERIMENTAL_CLIENT_METHOD_PARAM_TYPES, &mut type_names);
-    collect_experimental_type_names(EXPERIMENTAL_CLIENT_METHOD_RESPONSE_TYPES, &mut type_names);
+    collect_filtered_experimental_type_names(
+        EXPERIMENTAL_CLIENT_METHOD_RESPONSE_TYPES,
+        &stable_response_type_names,
+        &mut type_names,
+    );
     collect_experimental_type_names(EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES, &mut type_names);
     type_names
 }
@@ -571,6 +581,23 @@ fn collect_experimental_type_names(entries: &[&str], out: &mut HashSet<String>) 
         }
         let name = trimmed.rsplit("::").next().unwrap_or(trimmed);
         if !name.is_empty() {
+            out.insert(name.to_string());
+        }
+    }
+}
+
+fn collect_filtered_experimental_type_names(
+    entries: &[&str],
+    excluded: &HashSet<String>,
+    out: &mut HashSet<String>,
+) {
+    for entry in entries {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let name = trimmed.rsplit("::").next().unwrap_or(trimmed);
+        if !name.is_empty() && !excluded.contains(name) {
             out.insert(name.to_string());
         }
     }
@@ -2324,6 +2351,16 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn experimental_method_type_filter_keeps_stable_shared_response_types() {
+        let types = experimental_method_types();
+
+        assert!(types.contains("ModelProviderListParams"));
+        assert!(types.contains("ModelProviderListResponse"));
+        assert!(types.contains("ModelProviderConfigWriteParams"));
+        assert!(!types.contains("ConfigWriteResponse"));
     }
 
     fn schema_root() -> Result<PathBuf> {

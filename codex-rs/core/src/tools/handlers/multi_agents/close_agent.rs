@@ -77,6 +77,7 @@ async fn handle_close_agent(
                         receiver_thread_id: agent_id,
                         receiver_agent_nickname: receiver_agent.agent_nickname.clone(),
                         receiver_agent_role: receiver_agent.agent_role.clone(),
+                        receiver_agent_thread_note: receiver_agent.thread_note.clone(),
                         status,
                     }
                     .into(),
@@ -99,6 +100,7 @@ async fn handle_close_agent(
                 receiver_thread_id: agent_id,
                 receiver_agent_nickname: receiver_agent.agent_nickname,
                 receiver_agent_role: receiver_agent.agent_role,
+                receiver_agent_thread_note: receiver_agent.thread_note,
                 status: status.clone(),
             }
             .into(),

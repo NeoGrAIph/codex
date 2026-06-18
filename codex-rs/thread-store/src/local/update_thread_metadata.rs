@@ -6,6 +6,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_rollout::ARCHIVED_SESSIONS_SUBDIR;
 use codex_rollout::append_rollout_item_to_path;
@@ -73,9 +74,19 @@ pub(super) async fn update_thread_metadata(
         resolve_rollout_path(store, thread_id, params.include_archived).await?;
     let name = patch.name;
     let git_info = patch.git_info;
+    let thread_note = patch.thread_note;
     if let Some(memory_mode) = patch.memory_mode {
         apply_thread_memory_mode(resolved_rollout_path.path.as_path(), thread_id, memory_mode)
             .await?;
+        refresh_resolved_rollout_path(&mut resolved_rollout_path).await;
+    }
+    if let Some(thread_note) = thread_note.as_ref() {
+        apply_thread_note_to_rollout(
+            resolved_rollout_path.path.as_path(),
+            thread_id,
+            thread_note.clone(),
+        )
+        .await?;
         refresh_resolved_rollout_path(&mut resolved_rollout_path).await;
     }
 
@@ -97,10 +108,22 @@ pub(super) async fn update_thread_metadata(
 
     let resolved_git_info = match git_info {
         Some(git_info) => {
-            let Some(state_db) = store.state_db().await else {
-                return Err(ThreadStoreError::Internal {
-                    message: format!("sqlite state db unavailable for thread {thread_id}"),
-                });
+            let state_db = store.state_db().await;
+            let Some(state_db) = state_db.as_ref() else {
+                if require_sqlite_write {
+                    return Err(ThreadStoreError::Internal {
+                        message: format!("sqlite state db unavailable for thread {thread_id}"),
+                    });
+                }
+                let resolved_git_info = resolve_git_info_patch(None, git_info);
+                return apply_git_info_without_sqlite(
+                    store,
+                    thread_id,
+                    params.include_archived,
+                    resolved_rollout_path,
+                    resolved_git_info,
+                )
+                .await;
             };
             let metadata =
                 state_db
@@ -112,6 +135,17 @@ pub(super) async fn update_thread_metadata(
                         ),
                     })?;
             let Some(metadata) = metadata else {
+                if !require_sqlite_write {
+                    let resolved_git_info = resolve_git_info_patch(None, git_info);
+                    return apply_git_info_without_sqlite(
+                        store,
+                        thread_id,
+                        params.include_archived,
+                        resolved_rollout_path,
+                        resolved_git_info,
+                    )
+                    .await;
+                }
                 return Err(ThreadStoreError::Internal {
                     message: format!("thread metadata unavailable before git update: {thread_id}"),
                 });
@@ -145,7 +179,13 @@ pub(super) async fn update_thread_metadata(
         )
         .await?;
         refresh_resolved_rollout_path(&mut resolved_rollout_path).await;
-        apply_thread_git_info(store, thread_id, sha, branch, origin_url).await?;
+        match apply_thread_git_info(store, thread_id, sha, branch, origin_url).await {
+            Ok(()) => {}
+            Err(err) if require_sqlite_write || !sqlite_write_error_is_best_effort(&err) => {
+                return Err(err);
+            }
+            Err(err) => warn!("state db update_thread_metadata failed for {thread_id}: {err}"),
+        }
     }
 
     let mut thread = match read_thread::read_thread(
@@ -172,6 +212,49 @@ pub(super) async fn update_thread_metadata(
     if let Some(((sha, branch, origin_url), _memory_mode)) = resolved_git_info {
         thread.git_info = git_info_from_parts(sha, branch, origin_url);
     }
+    Ok(thread)
+}
+
+async fn apply_git_info_without_sqlite(
+    store: &LocalThreadStore,
+    thread_id: ThreadId,
+    include_archived: bool,
+    mut resolved_rollout_path: ResolvedRolloutPath,
+    resolved_git_info: (Option<String>, Option<String>, Option<String>),
+) -> ThreadStoreResult<StoredThread> {
+    let (sha, branch, origin_url) = resolved_git_info;
+    apply_thread_git_info_to_rollout(
+        resolved_rollout_path.path.as_path(),
+        thread_id,
+        &sha,
+        &branch,
+        &origin_url,
+        /*memory_mode*/ None,
+    )
+    .await?;
+    refresh_resolved_rollout_path(&mut resolved_rollout_path).await;
+    let mut thread = match read_thread::read_thread(
+        store,
+        ReadThreadParams {
+            thread_id,
+            include_archived,
+            include_history: false,
+        },
+    )
+    .await
+    {
+        Ok(thread) => thread,
+        Err(_) => {
+            read_thread::read_thread_by_rollout_path(
+                store,
+                resolved_rollout_path.path,
+                include_archived,
+                /*include_history*/ false,
+            )
+            .await?
+        }
+    };
+    thread.git_info = git_info_from_parts(sha, branch, origin_url);
     Ok(thread)
 }
 
@@ -356,6 +439,9 @@ fn needs_rollout_compatibility_update(patch: &ThreadMetadataPatch) -> bool {
     if patch.name.is_some() {
         return true;
     }
+    if patch.thread_note.is_some() {
+        return true;
+    }
     if patch.memory_mode.is_none() && patch.git_info.is_none() {
         return false;
     }
@@ -491,6 +577,53 @@ async fn apply_thread_git_info_to_rollout(
         .await
         .map_err(|err| ThreadStoreError::Internal {
             message: format!("failed to set thread git metadata: {err}"),
+        })
+}
+
+async fn apply_thread_note_to_rollout(
+    rollout_path: &Path,
+    thread_id: ThreadId,
+    thread_note: Option<String>,
+) -> ThreadStoreResult<()> {
+    let mut session_meta =
+        read_session_meta_line(rollout_path)
+            .await
+            .map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to set thread note: {err}"),
+            })?;
+    if session_meta.meta.id != thread_id {
+        return Err(ThreadStoreError::Internal {
+            message: format!(
+                "failed to set thread note: rollout session metadata id mismatch: expected {thread_id}, found {}",
+                session_meta.meta.id
+            ),
+        });
+    }
+
+    session_meta.meta.thread_note = thread_note.clone();
+    if let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth,
+        agent_path,
+        agent_nickname,
+        agent_role,
+        ..
+    }) = session_meta.meta.source
+    {
+        session_meta.meta.source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth,
+            agent_path,
+            agent_nickname,
+            agent_role,
+            thread_note,
+        });
+    }
+
+    append_rollout_item_to_path(rollout_path, &RolloutItem::SessionMeta(session_meta))
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to set thread note: {err}"),
         })
 }
 

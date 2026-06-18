@@ -5,12 +5,61 @@ expression: popup
   Agent Role Templates
   Create and inspect role profiles used by spawn_agent.agent_type.
   User templates live in $CODEX_HOME/agents/*.toml.
+  Runtime tool catalog: open from a loaded thread to inspect current native tool ids.
 
-› 1. Create new template   Creates a valid starter file under $CODEX_HOME/agents/. New sessions
-                           load user roles from that native config directory.
-  2. [user] code-reviewer  Review code changes before handoff.
-  3. [built-in] default    Default agent.
-  4. [built-in] explorer   Use `explorer` for specific codebase questions.
-  5. [built-in] worker     Use for execution and production work.
+  1. Create new template           Edit a native TOML role draft for future sub-agent spawns
+› 2. [user active] explorer        Role: explorer
+                                   Source: user
+                                   Status: active
+                                   Overrides built-in role with the same name.
+                                   Description: Custom explorer role for codebase discovery.
+                                   Config file: $CODEX_HOME/agents/explorer.toml
+                                   Config origin: $CODEX_HOME/agents
+                                   Native profile fields: name, description, nickname_candidates,
+                                   developer_instructions, model, model_provider,
+                                   model_reasoning_effort, service_tier
+                                   Declaration fields: description, config_file,
+                                   nickname_candidates
+                                   TOML fields: name, description, nickname_candidates,
+                                   developer_instructions, model, model_provider,
+                                   model_reasoning_effort, approval_policy, default_permissions,
+                                   permissions, mcp_servers, hooks, tool_selection.allowed_tools,
+                                   skills.config, apps
+                                   Field sources: description=role-file metadata,
+                                   config_file=$CODEX_HOME/agents discovery,
+                                   nickname_candidates=role-file metadata,
+                                   approval_policy=effective role file, apps=effective role file,
+                                   default_permissions=effective role file,
+                                   developer_instructions=effective role file, hooks=effective
+                                   role file, mcp_servers=effective role file, model=effective
+                                   role file, model_provider=effective role file,
+                                   model_reasoning_effort=effective role file, name=role-file
+                                   metadata, permissions=effective role file,
+                                   skills.config=effective role file,
+                                   tool_selection.allowed_tools=effective role file
+                                   Validation: valid native TOML role file
+                                   Nicknames: Ada
+                                   Runtime use: no known threads with this agent_type in current
+                                   TUI session
+                                   Tool selection state: runtime allowlist; unmatched entries warn
+                                   during tool planning and grant no access
+                                   Runtime catalog reference: unavailable because no loaded thread
+                                   was available for app-server catalog read.
+                                   Template sets: model=gpt-5.3-codex, model_provider=deepseek,
+                                   reasoning=high, developer_instructions,
+                                   tool_selection=update_plan, codex_app/lookup
+                                   Security sets: approval_policy=on-request,
+                                   default_permissions=:read-only, permissions=1 profiles
+                                   Subsystem sets: mcp_servers=1, hooks=1 handlers, skills=1
+                                   config, apps=1 apps, apps_default
+                                   Runtime binding: spawn_agent.agent_type `explorer`
+                                   Enter: open template file for editing
+                                   Availability: loaded threads use this TOML file after native
+                                   config reload or restart; the TUI wizard triggers reload after
+                                   successful create.
+                                   Use: ask Codex to spawn a sub-agent with agent_type `explorer`.
+  3. [built-in active] default     Default agent.
+  4. [built-in shadowed] explorer  Use `explorer` for specific codebase questions.
+  5. [built-in active] worker      Use for execution and production work.
 
   Press enter to confirm or esc to go back

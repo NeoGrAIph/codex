@@ -156,19 +156,21 @@ async fn handle_spawn_agent(
         }
         None => None,
     };
-    let (_new_agent_path, new_agent_nickname, new_agent_role) =
+    let (_new_agent_path, new_agent_nickname, new_agent_role, new_agent_thread_note) =
         match (&agent_snapshot, new_agent_metadata) {
             (Some(snapshot), _) => (
                 snapshot.session_source.get_agent_path().map(String::from),
                 snapshot.session_source.get_nickname(),
                 snapshot.session_source.get_agent_role(),
+                snapshot.session_source.get_thread_note(),
             ),
             (None, Some(metadata)) => (
                 metadata.agent_path.map(String::from),
                 metadata.agent_nickname,
                 metadata.agent_role,
+                metadata.thread_note,
             ),
-            (None, None) => (None, None, None),
+            (None, None) => (None, None, None, None),
         };
     let effective_model = agent_snapshot
         .as_ref()
@@ -189,6 +191,7 @@ async fn handle_spawn_agent(
                 new_thread_id,
                 new_agent_nickname,
                 new_agent_role,
+                new_agent_thread_note,
                 prompt,
                 model: effective_model,
                 reasoning_effort: effective_reasoning_effort,
