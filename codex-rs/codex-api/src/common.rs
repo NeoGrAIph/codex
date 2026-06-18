@@ -152,6 +152,24 @@ pub struct ChatCompletionsApiRequest {
     pub stream_options: Option<ChatStreamOptions>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatCompletionsRequestOptions {
+    Generic,
+    DeepSeek,
+}
+
+impl ChatCompletionsRequestOptions {
+    fn uses_deepseek_options(self) -> bool {
+        self == Self::DeepSeek
+    }
+}
+
+impl Default for ChatCompletionsRequestOptions {
+    fn default() -> Self {
+        Self::Generic
+    }
+}
+
 #[derive(Debug, Serialize, Clone, PartialEq)]
 pub struct ChatStreamOptions {
     pub include_usage: bool,
@@ -197,11 +215,17 @@ impl ChatCompletionsApiRequest {
         tools: Vec<Value>,
         parallel_tool_calls: bool,
         reasoning: Option<Reasoning>,
+        options: ChatCompletionsRequestOptions,
     ) -> Result<Self, ApiError> {
         let messages = chat_messages_from_response_items(instructions, input)?;
-        let reasoning_effort = reasoning
-            .and_then(|reasoning| reasoning.effort)
-            .map(DeepSeekReasoningEffort::from);
+        let reasoning_effort = options
+            .uses_deepseek_options()
+            .then(|| {
+                reasoning
+                    .and_then(|reasoning| reasoning.effort)
+                    .map(DeepSeekReasoningEffort::from)
+            })
+            .flatten();
         Ok(Self {
             model,
             messages,
@@ -210,7 +234,7 @@ impl ChatCompletionsApiRequest {
             parallel_tool_calls,
             stream: true,
             reasoning_effort,
-            thinking: Some(DeepSeekThinking {
+            thinking: options.uses_deepseek_options().then_some(DeepSeekThinking {
                 r#type: DeepSeekThinkingType::Enabled,
             }),
             stream_options: Some(ChatStreamOptions {
@@ -475,6 +499,7 @@ mod tests {
             Vec::new(),
             /*parallel_tool_calls*/ false,
             /*reasoning*/ None,
+            ChatCompletionsRequestOptions::DeepSeek,
         )
         .expect_err("unsupported history item should fail request construction");
 
@@ -528,6 +553,7 @@ mod tests {
             Vec::new(),
             /*parallel_tool_calls*/ false,
             /*reasoning*/ None,
+            ChatCompletionsRequestOptions::DeepSeek,
         )
         .expect("developer messages should be representable for chat completions");
 
@@ -568,6 +594,7 @@ mod tests {
             Vec::new(),
             /*parallel_tool_calls*/ false,
             /*reasoning*/ None,
+            ChatCompletionsRequestOptions::DeepSeek,
         )
         .expect("latest_reminder is a supported chat completions role");
 
@@ -581,6 +608,27 @@ mod tests {
                 tool_call_id: None,
             }]
         );
+    }
+
+    #[test]
+    fn chat_completions_generic_options_omit_deepseek_specific_fields() {
+        let request = ChatCompletionsApiRequest::new(
+            "chat-model".to_string(),
+            String::new(),
+            vec![message("user", "hi")],
+            Vec::new(),
+            /*parallel_tool_calls*/ false,
+            Some(Reasoning {
+                effort: Some(ReasoningEffortConfig::XHigh),
+                summary: None,
+                context: None,
+            }),
+            ChatCompletionsRequestOptions::Generic,
+        )
+        .expect("generic chat completions request should build");
+
+        assert_eq!(request.reasoning_effort, None);
+        assert_eq!(request.thinking, None);
     }
 
     #[test]

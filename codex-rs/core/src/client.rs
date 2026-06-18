@@ -34,6 +34,7 @@ use codex_api::ApiError;
 use codex_api::AuthProvider;
 use codex_api::ChatCompletionsApiRequest;
 use codex_api::ChatCompletionsClient as ApiChatCompletionsClient;
+use codex_api::ChatCompletionsRequestOptions;
 use codex_api::CompactClient as ApiCompactClient;
 use codex_api::CompactionInput as ApiCompactionInput;
 use codex_api::Compression;
@@ -835,6 +836,11 @@ impl ModelClient {
             tools,
             prompt.parallel_tool_calls,
             reasoning,
+            if self.state.provider.info().is_deepseek() {
+                ChatCompletionsRequestOptions::DeepSeek
+            } else {
+                ChatCompletionsRequestOptions::Generic
+            },
         )
         .map_err(map_api_error)
     }

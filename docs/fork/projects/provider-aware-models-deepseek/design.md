@@ -18,7 +18,7 @@ Provider management adds two adjacent canonical states without replacing the run
 8. TUI `/model` reads app-server models, keeps provider id on `ModelPreset`, and emits provider-aware selection events.
 9. TUI `/model-providers` reads app-server provider state, hides native OpenAI from management, uses `SelectionToggle` for `/plugins`-style Space enable/disable on rows, opens a detail level on Enter for default/auth actions, then refreshes the provider-aware model catalog so `/model` inherits the new state.
 10. TUI sends `thread/settings/update` with `modelProvider` and `model`; core validates the provider against configured providers and updates the session config used by the next turn.
-11. `ModelClientSession::stream` selects Responses or DeepSeek-compatible Chat Completions from `ModelProviderInfo.wire_api` at the transport boundary.
+11. `ModelClientSession::stream` selects Responses or Chat Completions from `ModelProviderInfo.wire_api` at the transport boundary. Chat Completions request construction carries explicit provider options: DeepSeek receives `thinking` and mapped `reasoning_effort`, while the generic option set omits those DeepSeek-only fields.
 
 ## Data flow
 
@@ -60,7 +60,7 @@ OpenClaude `v0.19.0` `ProviderManager` is recorded as a UX reference for future 
 
 Managed API keys reuse `codex-secrets` because it already provides local encrypted storage with an OS-keyring-protected passphrase. The feature does not introduce a provider-specific plaintext key file or a second auth registry. App-server integration tests set a debug/test-only fixed secrets keyring passphrase for the child app-server process so encrypted storage can be tested without depending on host `org.freedesktop.secrets`.
 
-The Chat Completions adapter converts the existing Responses-shaped internal input into DeepSeek-compatible chat messages only at the transport boundary. This keeps upstream session/history/context construction unchanged and limits divergence to the provider wire adapter. Because the request includes DeepSeek-specific `thinking` and reasoning-effort mapping, `wire_api = "chat_completions"` is not yet a generic provider-neutral Chat Completions contract.
+The Chat Completions adapter converts the existing Responses-shaped internal input into chat messages only at the transport boundary. This keeps upstream session/history/context construction unchanged and limits divergence to the provider wire adapter. Provider-specific request options live in the adapter contract: DeepSeek gets `thinking` and DeepSeek reasoning-effort mapping; generic Chat Completions request options intentionally omit those fields until a provider contract proves they are supported.
 
 Developer/context messages are also normalized at this same boundary: `ResponseItem::Message { role: "developer" }` becomes a Chat Completions `system` message because the DeepSeek-compatible endpoint accepts `system` but rejects `developer`. Supported chat roles pass through unchanged, while unknown message roles fail fast with `InvalidRequest`. This preserves native Codex context construction and avoids TUI/model-picker workarounds.
 

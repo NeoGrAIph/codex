@@ -25,6 +25,7 @@ pub use crate::auth::AuthProviderFuture;
 pub use crate::auth::SharedAuthProvider;
 pub use crate::auth::auth_header_telemetry;
 pub use crate::common::ChatCompletionsApiRequest;
+pub use crate::common::ChatCompletionsRequestOptions;
 pub use crate::common::CompactionInput;
 pub use crate::common::MemorySummarizeInput;
 pub use crate::common::MemorySummarizeOutput;
