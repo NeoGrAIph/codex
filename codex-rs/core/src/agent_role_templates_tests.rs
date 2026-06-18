@@ -5,6 +5,7 @@ use codex_config::AbsolutePathBuf;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerStack;
+use codex_protocol::openai_models::ReasoningEffort;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
@@ -805,6 +806,44 @@ async fn starter_agent_role_template_draft_with_allowed_tools_writes_native_tool
     assert!(contents.contains("[tool_selection]\nallowed_tools = ["));
     assert!(contents.contains("\"update_plan\""));
     assert!(contents.contains("\"codex_app/lookup\""));
+}
+
+#[tokio::test]
+async fn agent_role_template_current_model_draft_writes_native_model_defaults() {
+    let (home, mut config) = test_config().await;
+    config.model = Some("deepseek/deepseek-v4-flash".to_string());
+    config.model_provider_id = "deepseek".to_string();
+    config.model_reasoning_effort = Some(ReasoningEffort::High);
+    config.service_tier = Some("priority".to_string());
+
+    let draft = starter_agent_role_template_draft_from_current_model(&config);
+
+    assert!(draft.contains("model = \"deepseek/deepseek-v4-flash\""));
+    assert!(draft.contains("model_provider = \"deepseek\""));
+    assert!(draft.contains("model_reasoning_effort = \"high\""));
+    assert!(draft.contains("service_tier = \"priority\""));
+    assert!(draft.contains("# Optional tool boundary"));
+    let created = create_user_agent_role_template_from_draft(&config, &draft).expect("created");
+
+    assert_eq!(created.name, "new-role");
+    assert_eq!(created.path, home.path().join("agents/new-role.toml"));
+    let contents = fs::read_to_string(&created.path).expect("read template");
+    assert_eq!(contents, format!("{}\n", draft.trim()));
+    assert_eq!(
+        created
+            .config
+            .runtime_config_sources
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec![
+            "developer_instructions",
+            "model",
+            "model_provider",
+            "model_reasoning_effort",
+            "service_tier",
+        ]
+    );
 }
 
 #[tokio::test]

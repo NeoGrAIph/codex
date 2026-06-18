@@ -227,16 +227,45 @@ pub fn create_user_agent_role_template(
     raw_name: &str,
 ) -> Result<CreatedAgentRoleTemplate, AgentRoleTemplateCreateError> {
     let name = normalize_agent_role_template_name(raw_name)?;
-    let contents = starter_template_contents(&name, None);
+    let contents = starter_template_contents(&name, None, StarterModelDefaults::default());
     create_user_agent_role_template_from_contents(config, &name, &contents)
 }
 
 pub fn starter_agent_role_template_draft() -> String {
-    starter_template_contents("new-role", None)
+    starter_template_contents("new-role", None, StarterModelDefaults::default())
 }
 
 pub fn starter_agent_role_template_draft_with_allowed_tools(allowed_tools: &[String]) -> String {
-    starter_template_contents("new-role", Some(allowed_tools))
+    starter_template_contents(
+        "new-role",
+        Some(allowed_tools),
+        StarterModelDefaults::default(),
+    )
+}
+
+pub fn starter_agent_role_template_draft_from_current_model(config: &Config) -> String {
+    starter_template_contents(
+        "new-role",
+        None,
+        StarterModelDefaults {
+            model: config
+                .model
+                .as_deref()
+                .filter(|model| !model.trim().is_empty())
+                .map(str::to_string),
+            model_provider: (!config.model_provider_id.trim().is_empty())
+                .then(|| config.model_provider_id.clone()),
+            model_reasoning_effort: config
+                .model_reasoning_effort
+                .as_ref()
+                .map(ToString::to_string),
+            service_tier: config
+                .service_tier
+                .as_deref()
+                .filter(|service_tier| !service_tier.trim().is_empty())
+                .map(str::to_string),
+        },
+    )
 }
 
 pub fn user_agent_role_template_draft_with_allowed_tools(
@@ -1028,7 +1057,23 @@ struct StarterTemplate<'a> {
     nickname_candidates: Vec<String>,
     developer_instructions: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tool_selection: Option<StarterToolSelection<'a>>,
+}
+
+#[derive(Default)]
+struct StarterModelDefaults {
+    model: Option<String>,
+    model_provider: Option<String>,
+    model_reasoning_effort: Option<String>,
+    service_tier: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1036,7 +1081,11 @@ struct StarterToolSelection<'a> {
     allowed_tools: &'a [String],
 }
 
-fn starter_template_contents(name: &str, allowed_tools: Option<&[String]>) -> String {
+fn starter_template_contents(
+    name: &str,
+    allowed_tools: Option<&[String]>,
+    model_defaults: StarterModelDefaults,
+) -> String {
     let template = StarterTemplate {
         name,
         description: starter_description(name),
@@ -1044,6 +1093,10 @@ fn starter_template_contents(name: &str, allowed_tools: Option<&[String]>) -> St
         developer_instructions: format!(
             "Define `{name}` responsibilities and completion criteria."
         ),
+        model: model_defaults.model,
+        model_provider: model_defaults.model_provider,
+        model_reasoning_effort: model_defaults.model_reasoning_effort,
+        service_tier: model_defaults.service_tier,
         tool_selection: allowed_tools
             .filter(|allowed_tools| !allowed_tools.is_empty())
             .map(|allowed_tools| StarterToolSelection { allowed_tools }),

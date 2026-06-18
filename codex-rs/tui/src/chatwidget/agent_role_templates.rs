@@ -13,6 +13,7 @@ use crate::legacy_core::agent_role_templates::AgentRoleTemplateSource;
 use crate::legacy_core::agent_role_templates::create_user_agent_role_template_from_draft;
 use crate::legacy_core::agent_role_templates::list_agent_role_templates;
 use crate::legacy_core::agent_role_templates::starter_agent_role_template_draft;
+use crate::legacy_core::agent_role_templates::starter_agent_role_template_draft_from_current_model;
 use crate::legacy_core::agent_role_templates::starter_agent_role_template_draft_with_allowed_tools;
 use crate::legacy_core::agent_role_templates::update_user_agent_role_template_from_draft;
 use crate::legacy_core::agent_role_templates::user_agent_role_template_draft_with_allowed_tools;
@@ -53,8 +54,9 @@ impl ChatWidget {
             None => AgentRoleRuntimeCatalogState::NotRequested,
         };
         let entries = list_agent_role_templates(&self.config);
-        let mut items = Vec::with_capacity((entries.len() * 2) + 2);
+        let mut items = Vec::with_capacity((entries.len() * 2) + 3);
         items.push(create_role_template_item());
+        items.push(create_role_template_from_current_model_item());
         if let AgentRoleRuntimeCatalogState::Loaded(catalog) = &runtime_catalog {
             items.push(create_role_template_from_catalog_item(catalog));
         }
@@ -89,6 +91,12 @@ impl ChatWidget {
 
     pub(crate) fn open_agent_role_template_create_prompt(&mut self) {
         self.open_agent_role_template_create_prompt_with_draft(starter_agent_role_template_draft());
+    }
+
+    pub(crate) fn open_agent_role_template_create_prompt_from_current_model(&mut self) {
+        self.open_agent_role_template_create_prompt_with_draft(
+            starter_agent_role_template_draft_from_current_model(&self.config),
+        );
     }
 
     pub(crate) fn open_agent_role_template_create_prompt_with_allowed_tools(
@@ -343,6 +351,21 @@ fn create_role_template_item() -> SelectionItem {
         ),
         actions: vec![Box::new(|tx| {
             tx.send(AppEvent::OpenAgentRoleTemplateCreatePrompt);
+        })],
+        dismiss_on_select: true,
+        ..Default::default()
+    }
+}
+
+fn create_role_template_from_current_model_item() -> SelectionItem {
+    SelectionItem {
+        name: "Create template from current model".to_string(),
+        description: Some("Seed a native TOML role draft with current model defaults".to_string()),
+        selected_description: Some(
+            "Copies the current Config model, model_provider, model_reasoning_effort and service_tier into an editable $CODEX_HOME/agents TOML draft. It does not change the current session model or create a role-local provider registry.".to_string(),
+        ),
+        actions: vec![Box::new(|tx| {
+            tx.send(AppEvent::OpenAgentRoleTemplateCreatePromptFromCurrentModel);
         })],
         dismiss_on_select: true,
         ..Default::default()

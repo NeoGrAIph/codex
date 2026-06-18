@@ -198,6 +198,8 @@ pub(crate) enum AppEvent {
     OpenAgentRoleTemplates,
     /// Open the prompt used to create a new user role template file.
     OpenAgentRoleTemplateCreatePrompt,
+    /// Open the role-template create prompt seeded with current model defaults.
+    OpenAgentRoleTemplateCreatePromptFromCurrentModel,
     /// Open a runtime-catalog picker that prepares a native role TOML draft.
     OpenAgentRoleTemplateToolSelectionPicker {
         catalog_entries: Vec<AgentRoleToolSelectionCatalogEntry>,

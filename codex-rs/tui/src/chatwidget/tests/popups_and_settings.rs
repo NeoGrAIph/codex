@@ -2507,6 +2507,7 @@ enabled = true
 
     chat.open_agent_role_templates_popup();
     chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
 
     let codex_home = chat.config.codex_home.display().to_string();
     let popup = render_bottom_popup(&chat, /*width*/ 100).replace(&codex_home, "$CODEX_HOME");
@@ -2609,6 +2610,27 @@ async fn agent_role_template_create_prompt_submits_native_toml_draft() {
         Ok(AppEvent::CreateAgentRoleTemplateFromDraft { draft })
             if draft.contains("name = \"new-role\"")
                 && draft.contains("developer_instructions")
+    );
+}
+
+#[tokio::test]
+async fn agent_role_template_create_prompt_from_current_model_submits_native_toml_draft() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.model = Some("deepseek/deepseek-v4-flash".to_string());
+    chat.config.model_provider_id = "deepseek".to_string();
+    chat.config.model_reasoning_effort = Some(ReasoningEffortConfig::High);
+    chat.config.service_tier = Some("priority".to_string());
+
+    chat.open_agent_role_template_create_prompt_from_current_model();
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::CreateAgentRoleTemplateFromDraft { draft })
+            if draft.contains("model = \"deepseek/deepseek-v4-flash\"")
+                && draft.contains("model_provider = \"deepseek\"")
+                && draft.contains("model_reasoning_effort = \"high\"")
+                && draft.contains("service_tier = \"priority\"")
     );
 }
 

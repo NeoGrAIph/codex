@@ -1791,6 +1791,10 @@ impl App {
             AppEvent::OpenAgentRoleTemplateCreatePrompt => {
                 self.chat_widget.open_agent_role_template_create_prompt();
             }
+            AppEvent::OpenAgentRoleTemplateCreatePromptFromCurrentModel => {
+                self.chat_widget
+                    .open_agent_role_template_create_prompt_from_current_model();
+            }
             AppEvent::OpenAgentRoleTemplateToolSelectionPicker { catalog_entries } => {
                 self.chat_widget
                     .open_agent_role_template_tool_selection_picker(catalog_entries);
