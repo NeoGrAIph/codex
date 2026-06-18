@@ -41,6 +41,10 @@ pub(crate) const GENERATED_TS_HEADER: &str = "// GENERATED CODE! DO NOT MODIFY B
 const IGNORED_DEFINITIONS: &[&str] = &["Option<()>"];
 const JSON_V1_ALLOWLIST: &[&str] = &["InitializeParams", "InitializeResponse"];
 const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
+    "AgentRoleToolSelectionCatalogEntry",
+    "AgentRoleToolSelectionCatalogExposure",
+    "ModelProvider",
+    "ModelProviderAuthStatus",
     "RemoteControlClient",
     "RemoteControlClientsListOrder",
     "ThreadBackgroundTerminal",
@@ -2360,6 +2364,10 @@ mod tests {
         assert!(types.contains("ModelProviderListParams"));
         assert!(types.contains("ModelProviderListResponse"));
         assert!(types.contains("ModelProviderConfigWriteParams"));
+        assert!(types.contains("ModelProvider"));
+        assert!(types.contains("ModelProviderAuthStatus"));
+        assert!(types.contains("AgentRoleToolSelectionCatalogEntry"));
+        assert!(types.contains("AgentRoleToolSelectionCatalogExposure"));
         assert!(!types.contains("ConfigWriteResponse"));
     }
 

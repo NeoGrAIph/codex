@@ -20,9 +20,18 @@ use codex_tools::ToolSpec;
 use serde::Deserialize;
 use serde_json::Map;
 use serde_json::Value;
+use std::hash::DefaultHasher;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::LazyLock;
+
+static HOOK_REWRITE_TOKEN_SECRET: LazyLock<u64> = LazyLock::new(|| {
+    use rand::Rng;
+    rand::rng().random()
+});
 
 pub struct RunSkillScriptHandler {
     exec_options: ExecCommandHandlerOptions,
@@ -43,6 +52,8 @@ struct RunSkillScriptArgs {
     max_output_tokens: Option<usize>,
     #[serde(default, rename = "_hook_updated_cmd")]
     hook_updated_cmd: Option<String>,
+    #[serde(default, rename = "_hook_updated_cmd_token")]
+    hook_updated_cmd_token: Option<String>,
 }
 
 #[derive(Debug)]
@@ -72,7 +83,8 @@ impl RunSkillScriptHandler {
                 "run_skill_script handler received unsupported payload".to_string(),
             )),
         }?;
-        let resolved = resolve_skill_script_invocation(invocation.turn.as_ref(), &args)?;
+        let resolved =
+            resolve_skill_script_invocation(invocation.turn.as_ref(), &invocation.call_id, &args)?;
         let workdir = resolved
             .script
             .parent()
@@ -149,7 +161,14 @@ impl CoreToolRuntime for RunSkillScriptHandler {
 
         parse_arguments::<RunSkillScriptArgs>(arguments)
             .ok()
-            .and_then(|args| resolve_skill_script_invocation(invocation.turn.as_ref(), &args).ok())
+            .and_then(|args| {
+                resolve_skill_script_invocation(
+                    invocation.turn.as_ref(),
+                    &invocation.call_id,
+                    &args,
+                )
+                .ok()
+            })
             .map(|resolved| PreToolUsePayload {
                 tool_name: HookToolName::bash(),
                 tool_input: serde_json::json!({ "command": resolved.cmd }),
@@ -167,9 +186,11 @@ impl CoreToolRuntime for RunSkillScriptHandler {
             ));
         };
         let command = updated_hook_command(&updated_input)?.to_string();
+        let token = hook_rewrite_token(&invocation.call_id, &command);
         invocation.payload = ToolPayload::Function {
             arguments: rewrite_function_arguments(&arguments, "run_skill_script", |arguments| {
                 arguments.insert("_hook_updated_cmd".to_string(), Value::String(command));
+                arguments.insert("_hook_updated_cmd_token".to_string(), Value::String(token));
             })?,
         };
         Ok(invocation)
@@ -198,15 +219,45 @@ impl CoreToolRuntime for RunSkillScriptHandler {
 
 fn resolve_skill_script_invocation(
     turn: &crate::session::turn_context::TurnContext,
+    call_id: &str,
     args: &RunSkillScriptArgs,
 ) -> Result<ResolvedSkillScriptInvocation, FunctionCallError> {
     ensure_primary_local_environment(turn, args.environment_id.as_deref())?;
     let script = resolve_skill_script(turn, args)?;
-    let cmd = args
-        .hook_updated_cmd
-        .clone()
-        .unwrap_or_else(|| command_for_script(&script, &args.args));
+    let cmd = match &args.hook_updated_cmd {
+        Some(command) => {
+            let Some(token) = &args.hook_updated_cmd_token else {
+                return Err(FunctionCallError::RespondToModel(
+                    "run_skill_script internal hook rewrite token is missing".to_string(),
+                ));
+            };
+            let expected = hook_rewrite_token(call_id, command);
+            if token != &expected {
+                return Err(FunctionCallError::RespondToModel(
+                    "run_skill_script internal hook rewrite token is invalid".to_string(),
+                ));
+            }
+            command.clone()
+        }
+        None => {
+            if args.hook_updated_cmd_token.is_some() {
+                return Err(FunctionCallError::RespondToModel(
+                    "run_skill_script internal hook rewrite token was provided without a rewrite"
+                        .to_string(),
+                ));
+            }
+            command_for_script(&script, &args.args)
+        }
+    };
     Ok(ResolvedSkillScriptInvocation { script, cmd })
+}
+
+fn hook_rewrite_token(call_id: &str, command: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    (*HOOK_REWRITE_TOKEN_SECRET).hash(&mut hasher);
+    call_id.hash(&mut hasher);
+    command.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 fn ensure_primary_local_environment(
@@ -462,8 +513,9 @@ mod tests {
         })
         .expect("parse args");
 
-        let err = resolve_skill_script_invocation(invocation.turn.as_ref(), &args)
-            .expect_err("symlink escape should be rejected");
+        let err =
+            resolve_skill_script_invocation(invocation.turn.as_ref(), &invocation.call_id, &args)
+                .expect_err("symlink escape should be rejected");
 
         assert!(err.to_string().contains("escapes the scripts directory"));
     }
@@ -529,9 +581,39 @@ mod tests {
         };
         let args: RunSkillScriptArgs = parse_arguments(arguments).expect("parse rewritten args");
         let resolved =
-            resolve_skill_script_invocation(rewritten.turn.as_ref(), &args).expect("resolve");
+            resolve_skill_script_invocation(rewritten.turn.as_ref(), &rewritten.call_id, &args)
+                .expect("resolve");
 
         assert_eq!(resolved.cmd, "printf rewritten");
+    }
+
+    #[tokio::test]
+    async fn model_supplied_hook_rewrite_command_is_rejected() {
+        let root = tempfile::tempdir().expect("create root");
+        let (_skill_dir_guard, script_path) = make_script_skill(root.path());
+        let (_turn_guard, mut invocation) = invocation_with_skill(&script_path).await;
+        invocation.payload = ToolPayload::Function {
+            arguments: serde_json::json!({
+                "skill": "demo",
+                "script": "run.sh",
+                "_hook_updated_cmd": "printf bypass",
+            })
+            .to_string(),
+        };
+        let args: RunSkillScriptArgs = parse_arguments(match &invocation.payload {
+            ToolPayload::Function { arguments } => arguments,
+            _ => unreachable!("function payload"),
+        })
+        .expect("parse args");
+
+        let err =
+            resolve_skill_script_invocation(invocation.turn.as_ref(), &invocation.call_id, &args)
+                .expect_err("model-supplied hook command should be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("internal hook rewrite token is missing")
+        );
     }
 
     #[tokio::test]
@@ -604,8 +686,9 @@ mod tests {
         })
         .expect("parse args");
 
-        let err = resolve_skill_script_invocation(invocation.turn.as_ref(), &args)
-            .expect_err("remote environment should be rejected");
+        let err =
+            resolve_skill_script_invocation(invocation.turn.as_ref(), &invocation.call_id, &args)
+                .expect_err("remote environment should be rejected");
 
         assert!(
             err.to_string()
@@ -635,8 +718,9 @@ mod tests {
         })
         .expect("parse args");
 
-        let err = resolve_skill_script_invocation(invocation.turn.as_ref(), &args)
-            .expect_err("remote primary should be rejected");
+        let err =
+            resolve_skill_script_invocation(invocation.turn.as_ref(), &invocation.call_id, &args)
+                .expect_err("remote primary should be rejected");
 
         assert!(
             err.to_string()
@@ -663,7 +747,8 @@ mod tests {
         .expect("parse args");
 
         let err =
-            resolve_skill_script_invocation(invocation.turn.as_ref(), &args).expect_err("missing");
+            resolve_skill_script_invocation(invocation.turn.as_ref(), &invocation.call_id, &args)
+                .expect_err("missing");
 
         assert!(
             err.to_string()
@@ -689,7 +774,8 @@ mod tests {
         .expect("parse args");
 
         let err =
-            resolve_skill_script_invocation(invocation.turn.as_ref(), &args).expect_err("disabled");
+            resolve_skill_script_invocation(invocation.turn.as_ref(), &invocation.call_id, &args)
+                .expect_err("disabled");
 
         assert!(
             err.to_string()

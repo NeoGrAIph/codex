@@ -8,7 +8,6 @@ use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use codex_mcp::ToolInfo;
-use codex_protocol::mcp::McpServerInfo;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use serde::Deserialize;
@@ -19,6 +18,11 @@ pub struct ListMcpServersHandler;
 
 const DEFAULT_MAX_TOOLS_PER_SERVER: usize = 50;
 const MAX_TOOLS_PER_SERVER: usize = 200;
+const MAX_SERVERS: usize = 50;
+const MAX_TOTAL_TOOL_SUMMARIES: usize = 500;
+const MAX_SERVER_FIELD_CHARS: usize = 160;
+const MAX_SERVER_DESCRIPTION_CHARS: usize = 400;
+const MAX_TOOL_DESCRIPTION_CHARS: usize = 240;
 
 #[derive(Debug, Deserialize, Default)]
 struct ListMcpServersArgs {
@@ -33,6 +37,9 @@ struct ListMcpServersArgs {
 #[derive(Debug, Serialize)]
 struct ListMcpServersOutput {
     servers: Vec<McpServerSummary>,
+    servers_total: usize,
+    servers_truncated: bool,
+    tool_summaries_limit: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,13 +50,30 @@ struct McpServerSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     plugin_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    info: Option<McpServerInfo>,
+    info: Option<McpServerInfoSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<McpServerToolSummary>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools_total: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools_truncated: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpServerInfoSummary {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    website_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icons_total: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icons_truncated: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -96,9 +120,9 @@ impl ListMcpServersHandler {
         };
         let args: ListMcpServersArgs = parse_arguments(&arguments)?;
         let manager = session.services.mcp_connection_manager.load_full();
-        let server_names = manager.server_names();
+        let all_server_names = manager.server_names();
         if let Some(server) = args.server.as_deref()
-            && !server_names.iter().any(|name| name == server)
+            && !all_server_names.iter().any(|name| name == server)
         {
             return Err(FunctionCallError::RespondToModel(format!(
                 "unknown MCP server `{server}`"
@@ -116,36 +140,58 @@ impl ListMcpServersHandler {
             .unwrap_or(DEFAULT_MAX_TOOLS_PER_SERVER)
             .min(MAX_TOOLS_PER_SERVER);
 
-        let servers = server_names
+        let mut remaining_tool_summaries = MAX_TOTAL_TOOL_SUMMARIES;
+        let filtered_server_names = all_server_names
+            .iter()
+            .filter(|name| args.server.as_ref().is_none_or(|server| server == *name))
+            .cloned()
+            .collect::<Vec<_>>();
+        let servers_total = filtered_server_names.len();
+        let servers_truncated = servers_total > MAX_SERVERS;
+        let servers = filtered_server_names
             .into_iter()
+            .take(MAX_SERVERS)
             .filter(|name| args.server.as_ref().is_none_or(|server| server == name))
             .map(|name| {
                 let tools = tools_by_server.as_ref().map(|tools_by_server| {
+                    let max_tools_for_this_server =
+                        max_tools_per_server.min(remaining_tool_summaries);
                     limited_tools_for_server(
                         tools_by_server.get(&name).cloned().unwrap_or_default(),
-                        max_tools_per_server,
+                        max_tools_for_this_server,
                     )
                 });
+                if let Some(tools) = &tools {
+                    remaining_tool_summaries =
+                        remaining_tool_summaries.saturating_sub(tools.items.len());
+                }
                 McpServerSummary {
-                    origin: manager.server_origin(&name).map(str::to_string),
+                    origin: manager
+                        .server_origin(&name)
+                        .map(|origin| truncate_field(origin, MAX_SERVER_FIELD_CHARS)),
                     plugin_id: manager
                         .plugin_id_for_mcp_server_name(&name)
-                        .map(str::to_string),
-                    info: server_infos.get(&name).cloned(),
+                        .map(|plugin_id| truncate_field(plugin_id, MAX_SERVER_FIELD_CHARS)),
+                    info: server_infos.get(&name).map(bounded_server_info),
                     tools: tools.as_ref().map(|tools| tools.items.clone()),
                     tools_total: tools.as_ref().map(|tools| tools.total),
                     tools_truncated: tools.as_ref().map(|tools| tools.truncated),
-                    name,
+                    name: truncate_field(&name, MAX_SERVER_FIELD_CHARS),
                 }
             })
             .collect();
 
-        let output =
-            serde_json::to_string_pretty(&ListMcpServersOutput { servers }).map_err(|err| {
-                FunctionCallError::RespondToModel(format!(
-                    "failed to serialize list_mcp_servers output: {err}"
-                ))
-            })?;
+        let output = serde_json::to_string_pretty(&ListMcpServersOutput {
+            servers,
+            servers_total,
+            servers_truncated,
+            tool_summaries_limit: MAX_TOTAL_TOOL_SUMMARIES,
+        })
+        .map_err(|err| {
+            FunctionCallError::RespondToModel(format!(
+                "failed to serialize list_mcp_servers output: {err}"
+            ))
+        })?;
         Ok(boxed_tool_output(FunctionToolOutput::from_text(
             output, None,
         )))
@@ -177,6 +223,38 @@ fn limited_tools_for_server(
     }
 }
 
+fn bounded_server_info(info: &codex_protocol::mcp::McpServerInfo) -> McpServerInfoSummary {
+    let icons_total = info.icons.as_ref().map(Vec::len);
+    McpServerInfoSummary {
+        name: truncate_field(&info.name, MAX_SERVER_FIELD_CHARS),
+        title: info
+            .title
+            .as_deref()
+            .map(|title| truncate_field(title, MAX_SERVER_FIELD_CHARS)),
+        version: truncate_field(&info.version, MAX_SERVER_FIELD_CHARS),
+        description: info
+            .description
+            .as_deref()
+            .map(|description| truncate_field(description, MAX_SERVER_DESCRIPTION_CHARS)),
+        website_url: info
+            .website_url
+            .as_deref()
+            .map(|website_url| truncate_field(website_url, MAX_SERVER_FIELD_CHARS)),
+        icons_total,
+        icons_truncated: icons_total.map(|total| total > 0),
+    }
+}
+
+fn truncate_field(value: &str, max_chars: usize) -> String {
+    let mut truncated = value.chars().take(max_chars + 1).collect::<String>();
+    if truncated.chars().count() <= max_chars {
+        return truncated;
+    }
+    truncated = truncated.chars().take(max_chars).collect();
+    truncated.push_str("...");
+    truncated
+}
+
 fn group_tools_by_server(tools: Vec<ToolInfo>) -> BTreeMap<String, Vec<McpServerToolSummary>> {
     let mut tools_by_server: BTreeMap<String, Vec<McpServerToolSummary>> = BTreeMap::new();
     for tool in tools {
@@ -187,13 +265,13 @@ fn group_tools_by_server(tools: Vec<ToolInfo>) -> BTreeMap<String, Vec<McpServer
             .as_deref()
             .map(str::trim)
             .filter(|description| !description.is_empty())
-            .map(str::to_string);
+            .map(|description| truncate_field(description, MAX_TOOL_DESCRIPTION_CHARS));
         tools_by_server
             .entry(server_name)
             .or_default()
             .push(McpServerToolSummary {
                 name: format!("{}.{}", tool.callable_namespace, tool.callable_name),
-                raw_name: tool.tool.name.to_string(),
+                raw_name: truncate_field(&tool.tool.name, MAX_SERVER_FIELD_CHARS),
                 description,
             });
     }
@@ -236,6 +314,59 @@ mod tests {
                 description: Some("Look up docs".to_string()),
             }])
         );
+    }
+
+    #[test]
+    fn groups_tools_by_server_caps_model_visible_fields() {
+        let long_description = "d".repeat(MAX_TOOL_DESCRIPTION_CHARS + 20);
+        let long_raw_name = "raw".repeat(MAX_SERVER_FIELD_CHARS);
+        let tools = group_tools_by_server(vec![ToolInfo {
+            server_name: "docs".to_string(),
+            supports_parallel_tool_calls: false,
+            server_origin: None,
+            callable_name: "lookup".to_string(),
+            callable_namespace: "mcp__docs".to_string(),
+            namespace_description: None,
+            tool: rmcp::model::Tool::new(
+                long_raw_name,
+                long_description,
+                Arc::new(Default::default()),
+            ),
+            connector_id: None,
+            connector_name: None,
+            plugin_display_names: Vec::new(),
+        }]);
+        let tool = &tools.get("docs").expect("docs tools")[0];
+
+        assert!(tool.raw_name.len() <= MAX_SERVER_FIELD_CHARS + 3);
+        assert!(
+            tool.description.as_ref().expect("description").len() <= MAX_TOOL_DESCRIPTION_CHARS + 3
+        );
+    }
+
+    #[test]
+    fn bounded_server_info_summarizes_icons_without_serializing_them() {
+        let info = codex_protocol::mcp::McpServerInfo {
+            name: "n".repeat(MAX_SERVER_FIELD_CHARS + 1),
+            title: Some("t".repeat(MAX_SERVER_FIELD_CHARS + 1)),
+            version: "v".repeat(MAX_SERVER_FIELD_CHARS + 1),
+            description: Some("d".repeat(MAX_SERVER_DESCRIPTION_CHARS + 1)),
+            icons: Some(vec![serde_json::json!({
+                "src": "x".repeat(10_000),
+            })]),
+            website_url: Some("w".repeat(MAX_SERVER_FIELD_CHARS + 1)),
+        };
+
+        let summary = bounded_server_info(&info);
+
+        assert!(summary.name.len() <= MAX_SERVER_FIELD_CHARS + 3);
+        assert!(summary.title.expect("title").len() <= MAX_SERVER_FIELD_CHARS + 3);
+        assert!(summary.version.len() <= MAX_SERVER_FIELD_CHARS + 3);
+        assert!(
+            summary.description.expect("description").len() <= MAX_SERVER_DESCRIPTION_CHARS + 3
+        );
+        assert_eq!(summary.icons_total, Some(1));
+        assert_eq!(summary.icons_truncated, Some(true));
     }
 
     #[test]

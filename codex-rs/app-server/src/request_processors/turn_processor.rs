@@ -561,6 +561,11 @@ impl TurnRequestProcessor {
                 "`permissions` cannot be combined with `sandboxPolicy`",
             ));
         }
+        if model_provider.is_some() && model.is_none() {
+            return Err(invalid_request(
+                "`modelProvider` must be combined with `model`",
+            ));
+        }
 
         let collaboration_mode =
             collaboration_mode.map(|mode| self.normalize_collaboration_mode(mode));

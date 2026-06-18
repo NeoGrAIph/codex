@@ -15,8 +15,6 @@ export type { AdditionalFileSystemPermissions } from "./AdditionalFileSystemPerm
 export type { AdditionalNetworkPermissions } from "./AdditionalNetworkPermissions";
 export type { AdditionalPermissionProfile } from "./AdditionalPermissionProfile";
 export type { AgentMessageDeltaNotification } from "./AgentMessageDeltaNotification";
-export type { AgentRoleToolSelectionCatalogEntry } from "./AgentRoleToolSelectionCatalogEntry";
-export type { AgentRoleToolSelectionCatalogExposure } from "./AgentRoleToolSelectionCatalogExposure";
 export type { AnalyticsConfig } from "./AnalyticsConfig";
 export type { AppBranding } from "./AppBranding";
 export type { AppInfo } from "./AppInfo";
@@ -245,8 +243,6 @@ export type { Model } from "./Model";
 export type { ModelAvailabilityNux } from "./ModelAvailabilityNux";
 export type { ModelListParams } from "./ModelListParams";
 export type { ModelListResponse } from "./ModelListResponse";
-export type { ModelProvider } from "./ModelProvider";
-export type { ModelProviderAuthStatus } from "./ModelProviderAuthStatus";
 export type { ModelProviderCapabilitiesReadParams } from "./ModelProviderCapabilitiesReadParams";
 export type { ModelProviderCapabilitiesReadResponse } from "./ModelProviderCapabilitiesReadResponse";
 export type { ModelRerouteReason } from "./ModelRerouteReason";

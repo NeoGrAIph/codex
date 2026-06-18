@@ -623,6 +623,23 @@ impl CatalogRequestProcessor {
     }
 
     async fn handle_model_provider_config_mutation(&self) {
+        let next_config = match self.load_latest_config(/*fallback_cwd*/ None).await {
+            Ok(config) => config,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to rebuild user config after model provider mutation: {}",
+                    err.message
+                );
+                return;
+            }
+        };
+        let thread_ids = self.thread_manager.list_thread_ids().await;
+        for thread_id in thread_ids {
+            let Ok(thread) = self.thread_manager.get_thread(thread_id).await else {
+                continue;
+            };
+            thread.refresh_runtime_config(next_config.clone()).await;
+        }
         self.thread_manager.plugins_manager().clear_cache();
         self.thread_manager.skills_manager().clear_cache();
     }

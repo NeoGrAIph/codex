@@ -7,6 +7,7 @@ use crate::config::DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS;
 use crate::function_tool::FunctionCallError;
 use crate::init_state_db;
 use crate::session::tests::make_session_and_context;
+use crate::session::turn_context::TurnEnvironment;
 use crate::session_prefix::format_subagent_notification_message;
 use crate::thread_manager::StartThreadOptions;
 use crate::thread_manager::thread_store_from_config;
@@ -1778,6 +1779,78 @@ async fn thread_manager_agent_close_closes_path_backed_descendant() {
 }
 
 #[tokio::test]
+async fn thread_manager_agent_close_rejects_pathless_non_root_author() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should accept v2 path");
+
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker path should resolve");
+    let pathless_author = manager
+        .start_thread_with_options(StartThreadOptions {
+            config: (*turn.config).clone(),
+            initial_history: InitialHistory::New,
+            session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: Some("Pathless".to_string()),
+                agent_role: Some("worker".to_string()),
+                thread_note: None,
+                action_policy: None,
+            })),
+            thread_source: None,
+            dynamic_tools: Vec::new(),
+            metrics_service_name: None,
+            parent_trace: None,
+            environments: Vec::new(),
+            thread_extension_init: codex_extension_api::ExtensionDataInit::default(),
+        })
+        .await
+        .expect("pathless author thread should start");
+
+    let err = manager
+        .close_agent_from_workbench(pathless_author.thread_id, child_thread_id)
+        .await
+        .expect_err("pathless non-root author should be rejected");
+
+    assert!(
+        err.to_string()
+            .contains("Agent close requires a path-backed author.")
+    );
+}
+
+#[tokio::test]
 async fn multi_agent_v2_spawn_applies_cwd_and_thread_note_without_widening_permissions() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
@@ -1843,6 +1916,14 @@ async fn multi_agent_v2_spawn_applies_cwd_and_thread_note_without_widening_permi
         child_snapshot.environments.legacy_fallback_cwd,
         expected_cwd
     );
+    assert_eq!(child_snapshot.environments.environments.len(), 1);
+    assert!(
+        child_snapshot
+            .environments
+            .environments
+            .iter()
+            .all(|environment| environment.cwd == expected_cwd)
+    );
     assert_eq!(child_snapshot.workspace_roots, parent_workspace_roots);
     assert_eq!(child_snapshot.permission_profile, parent_permission_profile);
     assert_eq!(
@@ -1875,6 +1956,37 @@ async fn multi_agent_v2_spawn_applies_cwd_and_thread_note_without_widening_permi
         .find(|agent| agent.agent_name == "/root/worker")
         .expect("worker should be listed");
     assert_eq!(worker.thread_note.as_deref(), Some("check runtime cwd"));
+}
+
+#[tokio::test]
+async fn spawn_agent_child_environment_selections_apply_cwd_override_to_every_selection() {
+    let (_session, mut turn) = make_session_and_context().await;
+    let primary_environment = turn
+        .environments
+        .primary()
+        .expect("turn should have a primary environment")
+        .clone();
+    turn.environments
+        .turn_environments
+        .push(TurnEnvironment::new(
+            "secondary-test-environment".to_string(),
+            Arc::clone(&primary_environment.environment),
+            primary_environment.cwd().clone(),
+            None,
+        ));
+    let child_cwd = primary_environment.cwd().as_path().join("worker-area");
+    let child_cwd =
+        codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path_checked(&child_cwd)
+            .expect("child cwd should be absolute");
+
+    let child_environments = spawn_agent_child_environment_selections(&turn, &child_cwd, true);
+
+    assert_eq!(child_environments.len(), 2);
+    assert!(
+        child_environments
+            .iter()
+            .all(|environment| environment.cwd == child_cwd)
+    );
 }
 
 #[tokio::test]

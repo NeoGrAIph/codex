@@ -10,7 +10,7 @@ Skill inventory remains owned by `TurnContext.turn_skills.outcome`. Process exec
 - Tool producer: `add_shell_tools` registers `RunSkillScriptHandler` only in `ConfigShellToolType::UnifiedExec`.
 - Skill producer: loaded skills in `TurnSkillsContext`.
 - Execution projection: `RunSkillScriptHandler` rewrites to `exec_command` with `cmd`, `workdir`, optional primary-local `environment_id`, `yield_time_ms` and `max_output_tokens`.
-- Hook projection: `RunSkillScriptHandler` publishes Bash PreToolUse/PostToolUse payloads as `{ "command": ... }`; PreToolUse rewrite is stored in a hidden handler argument and becomes the delegated exec `cmd`.
+- Hook projection: `RunSkillScriptHandler` publishes Bash PreToolUse/PostToolUse payloads as `{ "command": ... }`; PreToolUse rewrite is stored in internal handler arguments with a handler-generated token and becomes the delegated exec `cmd` only when that token matches the call id and rewritten command.
 - Permission/sandbox projection: delegated `ExecCommandHandler` applies approval policy, turn permissions, sandbox permissions, telemetry, process tracking and output truncation.
 
 ## Data flow
@@ -21,7 +21,7 @@ Skill inventory remains owned by `TurnContext.turn_skills.outcome`. Process exec
 4. The handler resolves the requested enabled skill by exact skill name or `SKILL.md` path.
 5. The handler rejects empty, disabled, missing or ambiguous skills.
 6. The handler resolves the script under the skill's local `scripts/` directory, rejecting absolute paths, `..`, symlink escape, missing files and non-files.
-7. The registry runs Bash PreToolUse hooks for the outer `run_skill_script` call. If a hook rewrites `command`, the handler uses that command for the delegated exec call.
+7. The registry runs Bash PreToolUse hooks for the outer `run_skill_script` call. If a hook rewrites `command`, the handler records the rewritten command plus an internal token; model-supplied hidden rewrite fields without that token are rejected.
 8. The handler builds a shell-quoted command when no hook rewrite is present and delegates to `ExecCommandHandler`.
 9. Unified exec performs the actual process launch or approval/sandbox rejection.
 10. The registry runs Bash PostToolUse hooks using the actual unified exec output and `hook_command`.
@@ -34,6 +34,7 @@ Skill inventory remains owned by `TurnContext.turn_skills.outcome`. Process exec
 - No path traversal outside a skill's `scripts/` directory.
 - No validation/execution split across different filesystems: non-primary and remote environments are rejected in this iteration.
 - No silent fallback for non-local or unreadable skill scripts.
+- No model-supplied command rewrite bypass: hook rewrites must be produced by the registry path and validated by the handler-generated token.
 - Existing `exec_command` behavior remains the only execution contract.
 
 ## Intentional tradeoffs

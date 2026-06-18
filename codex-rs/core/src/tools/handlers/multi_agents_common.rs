@@ -23,6 +23,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentActionPolicySnapshot;
 use codex_protocol::protocol::SubAgentActionPolicySource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::normalize_thread_note_value;
 use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -307,9 +308,9 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
 pub(crate) fn apply_spawn_agent_cwd_override(
     config: &mut Config,
     cwd: Option<&str>,
-) -> Result<(), FunctionCallError> {
+) -> Result<bool, FunctionCallError> {
     let Some(cwd) = cwd.map(str::trim).filter(|cwd| !cwd.is_empty()) else {
-        return Ok(());
+        return Ok(false);
     };
     let requested_cwd = AbsolutePathBuf::from_absolute_path_checked(cwd).map_err(|err| {
         FunctionCallError::RespondToModel(format!(
@@ -368,7 +369,21 @@ pub(crate) fn apply_spawn_agent_cwd_override(
         .map_err(|err| {
             FunctionCallError::RespondToModel(format!("permission_profile is invalid: {err}"))
         })?;
-    Ok(())
+    Ok(true)
+}
+
+pub(crate) fn spawn_agent_child_environment_selections(
+    turn: &TurnContext,
+    child_cwd: &AbsolutePathBuf,
+    cwd_override_applied: bool,
+) -> Vec<TurnEnvironmentSelection> {
+    let mut environments = turn.environments.to_selections();
+    if cwd_override_applied {
+        for environment in &mut environments {
+            environment.cwd = child_cwd.clone();
+        }
+    }
+    environments
 }
 
 pub(crate) async fn apply_requested_spawn_agent_model_overrides(

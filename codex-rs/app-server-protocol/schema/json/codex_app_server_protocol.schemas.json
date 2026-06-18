@@ -6119,35 +6119,6 @@
       "AgentPath": {
         "type": "string"
       },
-      "AgentRoleToolSelectionCatalogEntry": {
-        "properties": {
-          "exposure": {
-            "$ref": "#/definitions/v2/AgentRoleToolSelectionCatalogExposure"
-          },
-          "name": {
-            "type": "string"
-          },
-          "selected": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "exposure",
-          "name",
-          "selected"
-        ],
-        "type": "object"
-      },
-      "AgentRoleToolSelectionCatalogExposure": {
-        "enum": [
-          "direct",
-          "deferred",
-          "directModelOnly",
-          "hidden",
-          "hosted"
-        ],
-        "type": "string"
-      },
       "AnalyticsConfig": {
         "additionalProperties": true,
         "properties": {
@@ -12092,69 +12063,6 @@
         ],
         "title": "ModelListResponse",
         "type": "object"
-      },
-      "ModelProvider": {
-        "properties": {
-          "active": {
-            "type": "boolean"
-          },
-          "authStatus": {
-            "$ref": "#/definitions/v2/ModelProviderAuthStatus"
-          },
-          "baseUrl": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "enabledInPicker": {
-            "type": "boolean"
-          },
-          "envKey": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "type": "string"
-          },
-          "modelCount": {
-            "format": "uint32",
-            "minimum": 0.0,
-            "type": "integer"
-          },
-          "name": {
-            "type": "string"
-          },
-          "wireApi": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "active",
-          "authStatus",
-          "enabledInPicker",
-          "id",
-          "modelCount",
-          "name",
-          "wireApi"
-        ],
-        "type": "object"
-      },
-      "ModelProviderAuthStatus": {
-        "enum": [
-          "openAiAuth",
-          "envKeyPresent",
-          "envKeyMissing",
-          "managedKeyPresent",
-          "managedKeyMissing",
-          "command",
-          "aws",
-          "inlineBearer",
-          "none"
-        ],
-        "type": "string"
       },
       "ModelProviderCapabilitiesReadParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",

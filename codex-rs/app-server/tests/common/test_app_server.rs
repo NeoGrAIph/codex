@@ -12,6 +12,9 @@ use tokio::process::ChildStdin;
 use tokio::process::ChildStdout;
 
 use anyhow::Context;
+use codex_app_server_protocol::AgentCloseParams;
+use codex_app_server_protocol::AgentFollowupSendParams;
+use codex_app_server_protocol::AgentMessageSendParams;
 use codex_app_server_protocol::AgentRoleToolSelectionCatalogReadParams;
 use codex_app_server_protocol::AppsListParams;
 use codex_app_server_protocol::CancelLoginAccountParams;
@@ -642,6 +645,30 @@ impl TestAppServer {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("agentRole/toolSelectionCatalog/read", params)
             .await
+    }
+
+    pub async fn send_agent_message_send_request(
+        &mut self,
+        params: AgentMessageSendParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/message/send", params).await
+    }
+
+    pub async fn send_agent_followup_send_request(
+        &mut self,
+        params: AgentFollowupSendParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/followup/send", params).await
+    }
+
+    pub async fn send_agent_close_request(
+        &mut self,
+        params: AgentCloseParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/close", params).await
     }
 
     pub async fn send_model_provider_config_write_request(

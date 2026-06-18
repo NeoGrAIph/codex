@@ -91,9 +91,11 @@ async fn handle_spawn_agent(
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
-    apply_spawn_agent_cwd_override(&mut config, args.cwd.as_deref())?;
+    let cwd_override_applied = apply_spawn_agent_cwd_override(&mut config, args.cwd.as_deref())?;
     let thread_note = normalize_thread_note(args.thread_note)?;
     let action_policy = subagent_action_policy_snapshot(role_name);
+    let child_environments =
+        spawn_agent_child_environment_selections(turn.as_ref(), &config.cwd, cwd_override_applied);
 
     let spawn_source = thread_spawn_source(
         session.thread_id,
@@ -133,7 +135,7 @@ async fn handle_spawn_agent(
                 fork_parent_spawn_call_id: fork_mode.as_ref().map(|_| call_id.clone()),
                 fork_mode,
                 parent_thread_id: Some(session.thread_id),
-                environments: Some(turn.environments.to_selections()),
+                environments: Some(child_environments),
                 thread_note,
             },
         ),

@@ -137,7 +137,7 @@ impl App {
             })
             .collect();
         let mut items = items;
-        let root_owned_workbench = self.current_agent_picker_owner_path() == "/root";
+        let root_owned_workbench = self.is_root_owned_agent_workbench();
         if root_owned_workbench {
             for (thread_id, entry) in self.agent_navigation.ordered_threads() {
                 if self.agent_picker_message_preflight(thread_id).is_err() {
@@ -821,14 +821,8 @@ impl App {
         if target_agent_path == "/root" {
             return Err("Cannot interrupt the root agent from the agent workbench.".to_string());
         }
-        let current_agent_path = self
-            .active_thread_id
-            .filter(|active_thread_id| self.primary_thread_id != Some(*active_thread_id))
-            .and_then(|active_thread_id| self.agent_navigation.get(&active_thread_id))
-            .and_then(|entry| entry.agent_path.as_deref())
-            .map(str::trim)
-            .filter(|agent_path| !agent_path.is_empty())
-            .unwrap_or("/root");
+        let current_agent_path =
+            self.current_agent_picker_path_backed_owner_path("Cannot interrupt agent")?;
         if target_agent_path == current_agent_path {
             return Err("An agent cannot interrupt itself from the agent workbench.".to_string());
         }
@@ -862,7 +856,8 @@ impl App {
         if target_agent_path == "/root" {
             return Err("Cannot close the root agent from the agent workbench.".to_string());
         }
-        let current_agent_path = self.current_agent_picker_owner_path();
+        let current_agent_path =
+            self.current_agent_picker_path_backed_owner_path("Cannot close agent")?;
         if target_agent_path == current_agent_path {
             return Err("An agent cannot close itself from the agent workbench.".to_string());
         }
@@ -875,14 +870,10 @@ impl App {
         }
     }
 
-    fn current_agent_picker_owner_path(&self) -> &str {
+    fn is_root_owned_agent_workbench(&self) -> bool {
         self.active_thread_id
             .filter(|active_thread_id| self.primary_thread_id != Some(*active_thread_id))
-            .and_then(|active_thread_id| self.agent_navigation.get(&active_thread_id))
-            .and_then(|entry| entry.agent_path.as_deref())
-            .map(str::trim)
-            .filter(|agent_path| !agent_path.is_empty())
-            .unwrap_or("/root")
+            .is_none()
     }
 
     fn current_agent_picker_path_backed_owner_path(

@@ -767,9 +767,15 @@ impl ThreadManager {
         let author_session_source = author_thread.config_snapshot().await.session_source;
         let target_session_source = target_thread.config_snapshot().await.session_source;
 
-        let author_path = author_session_source
-            .get_agent_path()
-            .unwrap_or_else(AgentPath::root);
+        let author_path = match author_session_source.get_agent_path() {
+            Some(agent_path) => agent_path,
+            None if author_session_source.is_non_root_agent() => {
+                return Err(CodexErr::InvalidRequest(
+                    "Agent close requires a path-backed author.".to_string(),
+                ));
+            }
+            None => AgentPath::root(),
+        };
         let target_path = target_session_source.get_agent_path().ok_or_else(|| {
             CodexErr::InvalidRequest(
                 "Agent close requires a path-backed sub-agent target.".to_string(),

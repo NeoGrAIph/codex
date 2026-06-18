@@ -10,7 +10,7 @@
 
 ## Как работает для пользователя
 
-Codex получает tool `list_mcp_servers`, когда в текущей сессии есть configured MCP servers. Tool возвращает имена server, origin/plugin metadata и, по `include_tools=true`, bounded список model-visible MCP tool names: canonical `namespace.name` плюс исходный `raw_name` там, где он нужен для диагностики. Tool summaries capped per server: default `max_tools_per_server=50`, hard cap `200`, а output содержит `tools_total` и `tools_truncated`. Для поиска конкретного deferred MCP tool agent использует native `tool_search`; сами MCP tool calls продолжают идти через `McpHandler`.
+Codex получает tool `list_mcp_servers`, когда в текущей сессии есть configured MCP servers. Tool возвращает имена server, bounded origin/plugin metadata и, по `include_tools=true`, bounded список model-visible MCP tool names: canonical `namespace.name` плюс исходный truncated `raw_name` там, где он нужен для диагностики. Output имеет hard caps на количество servers, суммарное количество tool summaries, длину server/tool fields и icon projection; вместо raw icons возвращаются только counts/truncation flags. Tool summaries capped per server: default `max_tools_per_server=50`, hard cap `200`, а output содержит `servers_total`, `servers_truncated`, `tools_total`, `tools_truncated` и `tool_summaries_limit`. Для поиска конкретного deferred MCP tool agent использует native `tool_search`; сами MCP tool calls продолжают идти через `McpHandler`.
 
 Польза: agent может сначала увидеть доступные MCP servers и только затем искать или вызывать нужные MCP tools, не требуя hardcoded tool lists и не расширяя основной контекст всеми deferred tools.
 
@@ -42,7 +42,7 @@ Status: `implemented-first-iteration`. Native release имеет deferred MCP/to
 - MCP owner: `codex-rs/codex-mcp/src/connection_manager.rs`.
 - Producers: `Session::built_tools` supplies direct/deferred MCP tool lists; `spec_plan` wires discovery alongside MCP resource/direct/deferred tools.
 - Consumers: model-visible `list_mcp_servers`, existing `tool_search`, existing MCP tool handlers.
-- Permission/security: discovery is read-only and does not widen sandbox, network, or tool-call permissions; optional tool lists are bounded per server to avoid unbounded model-visible output.
+- Permission/security: discovery is read-only and does not widen sandbox, network, or tool-call permissions; optional tool lists and server metadata are bounded by hard caps to avoid unbounded model-visible output.
 - Persistence/resume: no persisted state or rollout format changes.
 - Intentionally unaffected: app-server protocol/schema shape, MCP config persistence, plugin install flow, MCP startup/auth semantics, MCP tool execution semantics.
 
@@ -57,5 +57,6 @@ Status: `implemented-first-iteration`. Native release имеет deferred MCP/to
 ## Doc changelog
 
 - 2026-06-18: v2 закрепил native app-server refresh acceptance без нового model-visible mutating tool: focused `codex-app-server` test подтвердил, что `config/mcpServer/reload` делает новый MCP tool видимым на следующем turn.
+- 2026-06-18: audit hardening: `list_mcp_servers` now caps server count, total tool summaries, raw field lengths, tool descriptions and icon projection; output reports truncation metadata instead of serializing unbounded MCP server info.
 - 2026-06-18: Актуализирован verification evidence для `fork/140`: `cargo check -p codex-core`, focused `codex-core` MCP/run_skill pass 15/15 и `just test -p codex-mcp` 82/82.
 - 2026-06-17: Зафиксирована первая `fork/140` итерация: `list_mcp_servers` через native tool registry и read-only `McpConnectionManager` metadata with bounded optional tool summaries.

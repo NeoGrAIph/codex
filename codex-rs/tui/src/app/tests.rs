@@ -3055,6 +3055,8 @@ async fn agent_picker_interrupt_preflight_enforces_status_and_path_ownership() {
         ThreadId::from_string("00000000-0000-0000-0000-000000000205").expect("valid thread");
     let root_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000206").expect("valid thread");
+    let pathless_owner_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000207").expect("valid thread");
 
     app.primary_thread_id = Some(main_thread_id);
     app.active_thread_id = Some(owner_thread_id);
@@ -3072,6 +3074,14 @@ async fn agent_picker_interrupt_preflight_enforces_status_and_path_ownership() {
                 is_running_hint: true,
             });
     }
+    app.agent_navigation.upsert(
+        pathless_owner_thread_id,
+        Some("Pathless owner".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+    app.agent_navigation
+        .set_status(pathless_owner_thread_id, AgentPickerThreadStatus::Running);
 
     assert_eq!(
         app.agent_picker_interrupt_preflight(descendant_thread_id),
@@ -3091,6 +3101,12 @@ async fn agent_picker_interrupt_preflight_enforces_status_and_path_ownership() {
     assert_eq!(
         app.agent_picker_interrupt_preflight(root_thread_id),
         Err("Cannot interrupt the root agent from the agent workbench.".to_string())
+    );
+
+    app.active_thread_id = Some(pathless_owner_thread_id);
+    assert_eq!(
+        app.agent_picker_interrupt_preflight(descendant_thread_id),
+        Err("Cannot interrupt agent from an agent thread without agent_path.".to_string())
     );
 
     app.active_thread_id = Some(main_thread_id);
@@ -3132,6 +3148,8 @@ async fn agent_picker_close_preflight_enforces_status_and_path_ownership() {
         ThreadId::from_string("00000000-0000-0000-0000-000000000305").expect("valid thread");
     let root_thread_id =
         ThreadId::from_string("00000000-0000-0000-0000-000000000306").expect("valid thread");
+    let pathless_owner_thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000307").expect("valid thread");
 
     app.primary_thread_id = Some(main_thread_id);
     app.active_thread_id = Some(owner_thread_id);
@@ -3151,6 +3169,12 @@ async fn agent_picker_close_preflight_enforces_status_and_path_ownership() {
     app.agent_navigation.upsert(
         pathless_thread_id,
         Some("Pathless".to_string()),
+        Some("worker".to_string()),
+        /*is_closed*/ false,
+    );
+    app.agent_navigation.upsert(
+        pathless_owner_thread_id,
+        Some("Pathless owner".to_string()),
         Some("worker".to_string()),
         /*is_closed*/ false,
     );
@@ -3177,6 +3201,12 @@ async fn agent_picker_close_preflight_enforces_status_and_path_ownership() {
     assert_eq!(
         app.agent_picker_close_preflight(pathless_thread_id),
         Err("Cannot close an agent thread without agent_path.".to_string())
+    );
+
+    app.active_thread_id = Some(pathless_owner_thread_id);
+    assert_eq!(
+        app.agent_picker_close_preflight(descendant_thread_id),
+        Err("Cannot close agent from an agent thread without agent_path.".to_string())
     );
 
     app.active_thread_id = Some(main_thread_id);

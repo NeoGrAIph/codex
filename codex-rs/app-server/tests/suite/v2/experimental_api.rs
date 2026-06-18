@@ -3,6 +3,10 @@ use app_test_support::DEFAULT_CLIENT_NAME;
 use app_test_support::TestAppServer;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::to_response;
+use codex_app_server_protocol::AgentCloseParams;
+use codex_app_server_protocol::AgentFollowupSendParams;
+use codex_app_server_protocol::AgentMessageSendParams;
+use codex_app_server_protocol::AgentRoleToolSelectionCatalogReadParams;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::InitializeCapabilities;
@@ -10,6 +14,10 @@ use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::MockExperimentalMethodParams;
+use codex_app_server_protocol::ModelProviderAuthRemoveParams;
+use codex_app_server_protocol::ModelProviderAuthWriteParams;
+use codex_app_server_protocol::ModelProviderConfigWriteParams;
+use codex_app_server_protocol::ModelProviderListParams;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadMemoryMode;
 use codex_app_server_protocol::ThreadMemoryModeSetParams;
@@ -18,6 +26,7 @@ use codex_app_server_protocol::ThreadRealtimeStartTransport;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_model_provider_info::DEEPSEEK_PROVIDER_ID;
 use codex_protocol::protocol::RealtimeOutputModality;
 use pretty_assertions::assert_eq;
 use std::path::Path;
@@ -164,6 +173,174 @@ async fn thread_settings_update_requires_experimental_api_capability() -> Result
     )
     .await??;
     assert_experimental_capability_error(error, "thread/settings/update");
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_provider_list_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    initialize_without_experimental_api(&mut mcp).await?;
+
+    let request_id = mcp
+        .send_model_provider_list_request(ModelProviderListParams {})
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "modelProvider/list");
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_provider_config_write_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    initialize_without_experimental_api(&mut mcp).await?;
+
+    let request_id = mcp
+        .send_model_provider_config_write_request(ModelProviderConfigWriteParams {
+            provider_id: DEEPSEEK_PROVIDER_ID.to_string(),
+            enabled_in_picker: Some(true),
+            set_active: false,
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "modelProvider/config/write");
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_provider_auth_write_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    initialize_without_experimental_api(&mut mcp).await?;
+
+    let request_id = mcp
+        .send_model_provider_auth_write_request(ModelProviderAuthWriteParams {
+            provider_id: DEEPSEEK_PROVIDER_ID.to_string(),
+            api_key: "test-key".to_string(),
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "modelProvider/auth/write");
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_provider_auth_remove_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    initialize_without_experimental_api(&mut mcp).await?;
+
+    let request_id = mcp
+        .send_model_provider_auth_remove_request(ModelProviderAuthRemoveParams {
+            provider_id: DEEPSEEK_PROVIDER_ID.to_string(),
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "modelProvider/auth/remove");
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_role_tool_selection_catalog_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    initialize_without_experimental_api(&mut mcp).await?;
+
+    let request_id = mcp
+        .send_agent_role_tool_selection_catalog_read_request(
+            AgentRoleToolSelectionCatalogReadParams {
+                thread_id: "thr_123".to_string(),
+            },
+        )
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "agentRole/toolSelectionCatalog/read");
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_message_send_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    initialize_without_experimental_api(&mut mcp).await?;
+
+    let request_id = mcp
+        .send_agent_message_send_request(AgentMessageSendParams {
+            author_thread_id: "thr_author".to_string(),
+            target_thread_id: "thr_target".to_string(),
+            message: "hello".to_string(),
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "agent/message/send");
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_followup_send_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    initialize_without_experimental_api(&mut mcp).await?;
+
+    let request_id = mcp
+        .send_agent_followup_send_request(AgentFollowupSendParams {
+            author_thread_id: "thr_author".to_string(),
+            target_thread_id: "thr_target".to_string(),
+            message: "continue".to_string(),
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "agent/followup/send");
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_close_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    initialize_without_experimental_api(&mut mcp).await?;
+
+    let request_id = mcp
+        .send_agent_close_request(AgentCloseParams {
+            author_thread_id: "thr_author".to_string(),
+            target_thread_id: "thr_target".to_string(),
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "agent/close");
     Ok(())
 }
 
@@ -334,6 +511,23 @@ fn default_client_info() -> ClientInfo {
         title: None,
         version: "0.1.0".to_string(),
     }
+}
+
+async fn initialize_without_experimental_api(mcp: &mut TestAppServer) -> Result<()> {
+    let init = mcp
+        .initialize_with_capabilities(
+            default_client_info(),
+            Some(InitializeCapabilities {
+                experimental_api: false,
+                request_attestation: false,
+                opt_out_notification_methods: None,
+            }),
+        )
+        .await?;
+    let JSONRPCMessage::Response(_) = init else {
+        anyhow::bail!("expected initialize response, got {init:?}");
+    };
+    Ok(())
 }
 
 fn assert_experimental_capability_error(error: JSONRPCError, reason: &str) {

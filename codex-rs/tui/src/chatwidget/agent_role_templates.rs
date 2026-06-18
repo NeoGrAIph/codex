@@ -19,6 +19,7 @@ use crate::legacy_core::agent_role_templates::update_user_agent_role_template_fr
 use crate::legacy_core::agent_role_templates::user_agent_role_template_draft_with_allowed_tools;
 use crate::multi_agents::AgentRoleRuntimeUsage;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 const AGENT_ROLE_TEMPLATES_TITLE: &str = "Agent Role Templates";
 const NATIVE_PROFILE_FIELDS: &str = "Native profile fields: name, description, nickname_candidates, developer_instructions, model, model_provider, model_reasoning_effort, service_tier";
@@ -190,31 +191,14 @@ impl ChatWidget {
         catalog_entries: Vec<AgentRoleToolSelectionCatalogEntry>,
     ) {
         let tx = self.app_event_tx.clone();
-        let selected_tools = selected_tools
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>();
+        let selected_tools = selected_tools.into_iter().collect::<BTreeSet<_>>();
         let mut entries = catalog_entries;
         entries.sort_by(|left, right| {
             exposure_bucket_order(&left.exposure)
                 .cmp(&exposure_bucket_order(&right.exposure))
                 .then_with(|| left.name.cmp(&right.name))
         });
-        let items = entries
-            .iter()
-            .enumerate()
-            .map(|(idx, entry)| {
-                let next_exposure = entries.get(idx + 1).map(|entry| &entry.exposure);
-                MultiSelectItem {
-                    id: entry.name.clone(),
-                    name: entry.name.clone(),
-                    description: Some(format!("{} tool id", exposure_label(&entry.exposure))),
-                    enabled: selected_tools.contains(&entry.name),
-                    orderable: false,
-                    section_break_after: next_exposure
-                        .is_some_and(|next_exposure| next_exposure != &entry.exposure),
-                }
-            })
-            .collect::<Vec<_>>();
+        let items = agent_role_tool_selection_items(&entries, &selected_tools);
         let role_name_for_preview = role_name.clone();
         let role_name_for_confirm = role_name.clone();
         let role_path_for_confirm = role_path;
@@ -681,7 +665,7 @@ fn role_template_detail(
                 lines.push(entry.availability.label().to_string());
             } else {
                 lines.push(
-                    "Built-in role; create a user template to customize behavior.".to_string(),
+                    "Built-in role; create a separate user template or edit native config to shadow it.".to_string(),
                 );
                 lines.push(format!("Availability: {}.", entry.availability.label()));
             }
@@ -839,6 +823,56 @@ fn exposure_label(exposure: &AgentRoleToolSelectionCatalogExposure) -> &'static 
     }
 }
 
+fn agent_role_tool_selection_items(
+    entries: &[AgentRoleToolSelectionCatalogEntry],
+    selected_tools: &BTreeSet<String>,
+) -> Vec<MultiSelectItem> {
+    let catalog_names = entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut items = entries
+        .iter()
+        .enumerate()
+        .map(|(idx, entry)| {
+            let next_exposure = entries.get(idx + 1).map(|entry| &entry.exposure);
+            MultiSelectItem {
+                id: entry.name.clone(),
+                name: entry.name.clone(),
+                description: Some(format!("{} tool id", exposure_label(&entry.exposure))),
+                enabled: selected_tools.contains(&entry.name),
+                orderable: false,
+                section_break_after: next_exposure
+                    .is_some_and(|next_exposure| next_exposure != &entry.exposure),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let missing_selected_tools = selected_tools
+        .iter()
+        .filter(|tool| !catalog_names.contains(tool.as_str()))
+        .collect::<Vec<_>>();
+    if !missing_selected_tools.is_empty()
+        && let Some(last) = items.last_mut()
+    {
+        last.section_break_after = true;
+    }
+    for tool in missing_selected_tools {
+        items.push(MultiSelectItem {
+            id: tool.clone(),
+            name: tool.clone(),
+            description: Some(
+                "allowed tool id not available in the current thread catalog".to_string(),
+            ),
+            enabled: true,
+            orderable: false,
+            section_break_after: false,
+        });
+    }
+
+    items
+}
+
 fn exposure_bucket_order(exposure: &AgentRoleToolSelectionCatalogExposure) -> u8 {
     match exposure {
         AgentRoleToolSelectionCatalogExposure::Direct => 0,
@@ -858,4 +892,39 @@ fn short_role_template_description(description: &str) -> String {
 
 fn file_url(path: &Path) -> Option<String> {
     Url::from_file_path(path).ok().map(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn tool_selection_items_preserve_selected_tools_missing_from_catalog() {
+        let entries = vec![AgentRoleToolSelectionCatalogEntry {
+            name: "update_plan".to_string(),
+            selected: false,
+            exposure: AgentRoleToolSelectionCatalogExposure::Direct,
+        }];
+        let selected_tools = ["future_tool".to_string(), "update_plan".to_string()]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+
+        let items = agent_role_tool_selection_items(&entries, &selected_tools);
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| (item.id.as_str(), item.enabled, item.description.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("update_plan", true, Some("direct tool id")),
+                (
+                    "future_tool",
+                    true,
+                    Some("allowed tool id not available in the current thread catalog"),
+                ),
+            ]
+        );
+    }
 }
