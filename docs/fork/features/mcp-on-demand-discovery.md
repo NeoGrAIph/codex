@@ -5,8 +5,8 @@
 - Code name: `mcp-on-demand-discovery`
 - Status: первая итерация переноса на `fork/140` реализована и локально проверена.
 - Goal: дать Codex model-visible путь для обнаружения MCP servers по требованию без предварительной загрузки всех MCP tools в основной контекст.
-- Scope in: tool registry wiring, read-only server discovery tool, deferred/direct MCP tool visibility, docs, focused tests.
-- Scope out: запуск новых MCP servers из tool call, plugin marketplace discovery/install flow, app-server protocol/schema changes, MCP startup/refresh lifecycle changes.
+- Scope in: tool registry wiring, read-only server discovery tool, deferred/direct MCP tool visibility, native app-server refresh acceptance, docs, focused tests.
+- Scope out: запуск новых MCP servers из tool call, model-visible MCP refresh/create tool, plugin marketplace discovery/install flow, app-server protocol/schema changes, MCP startup/refresh lifecycle changes.
 
 ## Как работает для пользователя
 
@@ -34,6 +34,8 @@ Status: `implemented-first-iteration`. Native release имеет deferred MCP/to
 
 Современный upstream имеет более развитые plugin/MCP surfaces, поэтому перенос сделан как additive discovery поверх native registry/manager path. `list_mcp_servers` не создаёт MCP servers, не перезапускает manager и не держит parallel cache; он читает already configured/running manager state. App-server refresh и plugin-change refresh остаются upstream behavior.
 
+`fork/140` v2 дополнительно закрепляет acceptance для native app-server refresh: `config/mcpServer/reload` перечитывает config, queue'ит `Op::RefreshMcpServers` для loaded threads, а core применяет новый `McpConnectionManager` перед следующим turn, после чего newly configured MCP tools видны через обычный tool projection. Это не новая model-visible mutating surface.
+
 ## Integration and compatibility
 
 - Native source of truth: `codex-rs/core/src/tools/spec_plan.rs`, `ToolRegistry`, `ToolExposure`.
@@ -42,16 +44,18 @@ Status: `implemented-first-iteration`. Native release имеет deferred MCP/to
 - Consumers: model-visible `list_mcp_servers`, existing `tool_search`, existing MCP tool handlers.
 - Permission/security: discovery is read-only and does not widen sandbox, network, or tool-call permissions; optional tool lists are bounded per server to avoid unbounded model-visible output.
 - Persistence/resume: no persisted state or rollout format changes.
-- Intentionally unaffected: app-server protocol/schema, MCP config loading, plugin install flow, MCP startup/refresh, MCP tool execution semantics.
+- Intentionally unaffected: app-server protocol/schema shape, MCP config persistence, plugin install flow, MCP startup/auth semantics, MCP tool execution semantics.
 
 ## Verification matrix
 
 - `cargo check -p codex-core`: compile handler/spec wiring and cross-crate manager method.
 - `just test -p codex-core`: focused core planning/handler tests.
 - `just test -p codex-mcp`: focused manager crate compatibility.
+- `just test -p codex-app-server mcp_server_refresh_exposes_added_tools_on_next_turn`: native app-server refresh acceptance.
 - `git diff --check`: whitespace guard.
 
 ## Doc changelog
 
+- 2026-06-18: v2 закрепил native app-server refresh acceptance без нового model-visible mutating tool: focused `codex-app-server` test подтвердил, что `config/mcpServer/reload` делает новый MCP tool видимым на следующем turn.
 - 2026-06-18: Актуализирован verification evidence для `fork/140`: `cargo check -p codex-core`, focused `codex-core` MCP/run_skill pass 15/15 и `just test -p codex-mcp` 82/82.
 - 2026-06-17: Зафиксирована первая `fork/140` итерация: `list_mcp_servers` через native tool registry и read-only `McpConnectionManager` metadata with bounded optional tool summaries.

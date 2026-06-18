@@ -913,6 +913,12 @@ impl TestAppServer {
         self.send_request("mcpServerStatus/list", params).await
     }
 
+    /// Send a `config/mcpServer/reload` JSON-RPC request.
+    pub async fn send_mcp_server_refresh_request(&mut self) -> anyhow::Result<i64> {
+        self.send_request("config/mcpServer/reload", /*params*/ None)
+            .await
+    }
+
     /// Send a JSON-RPC request with raw params for protocol-level validation tests.
     pub async fn send_raw_request(
         &mut self,

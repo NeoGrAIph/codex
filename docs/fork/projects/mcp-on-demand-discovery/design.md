@@ -34,11 +34,13 @@ The canonical runtime state remains owned by `McpConnectionManager`. The fork ad
 
 ## Intentional tradeoffs
 
-This iteration does not connect arbitrary new MCP servers from a tool call. That historical behavior overlaps with current plugin/config/app-server refresh surfaces and needs a separate contract if restored. The safe first step is inventory discovery for servers already configured and owned by the native manager.
+This iteration does not connect arbitrary new MCP servers from a model-visible tool call. That historical behavior overlaps with current plugin/config/app-server refresh surfaces and needs a separate contract if restored. The safe first step is inventory discovery for servers already configured and owned by the native manager.
+
+`fork/140` v2 keeps refresh control in the native app-server surface: clients call `config/mcpServer/reload`, app-server reloads the latest config, builds per-thread `McpServerRefreshConfig`, queues `Op::RefreshMcpServers`, and core replaces the thread's `McpConnectionManager` before the next turn. This is deliberately not exposed as a new model-visible mutating tool, because model-triggered MCP refresh/create would need a separate permissions, auth-failure, config-write and audit contract.
 
 ## Intentionally unaffected surfaces
 
-- App-server protocol/schema and `mcp_server_refresh`.
+- App-server protocol/schema shape: v2 only verifies the existing `config/mcpServer/reload` path.
 - MCP config parsing and persistence.
 - Plugin install/list tools.
 - MCP startup events and auth flows.
