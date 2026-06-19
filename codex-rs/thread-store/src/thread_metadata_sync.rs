@@ -207,6 +207,7 @@ impl ThreadMetadataSync {
                     update.agent_role = Some(meta_line.meta.agent_role.clone());
                     update.agent_path = Some(meta_line.meta.agent_path.clone());
                     update.thread_note = Some(meta_line.meta.thread_note.clone());
+                    update.agent_hidden = Some(meta_line.meta.agent_hidden);
                     if let Some(model_provider) = meta_line.meta.model_provider.clone()
                         && !model_provider.is_empty()
                     {
@@ -355,6 +356,7 @@ fn update_has_metadata_facts(update: &ThreadMetadataPatch) -> bool {
         || update.agent_role.is_some()
         || update.agent_path.is_some()
         || update.thread_note.is_some()
+        || update.agent_hidden.is_some()
         || update.cwd.is_some()
         || update.cli_version.is_some()
         || update.approval_mode.is_some()

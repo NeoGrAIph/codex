@@ -1769,6 +1769,22 @@ impl App {
                 self.close_agent_thread_confirmed(app_server, thread_id)
                     .await?;
             }
+            AppEvent::DismissAgentThread { thread_id } => {
+                self.dismiss_agent_thread(app_server, thread_id).await?;
+            }
+            AppEvent::OpenAgentRetryConfirmation { thread_id } => {
+                self.open_agent_retry_confirmation(thread_id);
+            }
+            AppEvent::RetryAgentThreadConfirmed { thread_id } => {
+                self.retry_agent_thread_confirmed(app_server, thread_id)
+                    .await?;
+            }
+            AppEvent::OpenAgentStopAllConfirmation => {
+                self.open_agent_stop_all_confirmation();
+            }
+            AppEvent::StopAllAgentThreadsConfirmed => {
+                self.stop_all_agent_threads_confirmed(app_server).await?;
+            }
             AppEvent::OpenAgentRoleTemplates => {
                 let runtime_catalog = match self.chat_widget.thread_id() {
                     Some(thread_id) => Some(
@@ -1795,6 +1811,29 @@ impl App {
                 self.chat_widget
                     .open_agent_role_template_create_prompt_from_current_model();
             }
+            AppEvent::OpenAgentRoleTemplateCreateModelPicker => {
+                self.chat_widget
+                    .open_agent_role_template_create_model_picker();
+            }
+            AppEvent::OpenAgentRoleTemplateEditModelPicker {
+                role_name,
+                role_path,
+            } => {
+                self.chat_widget
+                    .open_agent_role_template_edit_model_picker(role_name, role_path);
+            }
+            AppEvent::OpenAgentRoleTemplateCreateReasoningPicker { model } => {
+                self.chat_widget
+                    .open_agent_role_template_create_reasoning_picker(model);
+            }
+            AppEvent::OpenAgentRoleTemplateEditReasoningPicker {
+                role_name,
+                role_path,
+                model,
+            } => {
+                self.chat_widget
+                    .open_agent_role_template_edit_reasoning_picker(role_name, role_path, model);
+            }
             AppEvent::OpenAgentRoleTemplateToolSelectionPicker { catalog_entries } => {
                 self.chat_widget
                     .open_agent_role_template_tool_selection_picker(catalog_entries);
@@ -1813,9 +1852,78 @@ impl App {
                         catalog_entries,
                     );
             }
+            AppEvent::OpenAgentRoleTemplateDeniedToolSelectionPickerForRole {
+                role_name,
+                role_path,
+                selected_tools,
+                catalog_entries,
+            } => {
+                self.chat_widget
+                    .open_agent_role_template_denied_tool_selection_picker_for_role(
+                        role_name,
+                        role_path,
+                        selected_tools,
+                        catalog_entries,
+                    );
+            }
+            AppEvent::OpenAgentRoleTemplateEditPrompt {
+                role_name,
+                role_path,
+            } => {
+                self.chat_widget
+                    .open_agent_role_template_edit_prompt(role_name, role_path);
+            }
+            AppEvent::OpenAgentRoleTemplateEditPromptFromCurrentModel {
+                role_name,
+                role_path,
+            } => {
+                self.chat_widget
+                    .open_agent_role_template_edit_prompt_from_current_model(role_name, role_path);
+            }
+            AppEvent::OpenAgentRoleTemplateEditPromptFromCurrentModelProvider {
+                role_name,
+                role_path,
+            } => {
+                self.chat_widget
+                    .open_agent_role_template_edit_prompt_from_current_model_provider(
+                        role_name, role_path,
+                    );
+            }
+            AppEvent::OpenAgentRoleTemplateEditPromptFromCurrentReasoning {
+                role_name,
+                role_path,
+            } => {
+                self.chat_widget
+                    .open_agent_role_template_edit_prompt_from_current_reasoning(
+                        role_name, role_path,
+                    );
+            }
+            AppEvent::OpenAgentRoleTemplateEditPromptWithoutModelDefaults {
+                role_name,
+                role_path,
+            } => {
+                self.chat_widget
+                    .open_agent_role_template_edit_prompt_without_model_defaults(
+                        role_name, role_path,
+                    );
+            }
             AppEvent::OpenAgentRoleTemplateCreatePromptWithAllowedTools { allowed_tools } => {
                 self.chat_widget
                     .open_agent_role_template_create_prompt_with_allowed_tools(allowed_tools);
+            }
+            AppEvent::OpenAgentRoleTemplateCreatePromptWithModelDefaults {
+                model_provider,
+                model,
+                reasoning_effort,
+                service_tier,
+            } => {
+                self.chat_widget
+                    .open_agent_role_template_create_prompt_with_model_defaults(
+                        model_provider,
+                        model,
+                        reasoning_effort,
+                        service_tier,
+                    );
             }
             AppEvent::OpenAgentRoleTemplateEditPromptWithAllowedTools {
                 role_name,
@@ -1827,6 +1935,36 @@ impl App {
                         role_name,
                         role_path,
                         allowed_tools,
+                    );
+            }
+            AppEvent::OpenAgentRoleTemplateEditPromptWithDeniedTools {
+                role_name,
+                role_path,
+                denied_tools,
+            } => {
+                self.chat_widget
+                    .open_agent_role_template_edit_prompt_with_denied_tools(
+                        role_name,
+                        role_path,
+                        denied_tools,
+                    );
+            }
+            AppEvent::OpenAgentRoleTemplateEditPromptWithModelDefaults {
+                role_name,
+                role_path,
+                model_provider,
+                model,
+                reasoning_effort,
+                service_tier,
+            } => {
+                self.chat_widget
+                    .open_agent_role_template_edit_prompt_with_model_defaults(
+                        role_name,
+                        role_path,
+                        model_provider,
+                        model,
+                        reasoning_effort,
+                        service_tier,
                     );
             }
             AppEvent::CreateAgentRoleTemplateFromDraft { draft } => {

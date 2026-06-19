@@ -868,10 +868,17 @@ impl App {
                     agent_path: None,
                     prompt_preview: None,
                     thread_note: notification.thread_note.clone(),
+                    agent_hidden: self
+                        .agent_navigation
+                        .get(&thread_id)
+                        .is_some_and(|entry| entry.agent_hidden),
+                    retry_available: None,
                     cwd: None,
                     model_provider: None,
                     created_at: None,
                     updated_at: None,
+                    tool_selection_summary: None,
+                    action_policy_summary: None,
                 },
             );
         }

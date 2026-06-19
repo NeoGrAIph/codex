@@ -66,6 +66,10 @@ source: SessionSource,
  */
 threadNote: string | null,
 /**
+ * Whether this thread is hidden from the Agent Window workbench.
+ */
+agentHidden: boolean,
+/**
  * Optional analytics source classification for this thread.
  */
 threadSource: ThreadSource | null,

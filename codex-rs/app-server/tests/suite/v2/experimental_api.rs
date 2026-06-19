@@ -4,9 +4,14 @@ use app_test_support::TestAppServer;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use app_test_support::to_response;
 use codex_app_server_protocol::AgentCloseParams;
+use codex_app_server_protocol::AgentDismissParams;
 use codex_app_server_protocol::AgentFollowupSendParams;
 use codex_app_server_protocol::AgentMessageSendParams;
+use codex_app_server_protocol::AgentRetryParams;
+use codex_app_server_protocol::AgentRoleActionPolicySetParams;
 use codex_app_server_protocol::AgentRoleToolSelectionCatalogReadParams;
+use codex_app_server_protocol::AgentRoleToolSelectionSetParams;
+use codex_app_server_protocol::AgentStopAllParams;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::InitializeCapabilities;
@@ -28,6 +33,7 @@ use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_model_provider_info::DEEPSEEK_PROVIDER_ID;
 use codex_protocol::protocol::RealtimeOutputModality;
+use codex_protocol::protocol::SubAgentActionPolicyAction;
 use pretty_assertions::assert_eq;
 use std::path::Path;
 use std::time::Duration;
@@ -280,6 +286,50 @@ async fn agent_role_tool_selection_catalog_requires_experimental_api_capability(
 }
 
 #[tokio::test]
+async fn agent_role_tool_selection_set_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    initialize_without_experimental_api(&mut mcp).await?;
+
+    let request_id = mcp
+        .send_agent_role_tool_selection_set_request(AgentRoleToolSelectionSetParams {
+            role_name: "reviewer".to_string(),
+            allowed_tools: Some(vec!["update_plan".to_string()]),
+            denied_tools: None,
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "agentRole/toolSelection/set");
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_role_action_policy_set_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    initialize_without_experimental_api(&mut mcp).await?;
+
+    let request_id = mcp
+        .send_agent_role_action_policy_set_request(AgentRoleActionPolicySetParams {
+            role_name: "reviewer".to_string(),
+            allowed_actions: Some(vec![SubAgentActionPolicyAction::AgentMessageSend]),
+            denied_actions: None,
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "agentRole/actionPolicy/set");
+    Ok(())
+}
+
+#[tokio::test]
 async fn agent_message_send_requires_experimental_api_capability() -> Result<()> {
     let codex_home = TempDir::new()?;
     let mut mcp = TestAppServer::new(codex_home.path()).await?;
@@ -341,6 +391,68 @@ async fn agent_close_requires_experimental_api_capability() -> Result<()> {
     )
     .await??;
     assert_experimental_capability_error(error, "agent/close");
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_dismiss_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    initialize_without_experimental_api(&mut mcp).await?;
+
+    let request_id = mcp
+        .send_agent_dismiss_request(AgentDismissParams {
+            author_thread_id: "thr_author".to_string(),
+            target_thread_id: "thr_target".to_string(),
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "agent/dismiss");
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_retry_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    initialize_without_experimental_api(&mut mcp).await?;
+
+    let request_id = mcp
+        .send_agent_retry_request(AgentRetryParams {
+            author_thread_id: "thr_author".to_string(),
+            target_thread_id: "thr_target".to_string(),
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "agent/retry");
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_stop_all_requires_experimental_api_capability() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    initialize_without_experimental_api(&mut mcp).await?;
+
+    let request_id = mcp
+        .send_agent_stop_all_request(AgentStopAllParams {
+            author_thread_id: "thr_author".to_string(),
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert_experimental_capability_error(error, "agent/stopAll");
     Ok(())
 }
 

@@ -8,14 +8,17 @@ expression: rendered.clone()
 
 › 1. • Main [default] (current)       Status: closed
                                       Current view: yes
+                                      Connection: connected to this thread
                                       Kind: main thread
                                       Inspect:
                                       - Thread: 00000000-0000-0000-0000-000000000111
                                       Actions:
-                                      - Enter: watch this thread
+                                      - Enter: stay on this thread
   2. • Robie [explorer]               idle · role explorer · /root/worker
   3. > Send message Robie [explorer]  idle · /root/worker · queue message only
   4. > Follow up Robie [explorer]     idle · /root/worker · starts a turn
   5. x Close Robie [explorer]         idle · /root/worker · close agent subtree
+  6. r Retry Robie [explorer]         idle · /root/worker · spawn a fresh sibling
+  7. - Dismiss Robie [explorer]       idle · /root/worker · hide from Agent Window only
 
   Press enter to confirm or esc to go back

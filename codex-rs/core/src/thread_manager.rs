@@ -39,6 +39,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_READ_ONLY;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::Event;
@@ -51,12 +52,14 @@ use codex_protocol::protocol::ResumedHistory;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentActionPolicyAction;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::W3cTraceContext;
+use codex_protocol::user_input::UserInput;
 use codex_rollout::state_db::StateDbHandle;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use codex_thread_store::InMemoryThreadStore;
@@ -119,6 +122,19 @@ pub struct NewThread {
     pub thread_id: ThreadId,
     pub thread: Arc<CodexThread>,
     pub session_configured: SessionConfiguredEvent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentStopAllFailure {
+    pub thread_id: ThreadId,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentStopAllResult {
+    pub affected_count: usize,
+    pub stopped_thread_ids: Vec<ThreadId>,
+    pub failed: Vec<AgentStopAllFailure>,
 }
 
 // TODO(ccunningham): Add an explicit non-interrupting live-turn snapshot once
@@ -647,6 +663,12 @@ impl ThreadManager {
                 "Agent messaging can only target descendants of the current agent.".to_string(),
             ));
         }
+        self.ensure_agent_workbench_author_can_mutate(
+            author_thread_id,
+            SubAgentActionPolicyAction::AgentMessageSend,
+            "send message",
+        )
+        .await?;
 
         let communication = InterAgentCommunication::new_encrypted(
             author_path,
@@ -716,6 +738,12 @@ impl ThreadManager {
                 "Agent follow-up can only target descendants of the current agent.".to_string(),
             ));
         }
+        self.ensure_agent_workbench_author_can_mutate(
+            author_thread_id,
+            SubAgentActionPolicyAction::AgentFollowupSend,
+            "send follow-up",
+        )
+        .await?;
 
         match target_thread.agent_status().await {
             AgentStatus::Completed(_) | AgentStatus::Interrupted => {}
@@ -756,10 +784,253 @@ impl ThreadManager {
         author_thread_id: ThreadId,
         target_thread_id: ThreadId,
     ) -> CodexResult<AgentStatus> {
-        if author_thread_id == target_thread_id {
+        self.ensure_agent_workbench_descendant_target(author_thread_id, target_thread_id, "close")
+            .await?;
+        self.ensure_agent_workbench_author_can_mutate(
+            author_thread_id,
+            SubAgentActionPolicyAction::AgentClose,
+            "close",
+        )
+        .await?;
+
+        let previous_status = self.agent_control().get_status(target_thread_id).await;
+        self.agent_control().close_agent(target_thread_id).await?;
+        Ok(previous_status)
+    }
+
+    /// Hide a path-backed MAv2 child agent from Agent Window without closing or unloading it.
+    pub async fn dismiss_agent_from_workbench(
+        &self,
+        author_thread_id: ThreadId,
+        target_thread_id: ThreadId,
+    ) -> CodexResult<StoredThread> {
+        self.ensure_agent_workbench_descendant_target(
+            author_thread_id,
+            target_thread_id,
+            "dismiss",
+        )
+        .await?;
+        self.ensure_agent_workbench_author_can_mutate(
+            author_thread_id,
+            SubAgentActionPolicyAction::AgentDismiss,
+            "dismiss",
+        )
+        .await?;
+
+        self.update_thread_metadata(
+            target_thread_id,
+            ThreadMetadataPatch {
+                agent_hidden: Some(true),
+                ..Default::default()
+            },
+            /*include_archived*/ true,
+        )
+        .await
+    }
+
+    /// Close every live path-backed descendant visible to an owning workbench context.
+    pub async fn stop_all_agents_from_workbench(
+        &self,
+        author_thread_id: ThreadId,
+    ) -> CodexResult<AgentStopAllResult> {
+        let author_thread = self.get_thread(author_thread_id).await?;
+        let author_session_source = author_thread.config_snapshot().await.session_source;
+        let author_path = match author_session_source.get_agent_path() {
+            Some(agent_path) => agent_path,
+            None if author_session_source.is_non_root_agent() => {
+                return Err(CodexErr::InvalidRequest(
+                    "Agent stop all requires a path-backed author.".to_string(),
+                ));
+            }
+            None => AgentPath::root(),
+        };
+        self.ensure_agent_workbench_author_can_mutate(
+            author_thread_id,
+            SubAgentActionPolicyAction::AgentStopAll,
+            "stop all agents",
+        )
+        .await?;
+
+        let mut candidates = Vec::new();
+        for thread_id in self.list_thread_ids().await {
+            if thread_id == author_thread_id {
+                continue;
+            }
+            let Ok(thread) = self.get_thread(thread_id).await else {
+                continue;
+            };
+            let Ok(stored_thread) = thread
+                .read_thread(
+                    /*include_archived*/ true, /*include_history*/ false,
+                )
+                .await
+            else {
+                warn!("failed to read thread metadata for stop all candidate {thread_id}");
+                continue;
+            };
+            if stored_thread.agent_hidden {
+                continue;
+            }
+            let session_source = thread.config_snapshot().await.session_source;
+            let Some(agent_path) = session_source.get_agent_path() else {
+                continue;
+            };
+            if agent_path.is_root() || !agent_path_is_descendant_of(&agent_path, &author_path) {
+                continue;
+            }
+            match thread.agent_status().await {
+                AgentStatus::PendingInit | AgentStatus::Running => {
+                    candidates.push((thread_id, agent_path));
+                }
+                AgentStatus::Completed(_)
+                | AgentStatus::Interrupted
+                | AgentStatus::Errored(_)
+                | AgentStatus::Shutdown
+                | AgentStatus::NotFound => {}
+            }
+        }
+
+        candidates.sort_by(|(_, left), (_, right)| left.as_str().cmp(right.as_str()));
+        let top_level_targets: Vec<ThreadId> = candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (thread_id, agent_path))| {
+                let has_candidate_ancestor = candidates
+                    .iter()
+                    .take(index)
+                    .any(|(_, ancestor)| agent_path_is_descendant_of(agent_path, ancestor));
+                (!has_candidate_ancestor).then_some(*thread_id)
+            })
+            .collect();
+
+        let mut stopped_thread_ids = Vec::new();
+        let mut failed = Vec::new();
+        for target_thread_id in top_level_targets {
+            record_agent_stop_all_target_result(
+                &candidates,
+                &mut stopped_thread_ids,
+                &mut failed,
+                target_thread_id,
+                self.agent_control().close_agent(target_thread_id).await,
+            );
+        }
+        stopped_thread_ids.sort_by_key(|thread_id| thread_id.to_string());
+        stopped_thread_ids.dedup();
+
+        Ok(AgentStopAllResult {
+            affected_count: candidates.len(),
+            stopped_thread_ids,
+            failed,
+        })
+    }
+
+    /// Retry a path-backed MAv2 child agent by spawning a new sibling from durable metadata.
+    pub async fn retry_agent_from_workbench(
+        &self,
+        author_thread_id: ThreadId,
+        target_thread_id: ThreadId,
+    ) -> CodexResult<NewThread> {
+        self.ensure_agent_workbench_descendant_target(author_thread_id, target_thread_id, "retry")
+            .await?;
+        self.ensure_agent_workbench_author_can_mutate(
+            author_thread_id,
+            SubAgentActionPolicyAction::AgentRetry,
+            "retry",
+        )
+        .await?;
+
+        let target_thread = self.get_thread(target_thread_id).await?;
+        match target_thread.agent_status().await {
+            AgentStatus::Completed(_) | AgentStatus::Interrupted | AgentStatus::Errored(_) => {}
+            AgentStatus::PendingInit | AgentStatus::Running => {
+                return Err(CodexErr::InvalidRequest(
+                    "Agent retry can only start when the target is not running.".to_string(),
+                ));
+            }
+            AgentStatus::Shutdown | AgentStatus::NotFound => {
+                return Err(CodexErr::InvalidRequest(
+                    "Cannot retry a closed agent thread.".to_string(),
+                ));
+            }
+        }
+
+        let target_snapshot = target_thread.config_snapshot().await;
+        let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth,
+            agent_path: Some(target_path),
+            agent_role,
+            thread_note,
+            initial_task: Some(initial_task),
+            action_policy,
+            tool_selection,
+            ..
+        }) = target_snapshot.session_source.clone()
+        else {
             return Err(CodexErr::InvalidRequest(
-                "Cannot close the current agent from its own workbench.".to_string(),
+                "Agent retry requires a path-backed sub-agent target with an initial task."
+                    .to_string(),
             ));
+        };
+
+        let retry_path = retry_agent_path(&target_path)?;
+        let retry_environments = target_snapshot.environment_selections().to_vec();
+        let mut config = (*target_thread.config().await).clone();
+        config.model = Some(target_snapshot.model);
+        config.model_provider_id = target_snapshot.model_provider_id;
+        config.service_tier = target_snapshot.service_tier;
+        config.personality = target_snapshot.personality;
+        config.model_reasoning_effort = target_snapshot.reasoning_effort;
+        config.model_reasoning_summary = target_snapshot.reasoning_summary;
+
+        let retry_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth,
+            agent_path: Some(retry_path),
+            agent_nickname: None,
+            agent_role,
+            thread_note: thread_note.clone(),
+            action_policy,
+            initial_task: Some(initial_task.clone()),
+            tool_selection,
+        });
+        let operation = Op::from(vec![UserInput::Text {
+            text: initial_task,
+            text_elements: Vec::new(),
+        }]);
+        let live_agent = self
+            .agent_control()
+            .spawn_agent_with_metadata(
+                config,
+                operation,
+                Some(retry_source),
+                crate::agent::control::SpawnAgentOptions {
+                    parent_thread_id: Some(parent_thread_id),
+                    environments: Some(retry_environments),
+                    thread_note,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let thread = self.get_thread(live_agent.thread_id).await?;
+        let session_configured = thread.session_configured();
+        Ok(NewThread {
+            thread_id: live_agent.thread_id,
+            thread,
+            session_configured,
+        })
+    }
+
+    async fn ensure_agent_workbench_descendant_target(
+        &self,
+        author_thread_id: ThreadId,
+        target_thread_id: ThreadId,
+        action: &str,
+    ) -> CodexResult<()> {
+        if author_thread_id == target_thread_id {
+            return Err(CodexErr::InvalidRequest(format!(
+                "Cannot {action} the current agent from its own workbench."
+            )));
         }
 
         let author_thread = self.get_thread(author_thread_id).await?;
@@ -770,32 +1041,59 @@ impl ThreadManager {
         let author_path = match author_session_source.get_agent_path() {
             Some(agent_path) => agent_path,
             None if author_session_source.is_non_root_agent() => {
-                return Err(CodexErr::InvalidRequest(
-                    "Agent close requires a path-backed author.".to_string(),
-                ));
+                return Err(CodexErr::InvalidRequest(format!(
+                    "Agent {action} requires a path-backed author."
+                )));
             }
             None => AgentPath::root(),
         };
         let target_path = target_session_source.get_agent_path().ok_or_else(|| {
-            CodexErr::InvalidRequest(
-                "Agent close requires a path-backed sub-agent target.".to_string(),
-            )
+            CodexErr::InvalidRequest(format!(
+                "Agent {action} requires a path-backed sub-agent target."
+            ))
         })?;
 
         if target_path.is_root() {
-            return Err(CodexErr::InvalidRequest(
-                "Agent close cannot target the root agent.".to_string(),
-            ));
+            return Err(CodexErr::InvalidRequest(format!(
+                "Agent {action} cannot target the root agent."
+            )));
         }
         if !agent_path_is_descendant_of(&target_path, &author_path) {
-            return Err(CodexErr::InvalidRequest(
-                "Agent close can only target descendants of the current agent.".to_string(),
-            ));
+            return Err(CodexErr::InvalidRequest(format!(
+                "Agent {action} can only target descendants of the current agent."
+            )));
         }
 
-        let previous_status = self.agent_control().get_status(target_thread_id).await;
-        self.agent_control().close_agent(target_thread_id).await?;
-        Ok(previous_status)
+        Ok(())
+    }
+
+    async fn ensure_agent_workbench_author_can_mutate(
+        &self,
+        author_thread_id: ThreadId,
+        action: SubAgentActionPolicyAction,
+        action_label: &str,
+    ) -> CodexResult<()> {
+        let author_thread = self.get_thread(author_thread_id).await?;
+        let author_snapshot = author_thread.config_snapshot().await;
+        if !author_snapshot.session_source.is_non_root_agent() {
+            return Ok(());
+        }
+        if author_snapshot
+            .session_source
+            .get_subagent_action_policy()
+            .is_some_and(|action_policy| !action_policy.allows(action))
+        {
+            return Err(CodexErr::InvalidRequest(format!(
+                "Agent workbench {action_label} is denied by this agent's action policy."
+            )));
+        }
+        let config = author_thread.config().await;
+        if config_has_active_read_only_profile(&config) {
+            return Err(CodexErr::InvalidRequest(format!(
+                "Agent workbench {action_label} is not allowed from a read-only thread."
+            )));
+        }
+        Ok(())
     }
 
     pub async fn start_thread(&self, config: Config) -> CodexResult<NewThread> {
@@ -1203,11 +1501,84 @@ impl ThreadManager {
     }
 }
 
+pub(crate) fn record_agent_stop_all_target_result(
+    candidates: &[(ThreadId, AgentPath)],
+    stopped_thread_ids: &mut Vec<ThreadId>,
+    failed: &mut Vec<AgentStopAllFailure>,
+    target_thread_id: ThreadId,
+    close_result: CodexResult<String>,
+) {
+    match close_result {
+        Ok(_) => {
+            let Some((_, target_path)) = candidates
+                .iter()
+                .find(|(thread_id, _)| *thread_id == target_thread_id)
+            else {
+                return;
+            };
+            stopped_thread_ids.extend(candidates.iter().filter_map(|(thread_id, agent_path)| {
+                agent_path_is_same_or_descendant_of(agent_path, target_path).then_some(*thread_id)
+            }));
+        }
+        Err(err) => {
+            let message = err.to_string();
+            let Some((_, target_path)) = candidates
+                .iter()
+                .find(|(thread_id, _)| *thread_id == target_thread_id)
+            else {
+                failed.push(AgentStopAllFailure {
+                    thread_id: target_thread_id,
+                    message,
+                });
+                return;
+            };
+            failed.extend(candidates.iter().filter_map(|(thread_id, agent_path)| {
+                agent_path_is_same_or_descendant_of(agent_path, target_path).then(|| {
+                    AgentStopAllFailure {
+                        thread_id: *thread_id,
+                        message: message.clone(),
+                    }
+                })
+            }));
+        }
+    }
+}
+
 fn agent_path_is_descendant_of(agent_path: &AgentPath, ancestor: &AgentPath) -> bool {
     agent_path
         .as_str()
         .strip_prefix(ancestor.as_str())
         .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn agent_path_is_same_or_descendant_of(agent_path: &AgentPath, ancestor: &AgentPath) -> bool {
+    agent_path == ancestor || agent_path_is_descendant_of(agent_path, ancestor)
+}
+
+fn config_has_active_read_only_profile(config: &Config) -> bool {
+    config
+        .permissions
+        .active_permission_profile()
+        .is_some_and(|profile| profile.id == BUILT_IN_PERMISSION_PROFILE_READ_ONLY)
+}
+
+fn retry_agent_path(agent_path: &AgentPath) -> CodexResult<AgentPath> {
+    let path = agent_path.as_str();
+    let Some((parent, name)) = path.rsplit_once('/') else {
+        return Err(CodexErr::InvalidRequest(
+            "Agent retry requires a non-root agent path.".to_string(),
+        ));
+    };
+    let parent = if parent.is_empty() {
+        AgentPath::root()
+    } else {
+        AgentPath::try_from(parent)
+            .map_err(|err| CodexErr::InvalidRequest(format!("invalid parent agent path: {err}")))?
+    };
+    let retry_suffix = ThreadId::new().to_string().replace('-', "_");
+    parent
+        .join(format!("{name}_retry_{retry_suffix}").as_str())
+        .map_err(|err| CodexErr::InvalidRequest(format!("invalid retry agent path: {err}")))
 }
 
 impl ThreadManagerState {

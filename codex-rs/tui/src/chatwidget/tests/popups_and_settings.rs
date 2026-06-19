@@ -2508,6 +2508,7 @@ enabled = true
     chat.open_agent_role_templates_popup();
     chat.handle_key_event(KeyEvent::from(KeyCode::Down));
     chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
 
     let codex_home = chat.config.codex_home.display().to_string();
     let popup = render_bottom_popup(&chat, /*width*/ 100).replace(&codex_home, "$CODEX_HOME");
@@ -2581,10 +2582,29 @@ allowed_tools = ["update_plan", "missing_tool"]
     );
     chat.handle_key_event(KeyEvent::from(KeyCode::Down));
     chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
 
     let codex_home = chat.config.codex_home.display().to_string();
     let popup = render_bottom_popup(&chat, /*width*/ 104).replace(&codex_home, "$CODEX_HOME");
     assert_chatwidget_snapshot!("agent_role_templates_popup_runtime_catalog", popup);
+}
+
+#[tokio::test]
+async fn agent_role_templates_import_markdown_action_opens_existing_import_flow() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.open_agent_role_templates_popup();
+    type_plugins_search_query(&mut chat, "markdown");
+
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert_chatwidget_snapshot!("agent_role_templates_import_markdown_action", popup);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenExternalAgentConfigMigration)
+    );
 }
 
 #[tokio::test]
@@ -2631,6 +2651,195 @@ async fn agent_role_template_create_prompt_from_current_model_submits_native_tom
                 && draft.contains("model_provider = \"deepseek\"")
                 && draft.contains("model_reasoning_effort = \"high\"")
                 && draft.contains("service_tier = \"priority\"")
+    );
+}
+
+#[tokio::test]
+async fn agent_role_template_model_picker_for_role_opens_reasoning_picker() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let preset = |model_provider: &str| ModelPreset {
+        id: format!("shared-model-{model_provider}"),
+        model_provider: model_provider.to_string(),
+        model: "shared-model".to_string(),
+        display_name: "shared-model".to_string(),
+        description: format!("Shared model from {model_provider}"),
+        default_reasoning_effort: ReasoningEffortConfig::Medium,
+        supported_reasoning_efforts: vec![
+            ReasoningEffortPreset {
+                effort: ReasoningEffortConfig::Low,
+                description: "low".to_string(),
+            },
+            ReasoningEffortPreset {
+                effort: ReasoningEffortConfig::Medium,
+                description: "medium".to_string(),
+            },
+        ],
+        supports_personality: false,
+        additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
+        default_service_tier: Some("priority".to_string()),
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        availability_nux: None,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    };
+    chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![
+        preset("openai"),
+        preset("deepseek"),
+    ]));
+    let role_path = chat
+        .config
+        .codex_home
+        .join("agents/reviewer.toml")
+        .to_path_buf();
+
+    chat.open_agent_role_template_edit_model_picker("reviewer".to_string(), role_path.clone());
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert_chatwidget_snapshot!("agent_role_template_model_defaults_picker", popup.clone());
+    assert!(
+        popup.contains("shared-model (openai)"),
+        "expected duplicate OpenAI slug to be provider-disambiguated:\n{popup}"
+    );
+    assert!(
+        popup.contains("shared-model (deepseek)"),
+        "expected duplicate DeepSeek slug to be provider-disambiguated:\n{popup}"
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenAgentRoleTemplateEditReasoningPicker {
+            role_name,
+            role_path: event_role_path,
+            model,
+        }) if role_name == "reviewer"
+            && event_role_path == role_path
+            && model.model == "shared-model"
+            && model.model_provider == "openai"
+    );
+}
+
+#[tokio::test]
+async fn agent_role_template_reasoning_picker_for_role_submits_model_defaults() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let model = ModelPreset {
+        id: "deepseek-v4-flash".to_string(),
+        model_provider: "deepseek".to_string(),
+        model: "deepseek/deepseek-v4-flash".to_string(),
+        display_name: "DeepSeek V4 Flash".to_string(),
+        description: "DeepSeek flash model".to_string(),
+        default_reasoning_effort: ReasoningEffortConfig::Medium,
+        supported_reasoning_efforts: vec![
+            ReasoningEffortPreset {
+                effort: ReasoningEffortConfig::Medium,
+                description: "medium".to_string(),
+            },
+            ReasoningEffortPreset {
+                effort: ReasoningEffortConfig::High,
+                description: "high".to_string(),
+            },
+        ],
+        supports_personality: false,
+        additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
+        default_service_tier: Some("priority".to_string()),
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        availability_nux: None,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    };
+    let role_path = chat
+        .config
+        .codex_home
+        .join("agents/reviewer.toml")
+        .to_path_buf();
+
+    chat.open_agent_role_template_edit_reasoning_picker(
+        "reviewer".to_string(),
+        role_path.clone(),
+        model,
+    );
+    let popup = render_bottom_popup(&chat, /*width*/ 100);
+    assert_chatwidget_snapshot!("agent_role_template_reasoning_defaults_picker", popup);
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenAgentRoleTemplateEditPromptWithModelDefaults {
+            role_name,
+            role_path: event_role_path,
+            model_provider,
+            model,
+            reasoning_effort,
+            service_tier,
+        }) if role_name == "reviewer"
+            && event_role_path == role_path
+            && model_provider == "deepseek"
+            && model == "deepseek/deepseek-v4-flash"
+            && reasoning_effort == Some(ReasoningEffortConfig::High)
+            && service_tier == Some("priority".to_string())
+    );
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn agent_role_template_edit_prompt_with_model_defaults_submits_native_toml_draft() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let draft = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+model = "gpt-5.3-codex"
+model_provider = "openai"
+model_reasoning_effort = "medium"
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+denied_tools = ["apply_patch"]
+
+[subagent_action_policy]
+allowed_actions = ["agent_message_send"]
+"#;
+    assert!(chat.create_agent_role_template_from_draft(draft.to_string()));
+    while rx.try_recv().is_ok() {}
+    let role_path = chat
+        .config
+        .codex_home
+        .join("agents/audit-reviewer.toml")
+        .to_path_buf();
+
+    chat.open_agent_role_template_edit_prompt_with_model_defaults(
+        "audit-reviewer".to_string(),
+        role_path.clone(),
+        "deepseek".to_string(),
+        "deepseek/deepseek-v4-flash".to_string(),
+        Some(ReasoningEffortConfig::High),
+        Some("priority".to_string()),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UpdateAgentRoleTemplateFromDraft {
+            role_name,
+            role_path: event_role_path,
+            draft,
+        }) if role_name == "audit-reviewer"
+            && event_role_path == role_path
+            && draft.contains("model = \"deepseek/deepseek-v4-flash\"")
+            && draft.contains("model_provider = \"deepseek\"")
+            && draft.contains("model_reasoning_effort = \"high\"")
+            && draft.contains("service_tier = \"priority\"")
+            && draft.contains("[tool_selection]")
+            && draft.contains("\"update_plan\"")
+            && draft.contains("\"apply_patch\"")
+            && draft.contains("[subagent_action_policy]")
+            && draft.contains("\"agent_message_send\"")
     );
 }
 
@@ -2724,6 +2933,48 @@ async fn agent_role_template_tool_selection_picker_for_role_submits_selected_too
 }
 
 #[tokio::test]
+async fn agent_role_template_denied_tool_selection_picker_for_role_submits_selected_tools() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let role_path = chat
+        .config
+        .codex_home
+        .join("agents/reviewer.toml")
+        .to_path_buf();
+
+    chat.open_agent_role_template_denied_tool_selection_picker_for_role(
+        "reviewer".to_string(),
+        role_path.clone(),
+        vec!["apply_patch".to_string()],
+        vec![
+            AgentRoleToolSelectionCatalogEntry {
+                name: "tool_search".to_string(),
+                selected: false,
+                exposure: AgentRoleToolSelectionCatalogExposure::Deferred,
+            },
+            AgentRoleToolSelectionCatalogEntry {
+                name: "apply_patch".to_string(),
+                selected: false,
+                exposure: AgentRoleToolSelectionCatalogExposure::Direct,
+            },
+        ],
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenAgentRoleTemplateEditPromptWithDeniedTools {
+            role_name,
+            role_path: event_role_path,
+            denied_tools,
+        }) if role_name == "reviewer"
+            && event_role_path == role_path
+            && denied_tools == vec!["apply_patch".to_string(), "tool_search".to_string()]
+    );
+}
+
+#[tokio::test]
 async fn agent_role_template_edit_prompt_with_allowed_tools_submits_native_toml_draft() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let draft = r#"name = "reviewer"
@@ -2759,6 +3010,299 @@ allowed_tools = ["update_plan"]
             && event_role_path == role_path
             && draft.contains("[tool_selection]")
             && draft.contains("\"update_plan\"")
+            && draft.contains("\"tool_search\"")
+    );
+}
+
+#[tokio::test]
+async fn agent_role_template_edit_prompt_from_current_model_submits_native_toml_draft() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.model = Some("deepseek/deepseek-v4-flash".to_string());
+    chat.config.model_provider_id = "deepseek".to_string();
+    chat.config.model_reasoning_effort = Some(ReasoningEffortConfig::High);
+    chat.config.service_tier = Some("priority".to_string());
+    let draft = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+model = "gpt-5.3-codex"
+model_provider = "openai"
+model_reasoning_effort = "medium"
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+denied_tools = ["apply_patch"]
+"#;
+    assert!(chat.create_agent_role_template_from_draft(draft.to_string()));
+    while rx.try_recv().is_ok() {}
+    let role_path = chat
+        .config
+        .codex_home
+        .join("agents/audit-reviewer.toml")
+        .to_path_buf();
+
+    chat.open_agent_role_template_edit_prompt_from_current_model(
+        "audit-reviewer".to_string(),
+        role_path.clone(),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UpdateAgentRoleTemplateFromDraft {
+            role_name,
+            role_path: event_role_path,
+            draft,
+        }) if role_name == "audit-reviewer"
+            && event_role_path == role_path
+            && draft.contains("model = \"deepseek/deepseek-v4-flash\"")
+            && draft.contains("model_provider = \"deepseek\"")
+            && draft.contains("model_reasoning_effort = \"high\"")
+            && draft.contains("service_tier = \"priority\"")
+            && draft.contains("[tool_selection]")
+            && draft.contains("\"update_plan\"")
+            && draft.contains("\"apply_patch\"")
+    );
+}
+
+#[tokio::test]
+async fn agent_role_template_edit_prompt_from_current_model_provider_submits_native_toml_draft() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.model = Some("deepseek/deepseek-v4-flash".to_string());
+    chat.config.model_provider_id = "deepseek".to_string();
+    chat.config.model_reasoning_effort = Some(ReasoningEffortConfig::High);
+    chat.config.service_tier = Some("priority".to_string());
+    let draft = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+model = "gpt-5.3-codex"
+model_provider = "openai"
+model_reasoning_effort = "medium"
+service_tier = "standard"
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+denied_tools = ["apply_patch"]
+"#;
+    assert!(chat.create_agent_role_template_from_draft(draft.to_string()));
+    while rx.try_recv().is_ok() {}
+    let role_path = chat
+        .config
+        .codex_home
+        .join("agents/audit-reviewer.toml")
+        .to_path_buf();
+
+    chat.open_agent_role_template_edit_prompt_from_current_model_provider(
+        "audit-reviewer".to_string(),
+        role_path.clone(),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UpdateAgentRoleTemplateFromDraft {
+            role_name,
+            role_path: event_role_path,
+            draft,
+        }) if role_name == "audit-reviewer"
+            && event_role_path == role_path
+            && draft.contains("model = \"deepseek/deepseek-v4-flash\"")
+            && draft.contains("model_provider = \"deepseek\"")
+            && draft.contains("model_reasoning_effort = \"medium\"")
+            && draft.contains("service_tier = \"standard\"")
+            && draft.contains("[tool_selection]")
+            && draft.contains("\"update_plan\"")
+            && draft.contains("\"apply_patch\"")
+    );
+}
+
+#[tokio::test]
+async fn agent_role_template_edit_prompt_from_current_reasoning_submits_native_toml_draft() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.model = Some("deepseek/deepseek-v4-flash".to_string());
+    chat.config.model_provider_id = "deepseek".to_string();
+    chat.config.model_reasoning_effort = Some(ReasoningEffortConfig::High);
+    chat.config.service_tier = Some("priority".to_string());
+    let draft = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+model = "gpt-5.3-codex"
+model_provider = "openai"
+model_reasoning_effort = "medium"
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+denied_tools = ["apply_patch"]
+"#;
+    assert!(chat.create_agent_role_template_from_draft(draft.to_string()));
+    while rx.try_recv().is_ok() {}
+    let role_path = chat
+        .config
+        .codex_home
+        .join("agents/audit-reviewer.toml")
+        .to_path_buf();
+
+    chat.open_agent_role_template_edit_prompt_from_current_reasoning(
+        "audit-reviewer".to_string(),
+        role_path.clone(),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UpdateAgentRoleTemplateFromDraft {
+            role_name,
+            role_path: event_role_path,
+            draft,
+        }) if role_name == "audit-reviewer"
+            && event_role_path == role_path
+            && draft.contains("model = \"gpt-5.3-codex\"")
+            && draft.contains("model_provider = \"openai\"")
+            && draft.contains("model_reasoning_effort = \"high\"")
+            && draft.contains("service_tier = \"priority\"")
+            && draft.contains("[tool_selection]")
+            && draft.contains("\"update_plan\"")
+            && draft.contains("\"apply_patch\"")
+    );
+}
+
+#[tokio::test]
+async fn agent_role_template_clear_model_defaults_submits_native_toml_draft() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let draft = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+model = "deepseek/deepseek-v4-flash"
+model_provider = "deepseek"
+model_reasoning_effort = "high"
+service_tier = "priority"
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+denied_tools = ["apply_patch"]
+
+[subagent_action_policy]
+allowed_actions = ["agent_message_send"]
+"#;
+    assert!(chat.create_agent_role_template_from_draft(draft.to_string()));
+    while rx.try_recv().is_ok() {}
+    let role_path = chat
+        .config
+        .codex_home
+        .join("agents/audit-reviewer.toml")
+        .to_path_buf();
+
+    chat.open_agent_role_template_edit_prompt_without_model_defaults(
+        "audit-reviewer".to_string(),
+        role_path.clone(),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UpdateAgentRoleTemplateFromDraft {
+            role_name,
+            role_path: event_role_path,
+            draft,
+        }) if role_name == "audit-reviewer"
+            && event_role_path == role_path
+            && !draft.contains("model = ")
+            && !draft.contains("model_provider = ")
+            && !draft.contains("model_reasoning_effort = ")
+            && !draft.contains("service_tier = ")
+            && draft.contains("[tool_selection]")
+            && draft.contains("\"update_plan\"")
+            && draft.contains("\"apply_patch\"")
+            && draft.contains("[subagent_action_policy]")
+            && draft.contains("\"agent_message_send\"")
+    );
+}
+
+#[tokio::test]
+async fn agent_role_template_edit_prompt_submits_existing_native_toml_draft() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let draft = r#"# keep this comment
+name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+"#;
+    assert!(chat.create_agent_role_template_from_draft(draft.to_string()));
+    while rx.try_recv().is_ok() {}
+    let role_path = chat
+        .config
+        .codex_home
+        .join("agents/audit-reviewer.toml")
+        .to_path_buf();
+
+    chat.open_agent_role_template_edit_prompt("audit-reviewer".to_string(), role_path.clone());
+
+    let codex_home = chat.config.codex_home.display().to_string();
+    let popup = render_bottom_popup(&chat, /*width*/ 100).replace(&codex_home, "$CODEX_HOME");
+    assert_chatwidget_snapshot!("agent_role_template_edit_prompt", popup);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UpdateAgentRoleTemplateFromDraft {
+            role_name,
+            role_path: event_role_path,
+            draft: event_draft,
+        }) if role_name == "audit-reviewer"
+            && event_role_path == role_path
+            && event_draft.contains("# keep this comment")
+            && event_draft.contains("[tool_selection]")
+            && event_draft.contains("\"update_plan\"")
+    );
+}
+
+#[tokio::test]
+async fn agent_role_template_edit_prompt_with_denied_tools_submits_native_toml_draft() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let draft = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+denied_tools = ["apply_patch"]
+"#;
+    assert!(chat.create_agent_role_template_from_draft(draft.to_string()));
+    while rx.try_recv().is_ok() {}
+    let role_path = chat
+        .config
+        .codex_home
+        .join("agents/audit-reviewer.toml")
+        .to_path_buf();
+
+    chat.open_agent_role_template_edit_prompt_with_denied_tools(
+        "audit-reviewer".to_string(),
+        role_path.clone(),
+        vec!["apply_patch".to_string(), "tool_search".to_string()],
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::UpdateAgentRoleTemplateFromDraft {
+            role_name,
+            role_path: event_role_path,
+            draft,
+        }) if role_name == "audit-reviewer"
+            && event_role_path == role_path
+            && draft.contains("[tool_selection]")
+            && draft.contains("allowed_tools = [")
+            && draft.contains("\"update_plan\"")
+            && draft.contains("denied_tools = [")
+            && draft.contains("\"apply_patch\"")
             && draft.contains("\"tool_search\"")
     );
 }
@@ -2833,7 +3377,11 @@ allowed_tools = ["tool_search"]
     chat.handle_key_event(KeyEvent::from(KeyCode::Down));
     let popup = render_bottom_popup(&chat, /*width*/ 100);
     assert!(popup.contains("reviewer"));
-    assert!(popup.contains("tool_selection=tool_search"));
+    assert!(
+        std::fs::read_to_string(chat.config.codex_home.join("agents/reviewer.toml"))
+            .expect("read updated role")
+            .contains("allowed_tools = [\"tool_search\"]")
+    );
 }
 
 #[tokio::test]

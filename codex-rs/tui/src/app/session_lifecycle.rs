@@ -7,7 +7,7 @@
 use super::*;
 
 impl App {
-    pub(super) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
+    pub(crate) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
         self.backfill_loaded_subagent_threads(app_server).await;
         // V2 subagents are identified by canonical paths observed from activity events or loaded
         // thread metadata. Prefer local buffered turn state for liveness, and fall back to
@@ -117,6 +117,13 @@ impl App {
             rows,
             initial_selected_idx,
         } = read_model;
+        if rows.is_empty() {
+            self.chat_widget.add_info_message(
+                "No visible agents available.".to_string(),
+                Some("Dismissed agents remain available through native thread history and resume paths.".to_string()),
+            );
+            return;
+        }
         let items: Vec<SelectionItem> = rows
             .into_iter()
             .map(|row| {
@@ -139,7 +146,7 @@ impl App {
         let mut items = items;
         let root_owned_workbench = self.is_root_owned_agent_workbench();
         if root_owned_workbench {
-            for (thread_id, entry) in self.agent_navigation.ordered_threads() {
+            for (thread_id, entry) in self.agent_navigation.ordered_workbench_threads() {
                 if self.agent_picker_message_preflight(thread_id).is_err() {
                     continue;
                 }
@@ -169,7 +176,7 @@ impl App {
                 });
             }
         }
-        for (thread_id, entry) in self.agent_navigation.ordered_threads() {
+        for (thread_id, entry) in self.agent_navigation.ordered_workbench_threads() {
             if self.agent_picker_followup_preflight(thread_id).is_err() {
                 continue;
             }
@@ -198,7 +205,7 @@ impl App {
                 ..Default::default()
             });
         }
-        for (thread_id, entry) in self.agent_navigation.ordered_threads() {
+        for (thread_id, entry) in self.agent_navigation.ordered_workbench_threads() {
             if self.agent_picker_interrupt_preflight(thread_id).is_err() {
                 continue;
             }
@@ -227,7 +234,7 @@ impl App {
                 ..Default::default()
             });
         }
-        for (thread_id, entry) in self.agent_navigation.ordered_threads() {
+        for (thread_id, entry) in self.agent_navigation.ordered_workbench_threads() {
             if self.agent_picker_close_preflight(thread_id).is_err() {
                 continue;
             }
@@ -256,8 +263,82 @@ impl App {
                 ..Default::default()
             });
         }
+        if let Ok(stop_all_targets) = self.agent_picker_stop_all_targets() {
+            let count = stop_all_targets.len();
+            let scope = self.agent_picker_stop_all_scope_label();
+            let name = "Stop all agents".to_string();
+            items.push(SelectionItem {
+                name: name.clone(),
+                name_prefix_spans: vec!["!! ".red()],
+                description: Some(format!("{scope} · {count} live · bulk close")),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::OpenAgentStopAllConfirmation);
+                })],
+                dismiss_on_select: true,
+                search_value: Some(format!("{name} {scope} stop all agents bulk close")),
+                ..Default::default()
+            });
+        }
+        for (thread_id, entry) in self.agent_navigation.ordered_workbench_threads() {
+            if self.agent_picker_retry_preflight(thread_id).is_err() {
+                continue;
+            }
+            let name = format!(
+                "Retry {}",
+                format_agent_picker_item_name(
+                    entry.agent_nickname.as_deref(),
+                    entry.agent_role.as_deref(),
+                    /*is_primary*/ false,
+                )
+            );
+            let agent_path = entry.agent_path.as_deref().unwrap_or_default().to_string();
+            items.push(SelectionItem {
+                name: name.clone(),
+                name_prefix_spans: vec!["r ".cyan()],
+                description: Some(format!(
+                    "{} · {} · spawn a fresh sibling",
+                    entry.status.label(),
+                    agent_path
+                )),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::OpenAgentRetryConfirmation { thread_id });
+                })],
+                dismiss_on_select: true,
+                search_value: Some(format!("{name} {thread_id} {agent_path} retry")),
+                ..Default::default()
+            });
+        }
+        for (thread_id, entry) in self.agent_navigation.ordered_workbench_threads() {
+            if self.agent_picker_dismiss_preflight(thread_id).is_err() {
+                continue;
+            }
+            let name = format!(
+                "Dismiss {}",
+                format_agent_picker_item_name(
+                    entry.agent_nickname.as_deref(),
+                    entry.agent_role.as_deref(),
+                    /*is_primary*/ false,
+                )
+            );
+            let agent_path = entry.agent_path.as_deref().unwrap_or_default().to_string();
+            items.push(SelectionItem {
+                name: name.clone(),
+                name_prefix_spans: vec!["- ".dim()],
+                description: Some(format!(
+                    "{} · {} · hide from Agent Window only",
+                    entry.status.label(),
+                    agent_path
+                )),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::DismissAgentThread { thread_id });
+                })],
+                dismiss_on_select: true,
+                search_value: Some(format!("{name} {thread_id} {agent_path} dismiss hide")),
+                ..Default::default()
+            });
+        }
         if !root_owned_workbench {
-            for (thread_id, entry) in self.agent_navigation.ordered_threads() {
+            for (thread_id, entry) in self.agent_navigation.ordered_workbench_threads() {
                 if self.agent_picker_message_preflight(thread_id).is_err() {
                     continue;
                 }
@@ -784,6 +865,219 @@ impl App {
         Ok(())
     }
 
+    pub(super) async fn dismiss_agent_thread(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) -> Result<()> {
+        match self.agent_picker_dismiss_preflight(thread_id) {
+            Ok(()) => {
+                let Some(author_thread_id) = self.agent_picker_action_author_thread_id() else {
+                    self.chat_widget.add_error_message(
+                        "Cannot dismiss an agent before the workbench thread is ready.".to_string(),
+                    );
+                    return Ok(());
+                };
+                let target_name = self
+                    .agent_navigation
+                    .get(&thread_id)
+                    .map(|entry| {
+                        format_agent_picker_item_name(
+                            entry.agent_nickname.as_deref(),
+                            entry.agent_role.as_deref(),
+                            /*is_primary*/ false,
+                        )
+                    })
+                    .unwrap_or_else(|| thread_id.to_string());
+                app_server
+                    .agent_dismiss(author_thread_id, thread_id)
+                    .await?;
+                self.refresh_agent_picker_thread_liveness(app_server, thread_id)
+                    .await;
+                self.chat_widget.add_info_message(
+                    format!("Dismissed {target_name} from Agent Window."),
+                    Some(
+                        "The agent remains available through native thread history and resume paths."
+                            .to_string(),
+                    ),
+                );
+            }
+            Err(reason) => self.chat_widget.add_error_message(reason),
+        }
+        Ok(())
+    }
+
+    pub(super) fn open_agent_retry_confirmation(&mut self, thread_id: ThreadId) {
+        if let Err(reason) = self.agent_picker_retry_preflight(thread_id) {
+            self.chat_widget.add_error_message(reason);
+            return;
+        }
+        let Some(entry) = self.agent_navigation.get(&thread_id) else {
+            self.chat_widget.add_error_message(format!(
+                "Cannot retry agent thread {thread_id}: it is no longer tracked."
+            ));
+            return;
+        };
+        let name = format_agent_picker_item_name(
+            entry.agent_nickname.as_deref(),
+            entry.agent_role.as_deref(),
+            /*is_primary*/ false,
+        );
+        let agent_path = entry.agent_path.as_deref().unwrap_or_default().to_string();
+        let current_status = entry.status.label();
+        let items = vec![
+            SelectionItem {
+                name: "Cancel".to_string(),
+                description: Some("Keep the current agent unchanged.".to_string()),
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Retry agent".to_string(),
+                name_prefix_spans: vec!["r ".cyan()],
+                description: Some(format!(
+                    "Current status: {current_status}. Spawn a fresh sibling from the stored initial task."
+                )),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::RetryAgentThreadConfirmed { thread_id });
+                })],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+        ];
+
+        self.chat_widget.show_selection_view(SelectionViewParams {
+            title: Some("Retry this agent?".to_string()),
+            subtitle: Some(format!(
+                "{name} · {agent_path} · current status: {current_status}"
+            )),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            initial_selected_idx: Some(0),
+            ..Default::default()
+        });
+    }
+
+    pub(super) async fn retry_agent_thread_confirmed(
+        &mut self,
+        app_server: &mut AppServerSession,
+        thread_id: ThreadId,
+    ) -> Result<()> {
+        match self.agent_picker_retry_preflight(thread_id) {
+            Ok(()) => {
+                let Some(author_thread_id) = self.agent_picker_action_author_thread_id() else {
+                    self.chat_widget.add_error_message(
+                        "Cannot retry an agent before the workbench thread is ready.".to_string(),
+                    );
+                    return Ok(());
+                };
+                let target_name = self
+                    .agent_navigation
+                    .get(&thread_id)
+                    .map(|entry| {
+                        format_agent_picker_item_name(
+                            entry.agent_nickname.as_deref(),
+                            entry.agent_role.as_deref(),
+                            /*is_primary*/ false,
+                        )
+                    })
+                    .unwrap_or_else(|| thread_id.to_string());
+                let response = app_server.agent_retry(author_thread_id, thread_id).await?;
+                if let Ok(new_thread_id) = ThreadId::from_string(&response.thread_id) {
+                    self.refresh_agent_picker_thread_liveness(app_server, new_thread_id)
+                        .await;
+                }
+                self.refresh_agent_picker_thread_liveness(app_server, thread_id)
+                    .await;
+                self.chat_widget.add_info_message(
+                    format!("Retry started for {target_name}."),
+                    Some(
+                        "A fresh sibling agent was spawned; the original thread is unchanged."
+                            .to_string(),
+                    ),
+                );
+            }
+            Err(reason) => self.chat_widget.add_error_message(reason),
+        }
+        Ok(())
+    }
+
+    pub(super) fn open_agent_stop_all_confirmation(&mut self) {
+        let stop_all_targets = match self.agent_picker_stop_all_targets() {
+            Ok(targets) => targets,
+            Err(reason) => {
+                self.chat_widget.add_error_message(reason);
+                return;
+            }
+        };
+        let count = stop_all_targets.len();
+        let scope = self.agent_picker_stop_all_scope_label();
+        let items = vec![
+            SelectionItem {
+                name: "Cancel".to_string(),
+                description: Some("Keep all agents running.".to_string()),
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Stop all agents".to_string(),
+                name_prefix_spans: vec!["!! ".red()],
+                description: Some(format!(
+                    "Stop {count} running/waiting agents in this scope. Idle, completed and errored agents are unchanged."
+                )),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::StopAllAgentThreadsConfirmed);
+                })],
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+        ];
+
+        self.chat_widget.show_selection_view(SelectionViewParams {
+            title: Some("Stop all agents?".to_string()),
+            subtitle: Some(format!("{scope} · {count} live agents")),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            initial_selected_idx: Some(0),
+            ..Default::default()
+        });
+    }
+
+    pub(super) async fn stop_all_agent_threads_confirmed(
+        &mut self,
+        app_server: &mut AppServerSession,
+    ) -> Result<()> {
+        match self.agent_picker_stop_all_targets() {
+            Ok(_) => {
+                let Some(author_thread_id) = self.agent_picker_action_author_thread_id() else {
+                    self.chat_widget.add_error_message(
+                        "Cannot stop agents before the workbench thread is ready.".to_string(),
+                    );
+                    return Ok(());
+                };
+                let response = app_server.agent_stop_all(author_thread_id).await?;
+                for thread_id in response
+                    .stopped_thread_ids
+                    .iter()
+                    .chain(response.failed.iter().map(|failure| &failure.thread_id))
+                    .filter_map(|thread_id| ThreadId::from_string(thread_id).ok())
+                {
+                    self.refresh_agent_picker_thread_liveness(app_server, thread_id)
+                        .await;
+                }
+                let stop_all_copy = agent_stop_all_user_copy(&response);
+                if response.affected_count == 0 {
+                    self.chat_widget.add_error_message(stop_all_copy.message);
+                } else {
+                    self.chat_widget
+                        .add_info_message(stop_all_copy.message, stop_all_copy.hint);
+                }
+            }
+            Err(reason) => self.chat_widget.add_error_message(reason),
+        }
+        Ok(())
+    }
+
     pub(super) fn agent_picker_interrupt_preflight(
         &self,
         thread_id: ThreadId,
@@ -868,6 +1162,138 @@ impl App {
                 "Agent `{current_agent_path}` cannot close `{target_agent_path}` because the target is outside its sub-agent tree."
             ))
         }
+    }
+
+    pub(super) fn agent_picker_dismiss_preflight(&self, thread_id: ThreadId) -> Result<(), String> {
+        if self.primary_thread_id == Some(thread_id) {
+            return Err("Cannot dismiss the main thread from the agent workbench.".to_string());
+        }
+        let Some(entry) = self.agent_navigation.get(&thread_id) else {
+            return Err(format!(
+                "Cannot dismiss agent thread {thread_id}: it is no longer tracked."
+            ));
+        };
+        if entry.agent_hidden {
+            return Err("Cannot dismiss an already hidden agent thread.".to_string());
+        }
+        let target_agent_path = entry
+            .agent_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|agent_path| !agent_path.is_empty())
+            .ok_or_else(|| "Cannot dismiss an agent thread without agent_path.".to_string())?;
+        if target_agent_path == "/root" {
+            return Err("Cannot dismiss the root agent from the agent workbench.".to_string());
+        }
+        let current_agent_path =
+            self.current_agent_picker_path_backed_owner_path("Cannot dismiss agent")?;
+        if target_agent_path == current_agent_path {
+            return Err("An agent cannot dismiss itself from the agent workbench.".to_string());
+        }
+        if agent_path_can_interrupt(current_agent_path, target_agent_path) {
+            Ok(())
+        } else {
+            Err(format!(
+                "Agent `{current_agent_path}` cannot dismiss `{target_agent_path}` because the target is outside its sub-agent tree."
+            ))
+        }
+    }
+
+    pub(super) fn agent_picker_retry_preflight(&self, thread_id: ThreadId) -> Result<(), String> {
+        if self.primary_thread_id == Some(thread_id) {
+            return Err("Cannot retry the main thread from the agent workbench.".to_string());
+        }
+        let Some(entry) = self.agent_navigation.get(&thread_id) else {
+            return Err(format!(
+                "Cannot retry agent thread {thread_id}: it is no longer tracked."
+            ));
+        };
+        match entry.status {
+            crate::multi_agents::AgentPickerThreadStatus::Idle
+            | crate::multi_agents::AgentPickerThreadStatus::Error => {}
+            crate::multi_agents::AgentPickerThreadStatus::Running
+            | crate::multi_agents::AgentPickerThreadStatus::WaitingApproval
+            | crate::multi_agents::AgentPickerThreadStatus::WaitingUser => {
+                return Err("Cannot retry an agent while it is running or waiting.".to_string());
+            }
+            crate::multi_agents::AgentPickerThreadStatus::Closed => {
+                return Err("Cannot retry a closed agent thread.".to_string());
+            }
+        }
+        let target_agent_path = entry
+            .agent_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|agent_path| !agent_path.is_empty())
+            .ok_or_else(|| "Cannot retry an agent thread without agent_path.".to_string())?;
+        if target_agent_path == "/root" {
+            return Err("Cannot retry the root agent from the agent workbench.".to_string());
+        }
+        let current_agent_path =
+            self.current_agent_picker_path_backed_owner_path("Cannot retry agent")?;
+        if target_agent_path == current_agent_path {
+            return Err("An agent cannot retry itself from the agent workbench.".to_string());
+        }
+        if agent_path_can_interrupt(current_agent_path, target_agent_path) {
+            if entry.retry_available {
+                Ok(())
+            } else {
+                Err("Cannot retry an agent without a stored initial task.".to_string())
+            }
+        } else {
+            Err(format!(
+                "Agent `{current_agent_path}` cannot retry `{target_agent_path}` because the target is outside its sub-agent tree."
+            ))
+        }
+    }
+
+    pub(super) fn agent_picker_stop_all_targets(&self) -> Result<Vec<ThreadId>, String> {
+        let current_agent_path =
+            self.current_agent_picker_path_backed_owner_path("Cannot stop all agents")?;
+        let targets: Vec<ThreadId> = self
+            .agent_navigation
+            .ordered_workbench_threads()
+            .into_iter()
+            .filter_map(|(thread_id, entry)| {
+                if self.primary_thread_id == Some(thread_id) {
+                    return None;
+                }
+                if !matches!(
+                    entry.status,
+                    crate::multi_agents::AgentPickerThreadStatus::Running
+                        | crate::multi_agents::AgentPickerThreadStatus::WaitingApproval
+                        | crate::multi_agents::AgentPickerThreadStatus::WaitingUser
+                ) {
+                    return None;
+                }
+                let target_agent_path = entry
+                    .agent_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|agent_path| !agent_path.is_empty())?;
+                if target_agent_path == "/root" || target_agent_path == current_agent_path {
+                    return None;
+                }
+                agent_path_can_interrupt(current_agent_path, target_agent_path).then_some(thread_id)
+            })
+            .collect();
+        if targets.is_empty() {
+            Err("No running or waiting agents to stop in this workbench scope.".to_string())
+        } else {
+            Ok(targets)
+        }
+    }
+
+    fn agent_picker_stop_all_scope_label(&self) -> String {
+        self.current_agent_picker_path_backed_owner_path("Cannot stop all agents")
+            .map(|agent_path| {
+                if agent_path == "/root" {
+                    "root tree".to_string()
+                } else {
+                    format!("{agent_path} subtree")
+                }
+            })
+            .unwrap_or_else(|_| "current workbench".to_string())
     }
 
     fn is_root_owned_agent_workbench(&self) -> bool {
@@ -1063,18 +1489,38 @@ impl App {
         thread_id: ThreadId,
         thread: &codex_app_server_protocol::Thread,
     ) {
-        let (agent_path, source_thread_note) = match &thread.source {
+        let (
+            agent_path,
+            source_thread_note,
+            retry_available,
+            tool_selection_summary,
+            action_policy_summary,
+        ) = match &thread.source {
             codex_app_server_protocol::SessionSource::SubAgent(
                 codex_protocol::protocol::SubAgentSource::ThreadSpawn {
                     agent_path,
                     thread_note,
+                    initial_task,
+                    tool_selection,
+                    action_policy,
                     ..
                 },
             ) => (
                 agent_path.as_ref().map(ToString::to_string),
                 thread_note.clone(),
+                Some(
+                    initial_task
+                        .as_deref()
+                        .is_some_and(|task| !task.trim().is_empty()),
+                ),
+                tool_selection
+                    .as_ref()
+                    .map(crate::multi_agents::agent_picker_tool_selection_summary),
+                action_policy
+                    .as_ref()
+                    .map(crate::multi_agents::agent_picker_action_policy_summary),
             ),
-            _ => (None, None),
+            _ => (None, None, None, None, None),
         };
         let thread_note = thread.thread_note.clone().or(source_thread_note);
         self.agent_navigation.update_thread_detail(
@@ -1083,10 +1529,14 @@ impl App {
                 agent_path,
                 prompt_preview: Some(thread.preview.clone()),
                 thread_note,
+                agent_hidden: thread.agent_hidden,
+                retry_available,
                 cwd: Some(thread.cwd.display().to_string()),
                 model_provider: Some(thread.model_provider.clone()),
                 created_at: Some(thread.created_at),
                 updated_at: Some(thread.updated_at),
+                tool_selection_summary,
+                action_policy_summary,
             },
         );
     }
@@ -1760,6 +2210,42 @@ fn thread_item_for_agent_picker_activity(event: &ThreadBufferedEvent) -> Option<
     }
 }
 
+struct AgentStopAllUserCopy {
+    message: String,
+    hint: Option<String>,
+}
+
+fn agent_stop_all_user_copy(
+    response: &codex_app_server_protocol::AgentStopAllResponse,
+) -> AgentStopAllUserCopy {
+    if response.affected_count == 0 {
+        return AgentStopAllUserCopy {
+            message: "No running or waiting agents to stop.".to_string(),
+            hint: None,
+        };
+    }
+
+    if response.failed.is_empty() {
+        return AgentStopAllUserCopy {
+            message: format!("Stopped {} agents.", response.stopped_thread_ids.len()),
+            hint: Some("Idle, completed and errored agents were unchanged.".to_string()),
+        };
+    }
+
+    let failed_count = response.failed.len();
+    let failed_label = if failed_count == 1 { "agent" } else { "agents" };
+    AgentStopAllUserCopy {
+        message: format!(
+            "Stopped {} of {} agents.",
+            response.stopped_thread_ids.len(),
+            response.affected_count
+        ),
+        hint: Some(format!(
+            "{failed_count} {failed_label} could not be stopped; check the status list before retrying."
+        )),
+    }
+}
+
 fn agent_path_can_interrupt(current_agent_path: &str, target_agent_path: &str) -> bool {
     if current_agent_path == "/root" {
         return target_agent_path.starts_with("/root/");
@@ -1842,5 +2328,49 @@ mod tests {
 
         assert!(App::can_fallback_from_include_turns_error(&unmaterialized));
         assert!(App::can_fallback_from_include_turns_error(&ephemeral));
+    }
+
+    #[test]
+    fn agent_stop_all_user_copy_reports_zero_success_and_partial_failure() {
+        let copy = agent_stop_all_user_copy(&codex_app_server_protocol::AgentStopAllResponse {
+            affected_count: 0,
+            stopped_thread_ids: Vec::new(),
+            failed: Vec::new(),
+        });
+        assert_eq!(copy.message, "No running or waiting agents to stop.");
+        assert_eq!(copy.hint, None);
+
+        let copy = agent_stop_all_user_copy(&codex_app_server_protocol::AgentStopAllResponse {
+            affected_count: 2,
+            stopped_thread_ids: vec!["thread-a".to_string(), "thread-b".to_string()],
+            failed: Vec::new(),
+        });
+        assert_eq!(copy.message, "Stopped 2 agents.");
+        assert_eq!(
+            copy.hint,
+            Some("Idle, completed and errored agents were unchanged.".to_string())
+        );
+
+        let copy = agent_stop_all_user_copy(&codex_app_server_protocol::AgentStopAllResponse {
+            affected_count: 3,
+            stopped_thread_ids: vec!["thread-a".to_string()],
+            failed: vec![
+                codex_app_server_protocol::AgentStopAllFailure {
+                    thread_id: "thread-b".to_string(),
+                    message: "close failed".to_string(),
+                },
+                codex_app_server_protocol::AgentStopAllFailure {
+                    thread_id: "thread-c".to_string(),
+                    message: "close failed".to_string(),
+                },
+            ],
+        });
+        assert_eq!(copy.message, "Stopped 1 of 3 agents.");
+        assert_eq!(
+            copy.hint,
+            Some(
+                "2 agents could not be stopped; check the status list before retrying.".to_string()
+            )
+        );
     }
 }

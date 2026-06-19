@@ -1,8 +1,7 @@
 //! Ephemeral read model for the `/agent` workbench rows.
 //!
 //! The model is a projection over [`AgentNavigationState`] and already-bounded per-thread
-//! summaries. It deliberately does not own lifecycle actions, app-server requests, persistence or
-//! hidden-row state.
+//! summaries. It deliberately does not own lifecycle actions, app-server requests, or persistence.
 
 use super::agent_navigation::AgentNavigationState;
 use crate::multi_agents::AgentPickerSelectedDescriptionContext;
@@ -48,7 +47,7 @@ impl AgentWorkbenchReadModel {
         active_thread_id: Option<ThreadId>,
         detail_summaries: AgentWorkbenchDetailSummaries<'_>,
     ) -> Self {
-        let ordered_threads = agent_navigation.ordered_threads();
+        let ordered_threads = agent_navigation.ordered_workbench_threads();
         let summary_line = agent_picker_summary_line(&ordered_threads, primary_thread_id);
         let mut initial_selected_idx = None;
         let empty_strings: &[String] = &[];
@@ -191,6 +190,16 @@ mod tests {
         assert!(
             model.rows[1]
                 .selected_description
+                .contains("Connection: connected to this thread")
+        );
+        assert!(
+            model.rows[1]
+                .selected_description
+                .contains("- Enter: stay on this thread")
+        );
+        assert!(
+            model.rows[1]
+                .selected_description
                 .contains("Context:\n- Initial request: Inspect the parser.")
         );
         assert!(
@@ -207,6 +216,68 @@ mod tests {
             model.rows[1]
                 .selected_description
                 .contains("- Plan: 1/2 complete")
+        );
+    }
+
+    #[test]
+    fn read_model_excludes_hidden_agents_from_workbench_rows() {
+        let primary = thread_id(101);
+        let visible_worker = thread_id(102);
+        let hidden_reviewer = thread_id(103);
+        let mut navigation = AgentNavigationState::default();
+        navigation.upsert(primary, None, None, /*is_closed*/ false);
+        navigation.upsert(
+            visible_worker,
+            None,
+            Some("worker".to_string()),
+            /*is_closed*/ false,
+        );
+        navigation.upsert(
+            hidden_reviewer,
+            None,
+            Some("reviewer".to_string()),
+            /*is_closed*/ false,
+        );
+        navigation.update_thread_detail(
+            hidden_reviewer,
+            crate::app::agent_navigation::AgentPickerThreadDetail {
+                agent_path: Some("/root/reviewer".to_string()),
+                prompt_preview: None,
+                thread_note: None,
+                agent_hidden: true,
+                retry_available: None,
+                cwd: None,
+                model_provider: None,
+                created_at: None,
+                updated_at: None,
+                tool_selection_summary: None,
+                action_policy_summary: None,
+            },
+        );
+
+        let model = AgentWorkbenchReadModel::build(
+            &navigation,
+            Some(primary),
+            Some(visible_worker),
+            AgentWorkbenchDetailSummaries {
+                prompt_context_by_thread_id: &HashMap::new(),
+                recent_activity_by_thread_id: &HashMap::new(),
+                token_usage_by_thread_id: &HashMap::new(),
+                plan_progress_by_thread_id: &HashMap::new(),
+            },
+        );
+
+        assert_eq!(
+            model.summary_line,
+            "Agents: 1 total · 0 running · 0 waiting · 0 error · 0 closed"
+        );
+        assert_eq!(
+            model
+                .rows
+                .iter()
+                .map(|row| row.thread_id)
+                .collect::<Vec<_>>(),
+            vec![primary, visible_worker]
         );
     }
 }

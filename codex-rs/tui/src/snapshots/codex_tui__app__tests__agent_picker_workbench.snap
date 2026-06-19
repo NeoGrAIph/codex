@@ -9,6 +9,7 @@ expression: rendered.clone()
   1. • Main [default]              closed · main thread · 00000000
 › 2. • Robie [explorer] (current)  Status: running
                                    Current view: yes
+                                   Connection: connected to this thread
                                    Kind: sub-agent thread
                                    Inspect:
                                    - Nickname: Robie
@@ -25,6 +26,6 @@ expression: rendered.clone()
                                    - $ cargo test -p codex-tui agent_picker_workbench_snapshot
                                    - Checked selected detail activity.
                                    Actions:
-                                   - Enter: watch this thread
+                                   - Enter: stay on this thread
 
   Press enter to confirm or esc to go back

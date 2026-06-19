@@ -685,6 +685,24 @@ client_request_definitions! {
         serialization: thread_id(params.target_thread_id),
         response: v2::AgentCloseResponse,
     },
+    #[experimental("agent/dismiss")]
+    AgentDismiss => "agent/dismiss" {
+        params: v2::AgentDismissParams,
+        serialization: thread_id(params.target_thread_id),
+        response: v2::AgentDismissResponse,
+    },
+    #[experimental("agent/retry")]
+    AgentRetry => "agent/retry" {
+        params: v2::AgentRetryParams,
+        serialization: thread_id(params.target_thread_id),
+        response: v2::AgentRetryResponse,
+    },
+    #[experimental("agent/stopAll")]
+    AgentStopAll => "agent/stopAll" {
+        params: v2::AgentStopAllParams,
+        serialization: thread_id(params.author_thread_id),
+        response: v2::AgentStopAllResponse,
+    },
     SkillsList => "skills/list" {
         params: v2::SkillsListParams,
         serialization: global_shared_read("config"),
@@ -919,6 +937,18 @@ client_request_definitions! {
         params: v2::AgentRoleToolSelectionCatalogReadParams,
         serialization: thread_id(params.thread_id),
         response: v2::AgentRoleToolSelectionCatalogReadResponse,
+    },
+    #[experimental("agentRole/toolSelection/set")]
+    AgentRoleToolSelectionSet => "agentRole/toolSelection/set" {
+        params: v2::AgentRoleToolSelectionSetParams,
+        serialization: global("config"),
+        response: v2::AgentRoleToolSelectionSetResponse,
+    },
+    #[experimental("agentRole/actionPolicy/set")]
+    AgentRoleActionPolicySet => "agentRole/actionPolicy/set" {
+        params: v2::AgentRoleActionPolicySetParams,
+        serialization: global("config"),
+        response: v2::AgentRoleActionPolicySetResponse,
     },
     ExperimentalFeatureList => "experimentalFeature/list" {
         params: v2::ExperimentalFeatureListParams,
@@ -2550,6 +2580,7 @@ mod tests {
                     cli_version: "0.0.0".to_string(),
                     source: v2::SessionSource::Exec,
                     thread_note: None,
+                    agent_hidden: false,
                     thread_source: None,
                     agent_nickname: None,
                     agent_role: None,
@@ -2694,6 +2725,54 @@ mod tests {
                     "authorThreadId": "67e55044-10b1-426f-9247-bb680e5fe0c7",
                     "targetThreadId": "67e55044-10b1-426f-9247-bb680e5fe0c8",
                     "message": "Continue with the next parser task."
+                }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_agent_retry() -> Result<()> {
+        let request = ClientRequest::AgentRetry {
+            request_id: RequestId::Integer(10),
+            params: v2::AgentRetryParams {
+                author_thread_id: "67e55044-10b1-426f-9247-bb680e5fe0c7".to_string(),
+                target_thread_id: "67e55044-10b1-426f-9247-bb680e5fe0c8".to_string(),
+            },
+        };
+        assert_eq!(request.id(), &RequestId::Integer(10));
+        assert_eq!(request.method(), "agent/retry");
+        assert_eq!(
+            json!({
+                "method": "agent/retry",
+                "id": 10,
+                "params": {
+                    "authorThreadId": "67e55044-10b1-426f-9247-bb680e5fe0c7",
+                    "targetThreadId": "67e55044-10b1-426f-9247-bb680e5fe0c8"
+                }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_agent_stop_all() -> Result<()> {
+        let request = ClientRequest::AgentStopAll {
+            request_id: RequestId::Integer(11),
+            params: v2::AgentStopAllParams {
+                author_thread_id: "67e55044-10b1-426f-9247-bb680e5fe0c7".to_string(),
+            },
+        };
+        assert_eq!(request.id(), &RequestId::Integer(11));
+        assert_eq!(request.method(), "agent/stopAll");
+        assert_eq!(
+            json!({
+                "method": "agent/stopAll",
+                "id": 11,
+                "params": {
+                    "authorThreadId": "67e55044-10b1-426f-9247-bb680e5fe0c7"
                 }
             }),
             serde_json::to_value(&request)?,
@@ -2974,6 +3053,61 @@ mod tests {
                 "id": 9,
                 "params": {
                     "threadId": "thread-1"
+                }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_agent_role_tool_selection_set() -> Result<()> {
+        let request = ClientRequest::AgentRoleToolSelectionSet {
+            request_id: RequestId::Integer(10),
+            params: v2::AgentRoleToolSelectionSetParams {
+                role_name: "reviewer".to_string(),
+                allowed_tools: Some(vec!["update_plan".to_string()]),
+                denied_tools: Some(vec!["apply_patch".to_string()]),
+            },
+        };
+        assert_eq!(
+            json!({
+                "method": "agentRole/toolSelection/set",
+                "id": 10,
+                "params": {
+                    "roleName": "reviewer",
+                    "allowedTools": ["update_plan"],
+                    "deniedTools": ["apply_patch"]
+                }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_agent_role_action_policy_set() -> Result<()> {
+        let request = ClientRequest::AgentRoleActionPolicySet {
+            request_id: RequestId::Integer(10),
+            params: v2::AgentRoleActionPolicySetParams {
+                role_name: "reviewer".to_string(),
+                allowed_actions: Some(vec![
+                    codex_protocol::protocol::SubAgentActionPolicyAction::AgentMessageSend,
+                    codex_protocol::protocol::SubAgentActionPolicyAction::AgentRetry,
+                ]),
+                denied_actions: Some(vec![
+                    codex_protocol::protocol::SubAgentActionPolicyAction::AgentClose,
+                ]),
+            },
+        };
+        assert_eq!(
+            json!({
+                "method": "agentRole/actionPolicy/set",
+                "id": 10,
+                "params": {
+                    "roleName": "reviewer",
+                    "allowedActions": ["agent_message_send", "agent_retry"],
+                    "deniedActions": ["agent_close"]
                 }
             }),
             serde_json::to_value(&request)?,

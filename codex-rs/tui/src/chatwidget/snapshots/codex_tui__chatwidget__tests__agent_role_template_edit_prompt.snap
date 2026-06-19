@@ -1,0 +1,17 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+▌ Edit audit-reviewer native TOML
+▌ $CODEX_HOME/agents/audit-reviewer.toml
+▌
+▌ name = "audit-reviewer"
+▌ description = "Review code changes before handoff."
+▌ nickname_candidates = ["Ada"]
+▌ developer_instructions = "Review the diff and report concrete risks."
+▌
+▌ [tool_selection]
+▌ allowed_tools = ["update_plan"]
+▌
+
+Press enter to confirm or esc to go back

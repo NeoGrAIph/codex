@@ -7,16 +7,20 @@ expression: popup
   User templates live in $CODEX_HOME/agents/*.toml.
   Runtime tool catalog: 3 current-thread tools, 1 selected by current policy.
 
-  1. Create new template                   Edit a native TOML role draft for future sub-agent spawns
-  2. Create template from current model    Seed a native TOML role draft with current model defaults
-› 3. Create template from current tools    Opens a searchable tool picker and then an editable native
-                                           TOML draft. The current-thread catalog is used only as
-                                           tool-id evidence; the saved source remains $CODEX_HOME/
-                                           agents/*.toml.
-  4. [user active] explorer                Custom explorer role for codebase discovery.
-  5. [user tools] Edit tools for explorer  Update this native role TOML allowlist from current tools
-  6. [built-in active] default             Default agent.
-  7. [built-in shadowed] explorer          Use `explorer` for specific codebase questions.
-  8. [built-in active] worker              Use for execution and production work.
+  1. Create new template                            Edit a native TOML role draft for future sub-agent
+                                                    spawns
+  2. Create template from current model             Seed a native TOML role draft with current model
+                                                    defaults
+  3. Create template from model catalog             Choose model/provider/reasoning defaults from
+                                                    native catalog
+› 4. Create template from current tools             Opens a searchable tool picker and then an
+                                                    editable native TOML draft. The current-thread
+                                                    catalog is used only as tool-id evidence; the
+                                                    saved source remains $CODEX_HOME/agents/*.toml.
+  5. [user active] explorer                         Custom explorer role for codebase discovery.
+  6. [edit] Edit native TOML for explorer           Open this user role file in the inline TOML editor
+  7. [model] Use current model defaults             Copy current model/provider/reasoning defaults
+                                                    into explorer
+  8. [model] Choose model defaults for explorer     Pick model/provider/reasoning from native catalog
 
   Press enter to confirm or esc to go back

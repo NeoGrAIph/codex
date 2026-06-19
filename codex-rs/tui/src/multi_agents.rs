@@ -23,6 +23,11 @@ use codex_app_server_protocol::TurnPlanStepStatus;
 use codex_protocol::ThreadId;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+use codex_protocol::protocol::SubAgentActionPolicyAction;
+use codex_protocol::protocol::SubAgentActionPolicySnapshot;
+use codex_protocol::protocol::SubAgentActionPolicySource;
+use codex_protocol::protocol::SubAgentToolSelectionSnapshot;
+use codex_protocol::protocol::SubAgentToolSelectionSource;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 #[cfg(target_os = "macos")]
@@ -53,6 +58,10 @@ pub(crate) struct AgentPickerThreadEntry {
     pub(crate) prompt_preview: Option<String>,
     /// Thread note captured in native sub-agent spawn metadata.
     pub(crate) thread_note: Option<String>,
+    /// Whether this thread is hidden from the Agent Window workbench.
+    pub(crate) agent_hidden: bool,
+    /// Whether retry has the durable initial task needed to spawn a fresh sibling.
+    pub(crate) retry_available: bool,
     /// Working directory captured for this thread by app-server thread metadata.
     pub(crate) cwd: Option<String>,
     /// Model provider captured for this thread by app-server thread metadata.
@@ -67,6 +76,10 @@ pub(crate) struct AgentPickerThreadEntry {
     pub(crate) reasoning_effort: Option<String>,
     /// Service tier captured from the TUI thread session state when available.
     pub(crate) service_tier: Option<String>,
+    /// Bounded summary of the persisted sub-agent tool-selection snapshot.
+    pub(crate) tool_selection_summary: Option<String>,
+    /// Bounded summary of the persisted sub-agent action-policy snapshot.
+    pub(crate) action_policy_summary: Option<String>,
     /// Latest status derived from native app-server/runtime state.
     pub(crate) status: AgentPickerThreadStatus,
 }
@@ -245,6 +258,14 @@ pub(crate) fn agent_picker_selected_description(
     let mut lines = vec![
         format!("Status: {}", agent_picker_status_label(entry)),
         format!("Current view: {}", if is_current { "yes" } else { "no" }),
+        format!(
+            "Connection: {}",
+            if is_current {
+                "connected to this thread"
+            } else {
+                "available to connect"
+            }
+        ),
     ];
     if is_primary {
         lines.push("Kind: main thread".to_string());
@@ -334,6 +355,22 @@ pub(crate) fn agent_picker_selected_description(
     {
         inspect_lines.push(format!("Service tier: {service_tier}"));
     }
+    if let Some(tool_selection_summary) = entry
+        .tool_selection_summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|summary| !summary.is_empty())
+    {
+        inspect_lines.push(format!("Tool policy: {tool_selection_summary}"));
+    }
+    if let Some(action_policy_summary) = entry
+        .action_policy_summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|summary| !summary.is_empty())
+    {
+        inspect_lines.push(format!("Action policy: {action_policy_summary}"));
+    }
     if let Some(token_usage_summary) = context
         .token_usage_summary
         .map(str::trim)
@@ -374,7 +411,11 @@ pub(crate) fn agent_picker_selected_description(
         );
     }
     lines.push("Actions:".to_string());
-    lines.push("- Enter: watch this thread".to_string());
+    lines.push(if is_current {
+        "- Enter: stay on this thread".to_string()
+    } else {
+        "- Enter: connect / switch to this thread".to_string()
+    });
     lines.join("\n")
 }
 
@@ -388,6 +429,108 @@ fn short_thread_id(thread_id: ThreadId) -> String {
 
 fn agent_picker_prompt_preview(entry: &AgentPickerThreadEntry) -> Option<String> {
     bounded_prompt_preview(entry.prompt_preview.as_deref()?)
+}
+
+pub(crate) fn agent_picker_tool_selection_summary(
+    snapshot: &SubAgentToolSelectionSnapshot,
+) -> String {
+    let mut parts = vec![format!(
+        "source {}",
+        format_tool_selection_source(&snapshot.source)
+    )];
+    match &snapshot.allowed_tools {
+        Some(allowed_tools) => parts.push(format_bounded_policy_set("allowed", allowed_tools)),
+        None => parts.push("allowed default".to_string()),
+    }
+    if !snapshot.denied_tools.is_empty() {
+        parts.push(format_bounded_policy_set("denied", &snapshot.denied_tools));
+    }
+    parts.join(" · ")
+}
+
+pub(crate) fn agent_picker_action_policy_summary(
+    snapshot: &SubAgentActionPolicySnapshot,
+) -> String {
+    let mut parts = vec![format!(
+        "source {}",
+        format_action_policy_source(&snapshot.source)
+    )];
+    match &snapshot.allowed_actions {
+        Some(allowed_actions) => {
+            parts.push(format_bounded_action_set("allowed", allowed_actions));
+        }
+        None => parts.push("allowed default".to_string()),
+    }
+    if !snapshot.denied_actions.is_empty() {
+        parts.push(format_bounded_action_set(
+            "denied",
+            &snapshot.denied_actions,
+        ));
+    }
+    parts.join(" · ")
+}
+
+fn format_tool_selection_source(source: &SubAgentToolSelectionSource) -> &'static str {
+    match source {
+        SubAgentToolSelectionSource::Config => "config",
+        SubAgentToolSelectionSource::RoleAppliedConfig => "role_applied_config",
+    }
+}
+
+fn format_action_policy_source(source: &SubAgentActionPolicySource) -> &'static str {
+    match source {
+        SubAgentActionPolicySource::Default => "default",
+        SubAgentActionPolicySource::Config => "config",
+        SubAgentActionPolicySource::RoleAppliedConfig => "role_applied_config",
+    }
+}
+
+fn format_bounded_policy_set(label: &str, values: &std::collections::BTreeSet<String>) -> String {
+    let preview = values
+        .iter()
+        .take(3)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let remaining = values.len().saturating_sub(3);
+    if remaining > 0 {
+        format!("{label} {preview} +{remaining}")
+    } else if preview.is_empty() {
+        format!("{label} none")
+    } else {
+        format!("{label} {preview}")
+    }
+}
+
+fn format_bounded_action_set(
+    label: &str,
+    values: &std::collections::BTreeSet<SubAgentActionPolicyAction>,
+) -> String {
+    let preview = values
+        .iter()
+        .take(3)
+        .map(format_action_policy_action)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let remaining = values.len().saturating_sub(3);
+    if remaining > 0 {
+        format!("{label} {preview} +{remaining}")
+    } else if preview.is_empty() {
+        format!("{label} none")
+    } else {
+        format!("{label} {preview}")
+    }
+}
+
+fn format_action_policy_action(action: &SubAgentActionPolicyAction) -> &'static str {
+    match action {
+        SubAgentActionPolicyAction::AgentMessageSend => "agent_message_send",
+        SubAgentActionPolicyAction::AgentFollowupSend => "agent_followup_send",
+        SubAgentActionPolicyAction::AgentClose => "agent_close",
+        SubAgentActionPolicyAction::AgentDismiss => "agent_dismiss",
+        SubAgentActionPolicyAction::AgentRetry => "agent_retry",
+        SubAgentActionPolicyAction::AgentStopAll => "agent_stop_all",
+    }
 }
 
 fn format_agent_picker_timestamp(timestamp_seconds: i64) -> Option<String> {
@@ -1183,6 +1326,8 @@ mod tests {
             agent_path: None,
             prompt_preview: None,
             thread_note: None,
+            agent_hidden: false,
+            retry_available: false,
             cwd: None,
             model_provider: None,
             created_at: None,
@@ -1190,6 +1335,8 @@ mod tests {
             model: None,
             reasoning_effort: None,
             service_tier: None,
+            tool_selection_summary: None,
+            action_policy_summary: None,
             status,
         }
     }
@@ -1204,6 +1351,8 @@ mod tests {
             agent_path: Some("/root/explorer".to_string()),
             prompt_preview: None,
             thread_note: None,
+            agent_hidden: false,
+            retry_available: false,
             cwd: None,
             model_provider: None,
             created_at: None,
@@ -1211,6 +1360,8 @@ mod tests {
             model: None,
             reasoning_effort: None,
             service_tier: None,
+            tool_selection_summary: None,
+            action_policy_summary: None,
             status: AgentPickerThreadStatus::Running,
         };
 
@@ -1263,6 +1414,8 @@ mod tests {
                 "Inspect the parser state\nand report concise evidence.".to_string(),
             ),
             thread_note: Some("Investigate parser state".to_string()),
+            agent_hidden: false,
+            retry_available: true,
             cwd: Some("/workspace/project".to_string()),
             model_provider: Some("deepseek".to_string()),
             created_at: Some(1_735_689_600),
@@ -1270,6 +1423,14 @@ mod tests {
             model: Some("deepseek-v4-flash".to_string()),
             reasoning_effort: Some("high".to_string()),
             service_tier: Some("priority".to_string()),
+            tool_selection_summary: Some(
+                "source role_applied_config · allowed update_plan, tool_search · denied apply_patch"
+                    .to_string(),
+            ),
+            action_policy_summary: Some(
+                "source role_applied_config · allowed agent_message_send, agent_retry · denied agent_close"
+                    .to_string(),
+            ),
             status: AgentPickerThreadStatus::Closed,
         };
 
@@ -1292,7 +1453,7 @@ mod tests {
                     plan_progress_summary: Some("1/3 complete · now: Verify TUI workbench anchors",),
                 },
             ),
-            "Status: closed\nCurrent view: yes\nKind: sub-agent thread\nInspect:\n- Nickname: Robie\n- Role: explorer\n- Agent path: /root/explorer\n- Prompt: Inspect the parser state and report concise evidence.\n- Note: Investigate parser state\n- Cwd: /workspace/project\n- Model provider: deepseek\n- Created: 2025-01-01 00:00:00 UTC\n- Updated: 2025-01-01 01:00:00 UTC\n- Model: deepseek-v4-flash\n- Reasoning: high\n- Service tier: priority\n- Tokens: total 10 · last 4 · context 4/950,000\n- Plan: 1/3 complete · now: Verify TUI workbench anchors\n- Thread: 00000000-0000-0000-0000-000000000102\nContext:\n- Initial request: Map parser entry points.\n- Latest input: Focus on app-server projection.\nRecent activity:\n- $ cargo test -p codex-tui agent_picker_workbench_snapshot\n- Checked the bounded detail projection.\nActions:\n- Enter: watch this thread"
+            "Status: closed\nCurrent view: yes\nConnection: connected to this thread\nKind: sub-agent thread\nInspect:\n- Nickname: Robie\n- Role: explorer\n- Agent path: /root/explorer\n- Prompt: Inspect the parser state and report concise evidence.\n- Note: Investigate parser state\n- Cwd: /workspace/project\n- Model provider: deepseek\n- Created: 2025-01-01 00:00:00 UTC\n- Updated: 2025-01-01 01:00:00 UTC\n- Model: deepseek-v4-flash\n- Reasoning: high\n- Service tier: priority\n- Tool policy: source role_applied_config · allowed update_plan, tool_search · denied apply_patch\n- Action policy: source role_applied_config · allowed agent_message_send, agent_retry · denied agent_close\n- Tokens: total 10 · last 4 · context 4/950,000\n- Plan: 1/3 complete · now: Verify TUI workbench anchors\n- Thread: 00000000-0000-0000-0000-000000000102\nContext:\n- Initial request: Map parser entry points.\n- Latest input: Focus on app-server projection.\nRecent activity:\n- $ cargo test -p codex-tui agent_picker_workbench_snapshot\n- Checked the bounded detail projection.\nActions:\n- Enter: stay on this thread"
         );
     }
 
@@ -1306,6 +1467,8 @@ mod tests {
             agent_path: Some("/root/explorer".to_string()),
             prompt_preview: None,
             thread_note: None,
+            agent_hidden: false,
+            retry_available: false,
             cwd: None,
             model_provider: None,
             created_at: None,
@@ -1313,6 +1476,8 @@ mod tests {
             model: None,
             reasoning_effort: None,
             service_tier: None,
+            tool_selection_summary: None,
+            action_policy_summary: None,
             status: AgentPickerThreadStatus::WaitingApproval,
         };
 
@@ -1335,7 +1500,7 @@ mod tests {
                     plan_progress_summary: None,
                 },
             ),
-            "Status: waiting user\nCurrent view: no\nKind: sub-agent thread\nInspect:\n- Nickname: Robie\n- Role: explorer\n- Agent path: /root/explorer\n- Thread: 00000000-0000-0000-0000-000000000102\nActions:\n- Enter: watch this thread"
+            "Status: waiting user\nCurrent view: no\nConnection: available to connect\nKind: sub-agent thread\nInspect:\n- Nickname: Robie\n- Role: explorer\n- Agent path: /root/explorer\n- Thread: 00000000-0000-0000-0000-000000000102\nActions:\n- Enter: connect / switch to this thread"
         );
 
         entry.status = AgentPickerThreadStatus::Error;

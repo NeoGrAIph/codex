@@ -13,6 +13,7 @@ use assert_matches::assert_matches;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::AgentPath;
+use codex_protocol::ToolName;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::MessagePhase;
@@ -26,6 +27,7 @@ use codex_protocol::protocol::SubAgentActionPolicyMode;
 use codex_protocol::protocol::SubAgentActionPolicySnapshot;
 use codex_protocol::protocol::SubAgentActionPolicySource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::SubAgentToolSelectionSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
@@ -562,6 +564,8 @@ async fn ensure_v2_agent_loaded_reloads_registered_unloaded_agent() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             SpawnAgentOptions {
                 parent_thread_id: Some(parent_thread_id),
@@ -656,6 +660,8 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -674,6 +680,8 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
                 agent_role: Some("reviewer".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -747,6 +755,8 @@ async fn encrypted_inter_agent_communication_clears_existing_last_task_message()
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             SpawnAgentOptions {
                 parent_thread_id: Some(parent_thread_id),
@@ -928,6 +938,8 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -999,6 +1011,8 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -1143,6 +1157,8 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id),
@@ -1215,6 +1231,8 @@ async fn spawn_agent_fork_flushes_parent_rollout_before_loading_history() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -1334,6 +1352,8 @@ async fn spawn_agent_fork_last_n_turns_keeps_only_recent_turns() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id.clone()),
@@ -1447,6 +1467,8 @@ async fn spawn_agent_fork_last_n_turns_drops_parent_startup_prefix_when_under_li
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id),
@@ -1559,6 +1581,8 @@ async fn spawn_agent_fork_last_n_turns_strips_parent_usage_hints() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             SpawnAgentOptions {
                 fork_parent_spawn_call_id: Some(parent_spawn_call_id),
@@ -1682,6 +1706,8 @@ async fn spawn_agent_v2_default_limit_allows_twelve_spawned_agents() {
                     agent_role: None,
                     thread_note: None,
                     action_policy: None,
+                    initial_task: None,
+                    tool_selection: None,
                 })),
             )
             .await
@@ -1701,6 +1727,8 @@ async fn spawn_agent_v2_default_limit_allows_twelve_spawned_agents() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -1911,6 +1939,8 @@ async fn spawn_child_completion_notifies_parent_history() {
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -1955,6 +1985,8 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -1973,6 +2005,8 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2073,6 +2107,8 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
             agent_role: Some("explorer".to_string()),
             thread_note: None,
             action_policy: None,
+            initial_task: None,
+            tool_selection: None,
         })),
         tester_path.to_string(),
         Some(tester_path.clone()),
@@ -2161,6 +2197,8 @@ async fn completion_watcher_notifies_parent_when_child_is_missing() {
             agent_role: Some("explorer".to_string()),
             thread_note: None,
             action_policy: None,
+            initial_task: None,
+            tool_selection: None,
         })),
         child_thread_id.to_string(),
         /*child_agent_path*/ None,
@@ -2206,6 +2244,8 @@ async fn spawn_thread_subagent_gets_random_nickname_in_session_source() {
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2262,6 +2302,8 @@ async fn spawn_thread_subagent_uses_role_specific_nickname_candidates() {
                 agent_role: Some("researcher".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2322,6 +2364,8 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2393,6 +2437,8 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             }),
         )
         .await
@@ -2414,6 +2460,8 @@ async fn resume_thread_subagent_restores_stored_nickname_and_role() {
         agent_role: resumed_role,
         thread_note: None,
         action_policy: None,
+        initial_task: None,
+        tool_selection: None,
         ..
     }) = resumed_snapshot.session_source
     else {
@@ -2501,6 +2549,8 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2522,6 +2572,8 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2539,6 +2591,8 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2556,6 +2610,8 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2573,6 +2629,8 @@ async fn list_agent_subtree_thread_ids_includes_anonymous_and_closed_descendants
                 agent_role: Some("reviewer".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2646,6 +2704,8 @@ async fn list_agent_subtree_thread_ids_finds_live_descendants_of_unloaded_root()
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2662,6 +2722,8 @@ async fn list_agent_subtree_thread_ids_finds_live_descendants_of_unloaded_root()
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2699,6 +2761,8 @@ async fn shutdown_agent_tree_closes_live_descendants() {
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2716,6 +2780,8 @@ async fn shutdown_agent_tree_closes_live_descendants() {
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2788,6 +2854,8 @@ async fn shutdown_agent_tree_closes_descendants_when_started_at_child() {
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2805,6 +2873,8 @@ async fn shutdown_agent_tree_closes_descendants_when_started_at_child() {
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2883,6 +2953,8 @@ async fn resume_agent_from_rollout_does_not_reopen_closed_descendants() {
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2900,6 +2972,8 @@ async fn resume_agent_from_rollout_does_not_reopen_closed_descendants() {
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2982,6 +3056,8 @@ async fn resume_closed_child_reopens_open_descendants() {
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -2999,6 +3075,8 @@ async fn resume_closed_child_reopens_open_descendants() {
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -3041,6 +3119,8 @@ async fn resume_closed_child_reopens_open_descendants() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             }),
         )
         .await
@@ -3085,6 +3165,8 @@ async fn resume_agent_from_rollout_reopens_open_descendants_after_manager_shutdo
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -3102,6 +3184,8 @@ async fn resume_agent_from_rollout_reopens_open_descendants_after_manager_shutdo
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -3180,6 +3264,8 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -3197,6 +3283,8 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -3239,6 +3327,8 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
             action_policy: Some(SubAgentActionPolicySnapshot::new(
                 SubAgentActionPolicySource::RoleAppliedConfig,
             )),
+            initial_task: None,
+            tool_selection: None,
         }))
         .expect("stale session source should serialize");
     state_db
@@ -3310,6 +3400,112 @@ async fn resume_agent_from_rollout_uses_edge_data_when_descendant_metadata_sourc
 }
 
 #[tokio::test]
+async fn resume_agent_from_rollout_uses_edge_tool_selection_when_source_config_changed() {
+    let harness = AgentControlHarness::new().await;
+    let (parent_thread_id, parent_thread) = harness.start_thread().await;
+
+    let mut child_config = harness.config.clone();
+    child_config.tool_selection.allowed =
+        Some([ToolName::plain("update_plan")].into_iter().collect());
+    child_config.tool_selection.denied =
+        Some([ToolName::plain("view_image")].into_iter().collect());
+    let persisted_tool_selection = child_config
+        .tool_selection
+        .to_subagent_snapshot(SubAgentToolSelectionSource::RoleAppliedConfig)
+        .expect("active tool selection should produce a persisted snapshot");
+
+    let child_thread_id = harness
+        .control
+        .spawn_agent(
+            child_config,
+            text_input("child with retained tools"),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(AgentPath::try_from("/root/worker").expect("agent path")),
+                agent_nickname: None,
+                agent_role: Some("worker".to_string()),
+                thread_note: None,
+                action_policy: None,
+                initial_task: Some("child with retained tools".to_string()),
+                tool_selection: Some(persisted_tool_selection),
+            })),
+        )
+        .await
+        .expect("child spawn should succeed");
+
+    let child_thread = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    persist_thread_for_tree_resume(&parent_thread, "parent persisted").await;
+    persist_thread_for_tree_resume(&child_thread, "child persisted").await;
+    wait_for_live_thread_spawn_children(&harness.control, parent_thread_id, &[child_thread_id])
+        .await;
+
+    let report = harness
+        .manager
+        .shutdown_all_threads_bounded(Duration::from_secs(5))
+        .await;
+    assert_eq!(report.submit_failed, Vec::<ThreadId>::new());
+    assert_eq!(report.timed_out, Vec::<ThreadId>::new());
+
+    let mut changed_config = harness.config.clone();
+    changed_config.tool_selection.allowed =
+        Some([ToolName::plain("apply_patch")].into_iter().collect());
+    changed_config.tool_selection.denied = None;
+
+    let resumed_parent_thread_id = harness
+        .control
+        .resume_agent_from_rollout(changed_config, parent_thread_id, SessionSource::Exec)
+        .await
+        .expect("tree resume should succeed");
+    assert_eq!(resumed_parent_thread_id, parent_thread_id);
+
+    let resumed_child = harness
+        .manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("resumed child thread should exist");
+    let resumed_config = resumed_child.config().await;
+    assert_eq!(
+        resumed_config.tool_selection.allowed,
+        Some([ToolName::plain("update_plan")].into_iter().collect())
+    );
+    assert_eq!(
+        resumed_config.tool_selection.denied,
+        Some([ToolName::plain("view_image")].into_iter().collect())
+    );
+
+    let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        tool_selection: Some(snapshot),
+        ..
+    }) = resumed_child.config_snapshot().await.session_source
+    else {
+        panic!("resumed child should retain a persisted tool-selection snapshot");
+    };
+    assert_eq!(
+        snapshot.source,
+        SubAgentToolSelectionSource::RoleAppliedConfig
+    );
+    assert_eq!(
+        snapshot.allowed_tools,
+        Some(["update_plan".to_string()].into_iter().collect())
+    );
+    assert_eq!(
+        snapshot.denied_tools,
+        ["view_image".to_string()].into_iter().collect()
+    );
+
+    let _ = harness
+        .control
+        .shutdown_agent_tree(parent_thread_id)
+        .await
+        .expect("tree shutdown after tool-selection resume should succeed");
+}
+
+#[tokio::test]
 async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() {
     let harness = AgentControlHarness::new().await;
     let (parent_thread_id, parent_thread) = harness.start_thread().await;
@@ -3327,6 +3523,8 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
                 agent_role: Some("explorer".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await
@@ -3344,6 +3542,8 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails() 
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
         )
         .await

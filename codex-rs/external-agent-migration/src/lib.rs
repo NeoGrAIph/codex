@@ -30,6 +30,7 @@ struct ParsedDocument {
 #[derive(Debug)]
 enum FrontmatterValue {
     Scalar(String),
+    List(Vec<String>),
     Other,
 }
 
@@ -39,6 +40,8 @@ struct AgentMetadata {
     description: String,
     permission_mode: Option<String>,
     effort: Option<String>,
+    tools: Option<Vec<String>>,
+    disallowed_tools: Option<Vec<String>>,
 }
 
 pub fn build_mcp_config_from_external(
@@ -1038,9 +1041,20 @@ fn frontmatter_value_from_yaml(value: &YamlValue) -> FrontmatterValue {
         YamlValue::String(value) => FrontmatterValue::Scalar(value.trim().to_string()),
         YamlValue::Bool(value) => FrontmatterValue::Scalar(value.to_string()),
         YamlValue::Number(value) => FrontmatterValue::Scalar(value.to_string()),
-        YamlValue::Null | YamlValue::Sequence(_) | YamlValue::Mapping(_) | YamlValue::Tagged(_) => {
-            FrontmatterValue::Other
+        YamlValue::Sequence(values) => {
+            let items = values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::trim))
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if items.is_empty() {
+                FrontmatterValue::Other
+            } else {
+                FrontmatterValue::List(items)
+            }
         }
+        YamlValue::Null | YamlValue::Mapping(_) | YamlValue::Tagged(_) => FrontmatterValue::Other,
     }
 }
 
@@ -1067,6 +1081,8 @@ fn agent_metadata(document: &ParsedDocument) -> Option<AgentMetadata> {
         description,
         permission_mode: frontmatter_string(&document.frontmatter, "permissionMode"),
         effort: frontmatter_string(&document.frontmatter, "effort"),
+        tools: frontmatter_string_list(&document.frontmatter, "tools"),
+        disallowed_tools: frontmatter_string_list(&document.frontmatter, "disallowedTools"),
     })
 }
 
@@ -1095,6 +1111,12 @@ fn render_agent_toml(body: &str, metadata: &AgentMetadata) -> io::Result<String>
             TomlValue::String(sandbox_mode.to_string()),
         );
     }
+    if let Some(tool_selection) = render_tool_selection_toml(metadata) {
+        document.insert(
+            "tool_selection".to_string(),
+            TomlValue::Table(tool_selection),
+        );
+    }
     document.insert(
         "developer_instructions".to_string(),
         TomlValue::String(render_agent_body(body)),
@@ -1103,6 +1125,82 @@ fn render_agent_toml(body: &str, metadata: &AgentMetadata) -> io::Result<String>
     let serialized = toml::to_string_pretty(&TomlValue::Table(document))
         .map_err(|err| invalid_data_error(format!("failed to serialize agent TOML: {err}")))?;
     Ok(format!("{}\n", serialized.trim_end()))
+}
+
+fn render_tool_selection_toml(
+    metadata: &AgentMetadata,
+) -> Option<toml::map::Map<String, TomlValue>> {
+    let allowed_tools = metadata
+        .tools
+        .as_ref()
+        .map(|tools| map_external_allowed_tools(tools));
+    let denied_tools = metadata
+        .disallowed_tools
+        .as_ref()
+        .map(|tools| map_external_denied_tools(tools));
+
+    if allowed_tools.is_none() && denied_tools.as_ref().is_none_or(Vec::is_empty) {
+        return None;
+    }
+
+    let mut tool_selection = toml::map::Map::new();
+    if let Some(allowed_tools) = allowed_tools {
+        tool_selection.insert(
+            "allowed_tools".to_string(),
+            TomlValue::Array(allowed_tools.into_iter().map(TomlValue::String).collect()),
+        );
+    }
+    if let Some(denied_tools) = denied_tools
+        && !denied_tools.is_empty()
+    {
+        tool_selection.insert(
+            "denied_tools".to_string(),
+            TomlValue::Array(denied_tools.into_iter().map(TomlValue::String).collect()),
+        );
+    }
+    Some(tool_selection)
+}
+
+fn map_external_allowed_tools(tools: &[String]) -> Vec<String> {
+    collect_tool_selection_entries(tools, |tool| match tool {
+        "Bash" => Some(vec!["shell_command".to_string()]),
+        "TodoWrite" => Some(vec!["update_plan".to_string()]),
+        "WebSearch" => Some(vec!["web_search".to_string()]),
+        "Task" => Some(vec!["spawn_agent".to_string()]),
+        _ => None,
+    })
+}
+
+fn map_external_denied_tools(tools: &[String]) -> Vec<String> {
+    collect_tool_selection_entries(tools, |tool| match tool {
+        "Bash" | "BashOutput" | "KillBash" => Some(vec!["shell_command".to_string()]),
+        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
+            Some(vec!["apply_patch".to_string(), "shell_command".to_string()])
+        }
+        "TodoWrite" => Some(vec!["update_plan".to_string()]),
+        "WebSearch" => Some(vec!["web_search".to_string()]),
+        "Task" => Some(vec!["spawn_agent".to_string()]),
+        _ => None,
+    })
+}
+
+fn collect_tool_selection_entries(
+    tools: &[String],
+    map_alias: impl Fn(&str) -> Option<Vec<String>>,
+) -> Vec<String> {
+    let mut entries = BTreeSet::new();
+    for tool in tools {
+        let tool = tool.trim();
+        if tool.is_empty() {
+            continue;
+        }
+        if let Some(mapped) = map_alias(tool) {
+            entries.extend(mapped);
+        } else {
+            entries.insert(tool.to_string());
+        }
+    }
+    entries.into_iter().collect()
 }
 
 fn render_agent_body(body: &str) -> String {
@@ -1206,6 +1304,15 @@ fn frontmatter_string(
         .map(ToOwned::to_owned)
 }
 
+fn frontmatter_string_list(
+    frontmatter: &BTreeMap<String, FrontmatterValue>,
+    key: &str,
+) -> Option<Vec<String>> {
+    frontmatter
+        .get(key)
+        .and_then(FrontmatterValue::as_string_list)
+}
+
 fn map_agent_reasoning_effort(effort: &str) -> Option<String> {
     let mapped = match effort {
         "max" => "xhigh".to_string(),
@@ -1279,7 +1386,15 @@ impl FrontmatterValue {
     fn as_scalar(&self) -> Option<&str> {
         match self {
             Self::Scalar(value) => Some(value),
-            Self::Other => None,
+            Self::List(_) | Self::Other => None,
+        }
+    }
+
+    fn as_string_list(&self) -> Option<Vec<String>> {
+        match self {
+            Self::Scalar(value) if !value.trim().is_empty() => Some(vec![value.trim().to_string()]),
+            Self::List(values) => Some(values.clone()),
+            Self::Scalar(_) | Self::Other => None,
         }
     }
 }
@@ -1765,12 +1880,43 @@ command = "enabled-server"
     }
 
     #[test]
-    fn subagent_accepts_yaml_block_lists_by_ignoring_unsupported_fields() {
+    fn subagent_accepts_yaml_block_lists_as_tool_selection_source() {
         let document = parse_document_content(
             "---\nname: cloud-incident\ndescription: Debug incidents\nskills:\n  - runbook-reader\ntools:\n  - Read\n  - Bash\ndisallowedTools:\n  - Write\n---\nInvestigate carefully.\n",
         );
 
-        assert!(agent_metadata(&document).is_some());
+        let metadata = agent_metadata(&document).expect("metadata");
+        assert_eq!(
+            metadata.tools,
+            Some(vec!["Read".to_string(), "Bash".to_string()])
+        );
+        assert_eq!(metadata.disallowed_tools, Some(vec!["Write".to_string()]));
+    }
+
+    #[test]
+    fn subagent_renders_frontmatter_tools_as_native_tool_selection() {
+        let document = parse_document_content(
+            "---\nname: cloud-incident\ndescription: Debug incidents\ntools:\n  - Read\n  - Bash\n  - TodoWrite\ndisallowedTools:\n  - Write\n---\nInvestigate carefully.\n",
+        );
+        let metadata = agent_metadata(&document).expect("metadata");
+        let rendered: TomlValue =
+            toml::from_str(&render_agent_toml(&document.body, &metadata).expect("render agent"))
+                .expect("parse rendered agent");
+        let expected: TomlValue = toml::from_str(
+            r#"
+name = "cloud-incident"
+description = "Debug incidents"
+developer_instructions = """
+Investigate carefully."""
+
+[tool_selection]
+allowed_tools = ["Read", "shell_command", "update_plan"]
+denied_tools = ["apply_patch", "shell_command"]
+"#,
+        )
+        .expect("parse expected agent");
+
+        assert_eq!(rendered, expected);
     }
 
     #[test]

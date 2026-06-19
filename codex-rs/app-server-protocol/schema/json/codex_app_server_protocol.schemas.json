@@ -6119,6 +6119,21 @@
       "AgentPath": {
         "type": "string"
       },
+      "AgentStopAllFailure": {
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message",
+          "threadId"
+        ],
+        "type": "object"
+      },
       "AnalyticsConfig": {
         "additionalProperties": true,
         "properties": {
@@ -15817,14 +15832,43 @@
         ],
         "type": "object"
       },
+      "SubAgentActionPolicyAction": {
+        "enum": [
+          "agent_message_send",
+          "agent_followup_send",
+          "agent_close",
+          "agent_dismiss",
+          "agent_retry",
+          "agent_stop_all"
+        ],
+        "type": "string"
+      },
       "SubAgentActionPolicyMode": {
         "enum": [
-          "default"
+          "default",
+          "allow_deny"
         ],
         "type": "string"
       },
       "SubAgentActionPolicySnapshot": {
         "properties": {
+          "allowed_actions": {
+            "items": {
+              "$ref": "#/definitions/v2/SubAgentActionPolicyAction"
+            },
+            "type": [
+              "array",
+              "null"
+            ],
+            "uniqueItems": true
+          },
+          "denied_actions": {
+            "items": {
+              "$ref": "#/definitions/v2/SubAgentActionPolicyAction"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
           "mode": {
             "$ref": "#/definitions/v2/SubAgentActionPolicyMode"
           },
@@ -15847,6 +15891,7 @@
       "SubAgentActionPolicySource": {
         "enum": [
           "default",
+          "config",
           "role_applied_config"
         ],
         "type": "string"
@@ -15913,6 +15958,12 @@
                     "format": "int32",
                     "type": "integer"
                   },
+                  "initial_task": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "parent_thread_id": {
                     "$ref": "#/definitions/v2/ThreadId"
                   },
@@ -15921,6 +15972,16 @@
                     "type": [
                       "string",
                       "null"
+                    ]
+                  },
+                  "tool_selection": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/v2/SubAgentToolSelectionSnapshot"
+                      },
+                      {
+                        "type": "null"
+                      }
                     ]
                   }
                 },
@@ -15951,6 +16012,47 @@
             "type": "object"
           }
         ]
+      },
+      "SubAgentToolSelectionSnapshot": {
+        "properties": {
+          "allowed_tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ],
+            "uniqueItems": true
+          },
+          "denied_tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "source": {
+            "$ref": "#/definitions/v2/SubAgentToolSelectionSource"
+          },
+          "version": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "source",
+          "version"
+        ],
+        "type": "object"
+      },
+      "SubAgentToolSelectionSource": {
+        "enum": [
+          "config",
+          "role_applied_config"
+        ],
+        "type": "string"
       },
       "SubagentMigration": {
         "properties": {
@@ -16053,6 +16155,11 @@
       },
       "Thread": {
         "properties": {
+          "agentHidden": {
+            "default": false,
+            "description": "Whether this thread is hidden from the Agent Window workbench.",
+            "type": "boolean"
+          },
           "agentNickname": {
             "description": "Optional random unique nickname assigned to an AgentControl-spawned sub-agent.",
             "type": [

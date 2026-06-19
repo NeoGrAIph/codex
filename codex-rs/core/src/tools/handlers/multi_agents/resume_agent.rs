@@ -190,7 +190,9 @@ async fn try_resume_closed_agent(
             /*agent_role*/ None,
             /*task_name*/ None,
             /*thread_note*/ None,
+            /*initial_task*/ None,
             /*action_policy*/ None,
+            /*tool_selection*/ None,
         )?,
     ))
     .await

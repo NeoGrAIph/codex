@@ -138,6 +138,8 @@ mod tests {
             agent_role: None,
             thread_note: None,
             action_policy: None,
+            initial_task: None,
+            tool_selection: None,
         });
 
         assert!(source_kind_matches(

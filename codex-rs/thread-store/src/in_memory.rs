@@ -173,6 +173,7 @@ impl InMemoryThreadStore {
             agent_role: params.source.get_agent_role(),
             agent_path: params.source.get_agent_path().map(Into::into),
             thread_note: params.source.get_thread_note(),
+            agent_hidden: false,
             source: params.source.clone(),
             thread_source: params.thread_source.clone(),
             model_provider: Some(params.metadata.model_provider.clone()),
@@ -480,6 +481,9 @@ fn stored_thread_from_state(
         agent_role: metadata.and_then(|metadata| metadata.agent_role.clone().flatten()),
         agent_path: metadata.and_then(|metadata| metadata.agent_path.clone().flatten()),
         thread_note: metadata.and_then(|metadata| metadata.thread_note.clone().flatten()),
+        agent_hidden: metadata
+            .and_then(|metadata| metadata.agent_hidden)
+            .unwrap_or(false),
         git_info: metadata.and_then(git_info_from_patch),
         approval_mode: metadata
             .and_then(|metadata| metadata.approval_mode)

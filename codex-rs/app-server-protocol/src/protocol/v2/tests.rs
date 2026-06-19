@@ -179,6 +179,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             cli_version: "0.0.0".to_string(),
             source: SessionSource::Exec,
             thread_note: None,
+            agent_hidden: false,
             thread_source: None,
             agent_nickname: None,
             agent_role: None,

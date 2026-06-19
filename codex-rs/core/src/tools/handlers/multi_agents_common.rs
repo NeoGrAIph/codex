@@ -23,6 +23,8 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentActionPolicySnapshot;
 use codex_protocol::protocol::SubAgentActionPolicySource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::SubAgentToolSelectionSnapshot;
+use codex_protocol::protocol::SubAgentToolSelectionSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::normalize_thread_note_value;
 use codex_protocol::user_input::UserInput;
@@ -148,18 +150,29 @@ pub(crate) fn thread_spawn_source(
     agent_role: Option<&str>,
     task_name: Option<String>,
     thread_note: Option<String>,
+    initial_task: Option<String>,
     action_policy: Option<SubAgentActionPolicySnapshot>,
+    tool_selection: Option<SubAgentToolSelectionSnapshot>,
 ) -> Result<SessionSource, FunctionCallError> {
-    let agent_path = task_name
-        .as_deref()
-        .map(|task_name| {
-            parent_session_source
-                .get_agent_path()
-                .unwrap_or_else(AgentPath::root)
-                .join(task_name)
-                .map_err(FunctionCallError::RespondToModel)
-        })
-        .transpose()?;
+    let agent_path = match task_name.as_deref() {
+        Some(task_name) => {
+            let parent_agent_path = match parent_session_source.get_agent_path() {
+                Some(agent_path) => agent_path,
+                None if parent_session_source.is_non_root_agent() => {
+                    return Err(FunctionCallError::RespondToModel(
+                        "spawn_agent requires a path-backed author".to_string(),
+                    ));
+                }
+                None => AgentPath::root(),
+            };
+            Some(
+                parent_agent_path
+                    .join(task_name)
+                    .map_err(FunctionCallError::RespondToModel)?,
+            )
+        }
+        None => None,
+    };
     Ok(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id,
         depth,
@@ -167,19 +180,29 @@ pub(crate) fn thread_spawn_source(
         agent_nickname: None,
         agent_role: agent_role.map(str::to_string),
         thread_note,
+        initial_task,
         action_policy,
+        tool_selection,
     }))
 }
 
 pub(crate) fn subagent_action_policy_snapshot(
+    config: &Config,
     role_name: Option<&str>,
 ) -> SubAgentActionPolicySnapshot {
-    let source = if role_name.is_some() {
-        SubAgentActionPolicySource::RoleAppliedConfig
-    } else {
-        SubAgentActionPolicySource::Default
-    };
-    SubAgentActionPolicySnapshot::new(source)
+    if config.subagent_action_policy.is_active() {
+        let source = if role_name.is_some() {
+            SubAgentActionPolicySource::RoleAppliedConfig
+        } else {
+            SubAgentActionPolicySource::Config
+        };
+        return SubAgentActionPolicySnapshot::with_allow_deny(
+            source,
+            config.subagent_action_policy.allowed.clone(),
+            config.subagent_action_policy.denied.clone(),
+        );
+    }
+    SubAgentActionPolicySnapshot::new(SubAgentActionPolicySource::Default)
 }
 
 pub(crate) fn normalize_thread_note(
@@ -220,6 +243,18 @@ pub(crate) fn parse_collab_input(
             Ok(items.into())
         }
     }
+}
+
+pub(crate) fn subagent_tool_selection_snapshot(
+    config: &Config,
+    role_name: Option<&str>,
+) -> Option<SubAgentToolSelectionSnapshot> {
+    let source = if role_name.is_some() {
+        SubAgentToolSelectionSource::RoleAppliedConfig
+    } else {
+        SubAgentToolSelectionSource::Config
+    };
+    config.tool_selection.to_subagent_snapshot(source)
 }
 
 /// Builds the base config snapshot for a newly spawned sub-agent.
@@ -283,6 +318,25 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
     config: &mut Config,
     turn: &TurnContext,
 ) -> Result<(), FunctionCallError> {
+    apply_spawn_agent_runtime_context_overrides(config, turn)?;
+    config
+        .permissions
+        .set_permission_profile(turn.permission_profile())
+        .map_err(|err| {
+            FunctionCallError::RespondToModel(format!("permission_profile is invalid: {err}"))
+        })?;
+    Ok(())
+}
+
+/// Refreshes live turn state after role/config overlays without overwriting role permissions.
+///
+/// Role application may intentionally narrow the child's permission profile. Spawn handlers call
+/// this after role application so current approval/sandbox/cwd state stays fresh while the
+/// role-applied permission profile remains the native source of truth for enforcement.
+pub(crate) fn apply_spawn_agent_runtime_context_overrides(
+    config: &mut Config,
+    turn: &TurnContext,
+) -> Result<(), FunctionCallError> {
     config
         .permissions
         .approval_policy
@@ -296,12 +350,6 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
     #[allow(deprecated)]
     let turn_cwd = turn.cwd.clone();
     config.cwd = turn_cwd;
-    config
-        .permissions
-        .set_permission_profile(turn.permission_profile())
-        .map_err(|err| {
-            FunctionCallError::RespondToModel(format!("permission_profile is invalid: {err}"))
-        })?;
     Ok(())
 }
 

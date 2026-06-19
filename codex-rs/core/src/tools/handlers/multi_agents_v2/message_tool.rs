@@ -95,10 +95,15 @@ pub(crate) async fn handle_message_string_tool(
         .ensure_v2_agent_loaded(resume_config, receiver_thread_id)
         .await
         .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
-    let author = turn
-        .session_source
-        .get_agent_path()
-        .unwrap_or_else(AgentPath::root);
+    let author = match turn.session_source.get_agent_path() {
+        Some(agent_path) => agent_path,
+        None if turn.session_source.is_non_root_agent() => {
+            return Err(FunctionCallError::RespondToModel(
+                "send_message requires a path-backed author".to_string(),
+            ));
+        }
+        None => AgentPath::root(),
+    };
     let communication =
         communication_from_tool_message(author, receiver_agent_path.clone(), message);
     let result = session

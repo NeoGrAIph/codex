@@ -2,13 +2,13 @@ use chrono::DateTime;
 use chrono::Utc;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::find_archived_thread_path_by_id_str;
 use codex_rollout::find_thread_name_by_id;
 use codex_rollout::find_thread_path_by_id_str;
-use codex_rollout::read_session_meta_line;
 use codex_rollout::read_thread_item_from_rollout;
 use codex_state::ThreadMetadata;
 
@@ -265,9 +265,12 @@ async fn read_thread_from_rollout_path(
         message: format!("failed to read thread id from {}", path.display()),
     })?;
     thread.rollout_path = Some(codex_rollout::plain_rollout_path(path.as_path()));
-    if let Ok(meta_line) = read_session_meta_line(path.as_path()).await {
+    if let Ok(meta_line) =
+        read_latest_session_meta_line_for_thread(path.as_path(), thread.thread_id).await
+    {
         thread.forked_from_id = meta_line.meta.forked_from_id;
         thread.parent_thread_id = meta_line.meta.parent_thread_id;
+        thread.agent_hidden = meta_line.meta.agent_hidden;
         if let Some(model_provider) = meta_line
             .meta
             .model_provider
@@ -315,10 +318,11 @@ async fn stored_thread_from_sqlite_metadata(
             .flatten()
             .filter(|title| !title.trim().is_empty()),
     };
-    let session_meta = read_session_meta_line(metadata.rollout_path.as_path())
-        .await
-        .ok()
-        .map(|meta_line| meta_line.meta);
+    let session_meta =
+        read_latest_session_meta_line_for_thread(metadata.rollout_path.as_path(), metadata.id)
+            .await
+            .ok()
+            .map(|meta_line| meta_line.meta);
     let rollout_path = codex_rollout::plain_rollout_path(metadata.rollout_path.as_path());
     let forked_from_id = session_meta.as_ref().and_then(|meta| meta.forked_from_id);
     let parent_thread_id = session_meta.as_ref().and_then(|meta| meta.parent_thread_id);
@@ -330,9 +334,12 @@ async fn stored_thread_from_sqlite_metadata(
     let permission_profile =
         permission_profile_from_metadata_value(&metadata.sandbox_policy, metadata.cwd.as_path());
     let source = parse_session_source(&metadata.source);
-    let thread_note = source
-        .get_thread_note()
-        .or_else(|| session_meta.and_then(|meta| meta.thread_note));
+    let thread_note = source.get_thread_note().or_else(|| {
+        session_meta
+            .as_ref()
+            .and_then(|meta| meta.thread_note.clone())
+    });
+    let agent_hidden = session_meta.as_ref().is_some_and(|meta| meta.agent_hidden);
     StoredThread {
         thread_id: metadata.id,
         extra_config: None,
@@ -359,6 +366,7 @@ async fn stored_thread_from_sqlite_metadata(
         agent_role: metadata.agent_role,
         agent_path: metadata.agent_path,
         thread_note,
+        agent_hidden,
         git_info: git_info_from_parts(
             metadata.git_sha,
             metadata.git_branch,
@@ -376,7 +384,7 @@ async fn stored_thread_from_session_meta(
     store: &LocalThreadStore,
     path: std::path::PathBuf,
 ) -> ThreadStoreResult<StoredThread> {
-    let meta_line = read_session_meta_line(path.as_path())
+    let meta_line = read_latest_session_meta_line(path.as_path())
         .await
         .map_err(|err| ThreadStoreError::Internal {
             message: format!("failed to read thread {}: {err}", path.display()),
@@ -385,6 +393,55 @@ async fn stored_thread_from_session_meta(
     Ok(stored_thread_from_meta_line(
         store, meta_line, path, archived,
     ))
+}
+
+async fn read_latest_session_meta_line(path: &std::path::Path) -> std::io::Result<SessionMetaLine> {
+    let (items, _thread_id, _parse_errors) = RolloutRecorder::load_rollout_items(path).await?;
+    items
+        .into_iter()
+        .rev()
+        .find_map(|item| match item {
+            RolloutItem::SessionMeta(meta_line) => Some(meta_line),
+            RolloutItem::ResponseItem(_)
+            | RolloutItem::InterAgentCommunication(_)
+            | RolloutItem::Compacted(_)
+            | RolloutItem::TurnContext(_)
+            | RolloutItem::EventMsg(_) => None,
+        })
+        .ok_or_else(|| {
+            std::io::Error::other(format!(
+                "rollout at {} does not contain session metadata",
+                path.display()
+            ))
+        })
+}
+
+async fn read_latest_session_meta_line_for_thread(
+    path: &std::path::Path,
+    thread_id: codex_protocol::ThreadId,
+) -> std::io::Result<SessionMetaLine> {
+    let (items, _thread_id, _parse_errors) = RolloutRecorder::load_rollout_items(path).await?;
+    items
+        .into_iter()
+        .rev()
+        .find_map(|item| match item {
+            RolloutItem::SessionMeta(meta_line) if meta_line.meta.id == thread_id => {
+                Some(meta_line)
+            }
+            RolloutItem::SessionMeta(_)
+            | RolloutItem::ResponseItem(_)
+            | RolloutItem::InterAgentCommunication(_)
+            | RolloutItem::Compacted(_)
+            | RolloutItem::TurnContext(_)
+            | RolloutItem::EventMsg(_) => None,
+        })
+        .ok_or_else(|| {
+            std::io::Error::other(format!(
+                "rollout at {} does not contain session metadata for thread {}",
+                path.display(),
+                thread_id
+            ))
+        })
 }
 
 fn stored_thread_from_meta_line(
@@ -426,6 +483,7 @@ fn stored_thread_from_meta_line(
         agent_role: meta_line.meta.agent_role,
         agent_path: meta_line.meta.agent_path,
         thread_note: meta_line.meta.thread_note,
+        agent_hidden: meta_line.meta.agent_hidden,
         git_info: meta_line.git,
         approval_mode: AskForApproval::OnRequest,
         permission_profile: PermissionProfile::read_only(),

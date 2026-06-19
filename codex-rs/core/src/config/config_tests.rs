@@ -20,6 +20,7 @@ use codex_config::config_toml::RealtimeToml;
 use codex_config::config_toml::RealtimeTransport;
 use codex_config::config_toml::RealtimeWsMode;
 use codex_config::config_toml::RealtimeWsVersion;
+use codex_config::config_toml::SubAgentActionPolicyToml;
 use codex_config::config_toml::ToolSelectionToml;
 use codex_config::config_toml::ToolsToml;
 use codex_config::loader::project_trust_key;
@@ -92,6 +93,7 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::NetworkAccess;
 use codex_protocol::protocol::RealtimeVoice;
 use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::protocol::SubAgentActionPolicyAction;
 use serde::Deserialize;
 use tempfile::tempdir;
 
@@ -6719,7 +6721,7 @@ async fn load_config_ignores_empty_requirements_guardian_policy_config() -> std:
 }
 
 #[tokio::test]
-async fn load_config_parses_tool_selection_allowlist() -> std::io::Result<()> {
+async fn load_config_parses_tool_selection_policy() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml {
         tool_selection: Some(ToolSelectionToml {
@@ -6727,6 +6729,7 @@ async fn load_config_parses_tool_selection_allowlist() -> std::io::Result<()> {
                 "update_plan".to_string(),
                 "codex_app/lookup".to_string(),
             ]),
+            denied_tools: Some(vec!["view_image".to_string()]),
         }),
         ..Default::default()
     };
@@ -6752,23 +6755,129 @@ async fn load_config_parses_tool_selection_allowlist() -> std::io::Result<()> {
             .collect()
         )
     );
+    assert_eq!(
+        config.tool_selection.denied,
+        Some([ToolName::plain("view_image")].into_iter().collect())
+    );
 
     Ok(())
 }
 
 #[tokio::test]
-async fn load_config_rejects_invalid_tool_selection_allowlist_entries() -> std::io::Result<()> {
+async fn load_config_rejects_invalid_tool_selection_entries() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
-    for allowed_tools in [
+    for entries in [
         vec!["".to_string()],
         vec!["codex_app/".to_string()],
         vec!["codex_app/lookup/extra".to_string()],
         vec!["update_plan".to_string(), " update_plan ".to_string()],
     ] {
+        for use_denylist in [false, true] {
+            let cfg = ConfigToml {
+                tool_selection: Some(if use_denylist {
+                    ToolSelectionToml {
+                        allowed_tools: None,
+                        denied_tools: Some(entries.clone()),
+                    }
+                } else {
+                    ToolSelectionToml {
+                        allowed_tools: Some(entries.clone()),
+                        denied_tools: None,
+                    }
+                }),
+                ..Default::default()
+            };
+
+            let err = Config::load_from_base_config_with_overrides(
+                cfg,
+                ConfigOverrides {
+                    cwd: Some(codex_home.path().to_path_buf()),
+                    ..Default::default()
+                },
+                codex_home.abs(),
+            )
+            .await
+            .expect_err("invalid tool selection should be rejected");
+
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_parses_subagent_action_policy() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let cfg = ConfigToml {
+        subagent_action_policy: Some(SubAgentActionPolicyToml {
+            allowed_actions: Some(vec![
+                SubAgentActionPolicyAction::AgentMessageSend,
+                SubAgentActionPolicyAction::AgentFollowupSend,
+            ]),
+            denied_actions: Some(vec![SubAgentActionPolicyAction::AgentDismiss]),
+        }),
+        ..Default::default()
+    };
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides {
+            cwd: Some(codex_home.path().to_path_buf()),
+            ..Default::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(
+        config.subagent_action_policy.allowed,
+        Some(
+            [
+                SubAgentActionPolicyAction::AgentMessageSend,
+                SubAgentActionPolicyAction::AgentFollowupSend,
+            ]
+            .into_iter()
+            .collect()
+        )
+    );
+    assert_eq!(
+        config.subagent_action_policy.denied,
+        [SubAgentActionPolicyAction::AgentDismiss]
+            .into_iter()
+            .collect()
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_config_rejects_duplicate_subagent_action_policy_entries() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    for (field_label, action_policy) in [
+        (
+            "subagent_action_policy.allowed_actions",
+            SubAgentActionPolicyToml {
+                allowed_actions: Some(vec![
+                    SubAgentActionPolicyAction::AgentClose,
+                    SubAgentActionPolicyAction::AgentClose,
+                ]),
+                denied_actions: None,
+            },
+        ),
+        (
+            "subagent_action_policy.denied_actions",
+            SubAgentActionPolicyToml {
+                allowed_actions: None,
+                denied_actions: Some(vec![
+                    SubAgentActionPolicyAction::AgentRetry,
+                    SubAgentActionPolicyAction::AgentRetry,
+                ]),
+            },
+        ),
+    ] {
         let cfg = ConfigToml {
-            tool_selection: Some(ToolSelectionToml {
-                allowed_tools: Some(allowed_tools),
-            }),
+            subagent_action_policy: Some(action_policy),
             ..Default::default()
         };
 
@@ -6781,9 +6890,13 @@ async fn load_config_rejects_invalid_tool_selection_allowlist_entries() -> std::
             codex_home.abs(),
         )
         .await
-        .expect_err("invalid tool selection should be rejected");
+        .expect_err("duplicate subagent action policy entries should be rejected");
 
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains(field_label),
+            "error should name {field_label}: {err}"
+        );
     }
 
     Ok(())
@@ -6891,6 +7004,7 @@ async fn agent_role_config_file_applies_tool_selection_allowlist() -> std::io::R
 
 [tool_selection]
 allowed_tools = ["update_plan", "codex_app/lookup"]
+denied_tools = ["view_image"]
 "#,
     )
     .await?;
@@ -6909,6 +7023,7 @@ config_file = "./agents/researcher.toml"
         .build()
         .await?;
     assert_eq!(config.tool_selection.allowed, None);
+    assert_eq!(config.tool_selection.denied, None);
 
     apply_role_to_config(&mut config, Some("researcher"))
         .await
@@ -6924,6 +7039,10 @@ config_file = "./agents/researcher.toml"
             .into_iter()
             .collect()
         )
+    );
+    assert_eq!(
+        config.tool_selection.denied,
+        Some([ToolName::plain("view_image")].into_iter().collect())
     );
 
     Ok(())
@@ -6945,6 +7064,7 @@ async fn agent_role_tool_selection_survives_config_restart_reload() -> std::io::
 
 [tool_selection]
 allowed_tools = ["update_plan", "codex_app/lookup"]
+denied_tools = ["view_image"]
 "#,
     )
     .await?;
@@ -6978,6 +7098,10 @@ config_file = "./agents/researcher.toml"
                 .into_iter()
                 .collect()
             )
+        );
+        assert_eq!(
+            config.tool_selection.denied,
+            Some([ToolName::plain("view_image")].into_iter().collect())
         );
     }
 
@@ -7591,6 +7715,69 @@ developer_instructions = "Write carefully"
             .map(|candidates| candidates.iter().map(String::as_str).collect::<Vec<_>>()),
         Some(vec!["Sagan"])
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_agent_roles_require_project_trust() -> std::io::Result<()> {
+    let repo_root = TempDir::new()?;
+    let nested_cwd = repo_root.path().join("packages").join("app");
+    std::fs::create_dir_all(repo_root.path().join(".git"))?;
+    std::fs::create_dir_all(&nested_cwd)?;
+
+    let project_agent = repo_root
+        .path()
+        .join(".codex")
+        .join("agents")
+        .join("project-researcher.toml");
+    std::fs::create_dir_all(
+        project_agent
+            .parent()
+            .expect("project agent should have a parent directory"),
+    )?;
+    std::fs::write(
+        &project_agent,
+        r#"
+name = "project-researcher"
+description = "repo-local role"
+developer_instructions = "Use project-local instructions"
+"#,
+    )?;
+
+    let workspace_key = repo_root.path().to_string_lossy().replace('\\', "\\\\");
+    for (name, trust_level, expect_loaded) in [
+        ("trusted", Some("trusted"), true),
+        ("untrusted", Some("untrusted"), false),
+        ("unknown", None, false),
+    ] {
+        let codex_home = TempDir::new()?;
+        let config_contents = trust_level
+            .map(|trust_level| {
+                format!(
+                    r#"[projects."{workspace_key}"]
+trust_level = "{trust_level}"
+"#
+                )
+            })
+            .unwrap_or_default();
+        std::fs::write(codex_home.path().join(CONFIG_TOML_FILE), config_contents)?;
+
+        let config = ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(codex_home.path().to_path_buf())
+            .harness_overrides(ConfigOverrides {
+                cwd: Some(nested_cwd.clone()),
+                ..Default::default()
+            })
+            .build()
+            .await?;
+
+        assert_eq!(
+            config.agent_roles.contains_key("project-researcher"),
+            expect_loaded,
+            "unexpected project role load state for {name}",
+        );
+    }
 
     Ok(())
 }

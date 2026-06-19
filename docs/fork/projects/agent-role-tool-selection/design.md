@@ -36,11 +36,12 @@ MCP naming:
 
 ## Implemented Native Contract
 
-V1 introduces `ConfigToml.tool_selection` and effective `Config.tool_selection`:
+V1 introduced `ConfigToml.tool_selection` and effective `Config.tool_selection`. Production-ready v2 keeps the same native owner and adds `denied_tools`:
 
 ```toml
 [tool_selection]
 allowed_tools = ["update_plan", "codex_app/lookup"]
+denied_tools = ["mcp__untrusted/shell"]
 ```
 
 Semantics:
@@ -49,17 +50,17 @@ Semantics:
 - old role files without `[tool_selection]` deserialize and behave unchanged;
 - policy is available through `TurnContext.config` for each child thread turn;
 - enforcement matches canonical runtime `ToolName`: `name` for plain tools and `namespace/name` for namespaced tools;
-- allowlist-only: only listed tools remain in model-visible specs and runtime registry;
+- allow then deny: `allowed_tools` narrows the candidate set when present, then `denied_tools` removes entries from the effective set; deny wins on conflicts;
 - malformed entries and duplicates fail fast during config load/config rebuild;
 - syntactically valid but stale runtime ids are harmless no-access entries; focused tests prove they do not create visible or registered tools; user-facing diagnostics are derived from current `PlannedTools` and emitted through the existing warning event path.
 
-A denylist remains out of scope until conflict and inheritance rules are defined.
+Deny is deliberately implemented in the same config/spec-plan path, not as MCP-only filtering, app-server state or TUI state. It is subtractive only: it cannot make a tool available if native source assembly, provider/model support, permissions, environment gating or MCP exposure removed it earlier.
 
 ## Source-Of-Truth Candidates
 
 ### Candidate A: New Generic Config Field
 
-Role file contributes `[tool_selection] allowed_tools = [...]`. The config loader merges it into `Config`, and `TurnContext` carries the effective policy into tool planning.
+Role file contributes `[tool_selection] allowed_tools = [...]` and/or `denied_tools = [...]`. The config loader merges it into `Config`, and `TurnContext` carries the effective policy into tool planning.
 
 This is the implemented v1 direction. The field intentionally stays outside `ToolsToml` because that section currently owns feature toggles, not generic tool-planning policy.
 
@@ -77,7 +78,7 @@ This is necessary near enforcement, but not sufficient as source of truth. The p
 
 ## Enforcement Point
 
-The filter runs in `build_tool_specs_and_registry` after `add_tool_sources(&context, &mut planned_tools)` and before `append_tool_search_executor(&context, &mut planned_tools)`. It also runs again after `prepend_code_mode_executors(&context, &mut planned_tools)` so synthetic Code Mode tools (`exec`/`wait`) cannot bypass a strict allowlist.
+The filter runs in `build_tool_specs_and_registry` after `add_tool_sources(&context, &mut planned_tools)` and before `append_tool_search_executor(&context, &mut planned_tools)`. It also runs again after `prepend_code_mode_executors(&context, &mut planned_tools)` so synthetic Code Mode tools (`exec`/`wait`) cannot bypass a strict allow/deny policy.
 
 That placement is required because:
 
@@ -111,26 +112,50 @@ Tool selection is a subtractive capability policy. It cannot grant permissions a
 - Hooks/Guardian/tool lifecycle own review and telemetry.
 - Provider/model metadata owns `ToolMode`, hosted tool support and transport-specific capabilities.
 
-The effective rule is intersection: allowed-by-role and allowed-by-security-boundaries must both be true.
+The effective rule is intersection: selected-by-role and allowed-by-security-boundaries must both be true. If a tool appears in both `allowed_tools` and `denied_tools`, it is denied.
 
 ## Compatibility And Migration
 
 Old role files without tool-selection fields keep full native tool availability. Malformed entries and duplicates fail fast when config is loaded or when a child thread rebuilds config from a role file.
 
-Current v1 validates syntax and duplicates during config load/config rebuild. For dynamic, extension and MCP deferred tools, fail-fast inventory validation remains intentionally absent because runtime inventory is not available at plain config parse time. This does not grant access; unmatched entries simply match no runtime tool, `tool_selection_unknown_entries_do_not_create_tools` covers that no-access behavior, and `built_tools_warns_once_for_unavailable_tool_selection_entries` covers the observable warning once the native runtime catalog exists.
+Current validation checks syntax and duplicates during config load/config rebuild for both `allowed_tools` and `denied_tools`. For dynamic, extension and MCP deferred tools, fail-fast inventory validation remains intentionally absent because runtime inventory is not available at plain config parse time. This does not grant access; unmatched entries simply match no runtime tool, `tool_selection_unknown_entries_do_not_create_tools` covers allowlist no-access behavior, and `built_tools_warns_once_for_unavailable_tool_selection_entries` covers the observable warning once the native runtime catalog exists.
 
 Runtime diagnostics are projection-only:
 
-- `spec_plan` computes `ToolSelectionDiagnostics.catalog_entries` from a planner-owned inventory snapshot before enforcement removes blocked tools, including direct, deferred, MCP, hosted, hidden dispatch-only, `tool_search` and Code Mode synthetic tool identities plus selected state and bounded exposure metadata for the current policy.
+- `spec_plan` computes `ToolSelectionDiagnostics.catalog_entries` from a planner-owned inventory snapshot before enforcement removes blocked tools, including direct, deferred, MCP, hosted, hidden dispatch-only, `tool_search` and Code Mode synthetic tool identities plus selected state and bounded exposure metadata for the current policy. `selected=false` means either absent from `allowed_tools` when allowlist is present or present in `denied_tools`.
 - `spec_plan` computes `ToolSelectionDiagnostics.unmatched_allowed_tools` from the enforced `PlannedTools` after source assembly, the first filter, deferred `tool_search` append and Code Mode synthetic executor prepend, so selected synthetic tools that cannot exist in the effective plan still warn.
 - `ToolRouter` carries that projection alongside model-visible specs and `ToolRegistry`.
 - `built_tools` emits a bounded existing `EventMsg::Warning` once per turn using a `TurnContext` latch.
 - `CodexThread::tool_selection_catalog` builds the same native `ToolRouter` without emitting the warning side effect, then projects `catalog_entries` and `unmatched_allowed_tools` for a loaded thread.
 - Experimental app-server method `agentRole/toolSelectionCatalog/read` exposes this loaded-thread projection through generated protocol schema/TypeScript. It requires `threadId`; invalid or unloaded threads fail fast instead of returning a global/config-only approximation.
+- Experimental app-server method `agentRole/toolSelection/set` is the external write/management surface. It is a whole-policy replacement over an existing discovered user role file under `$CODEX_HOME/agents/*.toml`: built-in roles, shadowed built-ins without a user file and external `config_file` roles are rejected. The endpoint rewrites only `[tool_selection]`, validates the resulting TOML through the native role parser, and then must complete the existing config reload/loaded-thread refresh path before returning success. This deliberately does not use `config/batchWrite`, because the source of truth is the role file, not user `config.toml`.
+- New path-backed sub-agent spawns persist the effective role-applied tool-selection policy in `SessionSource::SubAgent(ThreadSpawn.tool_selection)`. This is intentionally downstream of `apply_role_to_config`: role TOML remains the source for creating a child config, while thread-spawn metadata becomes the durable effective-policy snapshot for that already-created child. Resume and retry restore this snapshot before the child builds future turns, so editing or deleting the role file after spawn cannot silently widen or replace the existing child thread's tool boundary.
+- Direct app-server method `mcpServer/tool/call` is an execution surface, not only a read projection. It enters core through `CodexThread::call_mcp_tool` and `Session::call_tool`, where the loaded thread's effective `Config.tool_selection` is checked before `McpConnectionManager::call_tool`. The check resolves raw MCP `server`/`tool` through `McpConnectionManager::list_all_tools()` and uses `ToolInfo::canonical_tool_name()`, preserving native MCP naming behavior.
 - Diagnostics do not feed back into policy, do not create a second registry and do not turn unmatched ids into grants. The catalog entries are a read-only projection for UI evidence and native TOML authoring; they are not an authoring source of truth.
 
 ## Remaining Design Work
 
 - Catalog-assisted TUI authoring is implemented as a transient picker over the loaded-thread read-only catalog followed by the existing native TOML draft/file path. For new roles, the picker seeds a starter draft. For existing valid user roles discovered under `$CODEX_HOME/agents/*.toml`, the picker preselects the role's current allowlist and prepares an editable update draft for the same file. The loaded-thread catalog can show and seed canonical tool identities, selected state and exposure metadata as evidence, but it must not become a role-specific preview or separate editor registry. External `config_file` roles remain on the open-file path until a separate ownership/write contract exists.
-- Stronger persisted policy retention after source config removal/change remains a future contract question. Fresh config restart reload is covered by `agent_role_tool_selection_survives_config_restart_reload`; cold resume through the same `$CODEX_HOME/config.toml` is covered by `resume_retains_tool_selection_policy_in_resumed_turn`.
-- App-server write/management API decision only if external clients need to modify role tool policy.
+- App-server write/management API intentionally guarantees new spawns and next-turn/reload visibility only. It does not rewrite an already materialized role-applied session layer inside an in-flight child turn. Existing child threads keep their own `ThreadSpawn.tool_selection` snapshot until a separate live-mutation contract is designed.
+
+## Retention Contract
+
+The durable snapshot shape mirrors user-facing TOML/API names rather than serializing `ToolName` directly: `allowed_tools` and `denied_tools` are stored as canonical `name` or `namespace/name` strings plus a version and source marker. Core converts between this protocol snapshot and `Config.tool_selection` through the same native grammar used by `[tool_selection]`.
+
+Producer path:
+
+- V1/V2 `spawn_agent` builds the child `Config`, applies role config through `apply_role_to_config`, then derives a `SubAgentToolSelectionSnapshot` from the effective `Config.tool_selection`.
+- `thread_spawn_source` stores that snapshot in `SessionSource::SubAgent(ThreadSpawn.tool_selection)` before the thread is created.
+- `AgentControl::prepare_thread_spawn` preserves an explicit snapshot, and does not synthesize one for unrestricted roles.
+
+Consumer path:
+
+- Cold resume reads `stored_thread.source.get_subagent_tool_selection()`, applies that snapshot to the child `Config`, and then passes it through `prepare_thread_spawn`, so stale state-db metadata cannot erase the rollout snapshot.
+- `ensure_v2_agent_loaded` applies the snapshot before reloading a stored V2 agent, so lazy Agent Window loading uses the same retained policy as full tree resume.
+- Retry copies the target thread's `ThreadSpawn.tool_selection` into the fresh sibling source and uses the target config snapshot, so retry inherits the same tool boundary without reading the current role file.
+
+Compatibility:
+
+- Old sessions without `ThreadSpawn.tool_selection` stay readable and keep the previous reload behavior.
+- Missing or malformed source role files after spawn do not affect child threads that already have a snapshot.
+- The snapshot is not a grant. It still flows into `Config.tool_selection`, so all native `spec_plan`, MCP direct-call, permission, sandbox and approval boundaries remain authoritative.

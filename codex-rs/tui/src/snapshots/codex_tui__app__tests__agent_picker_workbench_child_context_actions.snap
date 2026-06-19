@@ -9,6 +9,7 @@ expression: rendered.clone()
   1. • Main [default]                closed · main thread · 00000000
 › 2. • Owner [planner] (current)     Status: running
                                      Current view: yes
+                                     Connection: connected to this thread
                                      Kind: sub-agent thread
                                      Inspect:
                                      - Nickname: Owner
@@ -16,7 +17,7 @@ expression: rendered.clone()
                                      - Agent path: /root/owner
                                      - Thread: 00000000-0000-0000-0000-000000000202
                                      Actions:
-                                     - Enter: watch this thread
+                                     - Enter: stay on this thread
   3. • Child [worker]                running · role worker · /root/owner/child
   4. • Idle [worker]                 idle · role worker · /root/owner/idle
   5. • Sibling [reviewer]            running · role reviewer · /root/sibling

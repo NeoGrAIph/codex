@@ -5,15 +5,16 @@ use chrono::Utc;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::GitInfo;
 use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_rollout::ARCHIVED_SESSIONS_SUBDIR;
+use codex_rollout::RolloutRecorder;
 use codex_rollout::append_rollout_item_to_path;
 use codex_rollout::append_thread_name;
 use codex_rollout::find_archived_thread_path_by_id_str;
 use codex_rollout::find_thread_path_by_id_str;
-use codex_rollout::read_session_meta_line;
 use codex_state::ThreadMetadataBuilder;
 use tracing::warn;
 
@@ -75,6 +76,7 @@ pub(super) async fn update_thread_metadata(
     let name = patch.name;
     let git_info = patch.git_info;
     let thread_note = patch.thread_note;
+    let agent_hidden = patch.agent_hidden;
     if let Some(memory_mode) = patch.memory_mode {
         apply_thread_memory_mode(resolved_rollout_path.path.as_path(), thread_id, memory_mode)
             .await?;
@@ -85,6 +87,15 @@ pub(super) async fn update_thread_metadata(
             resolved_rollout_path.path.as_path(),
             thread_id,
             thread_note.clone(),
+        )
+        .await?;
+        refresh_resolved_rollout_path(&mut resolved_rollout_path).await;
+    }
+    if let Some(agent_hidden) = agent_hidden {
+        apply_agent_visibility_to_rollout(
+            resolved_rollout_path.path.as_path(),
+            thread_id,
+            agent_hidden,
         )
         .await?;
         refresh_resolved_rollout_path(&mut resolved_rollout_path).await;
@@ -442,6 +453,9 @@ fn needs_rollout_compatibility_update(patch: &ThreadMetadataPatch) -> bool {
     if patch.thread_note.is_some() {
         return true;
     }
+    if patch.agent_hidden.is_some() {
+        return true;
+    }
     if patch.memory_mode.is_none() && patch.git_info.is_none() {
         return false;
     }
@@ -552,12 +566,11 @@ async fn apply_thread_git_info_to_rollout(
     origin_url: &Option<String>,
     memory_mode: Option<&str>,
 ) -> ThreadStoreResult<()> {
-    let mut session_meta =
-        read_session_meta_line(rollout_path)
-            .await
-            .map_err(|err| ThreadStoreError::Internal {
-                message: format!("failed to set thread git metadata: {err}"),
-            })?;
+    let mut session_meta = read_latest_session_meta_line_for_thread(rollout_path, thread_id)
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to set thread git metadata: {err}"),
+        })?;
     if session_meta.meta.id != thread_id {
         return Err(ThreadStoreError::Internal {
             message: format!(
@@ -585,12 +598,11 @@ async fn apply_thread_note_to_rollout(
     thread_id: ThreadId,
     thread_note: Option<String>,
 ) -> ThreadStoreResult<()> {
-    let mut session_meta =
-        read_session_meta_line(rollout_path)
-            .await
-            .map_err(|err| ThreadStoreError::Internal {
-                message: format!("failed to set thread note: {err}"),
-            })?;
+    let mut session_meta = read_latest_session_meta_line_for_thread(rollout_path, thread_id)
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to set thread note: {err}"),
+        })?;
     if session_meta.meta.id != thread_id {
         return Err(ThreadStoreError::Internal {
             message: format!(
@@ -607,7 +619,9 @@ async fn apply_thread_note_to_rollout(
         agent_path,
         agent_nickname,
         agent_role,
+        initial_task,
         action_policy,
+        tool_selection,
         ..
     }) = session_meta.meta.source
     {
@@ -618,7 +632,9 @@ async fn apply_thread_note_to_rollout(
             agent_nickname,
             agent_role,
             thread_note,
+            initial_task,
             action_policy,
+            tool_selection,
         });
     }
 
@@ -626,6 +642,33 @@ async fn apply_thread_note_to_rollout(
         .await
         .map_err(|err| ThreadStoreError::Internal {
             message: format!("failed to set thread note: {err}"),
+        })
+}
+
+async fn apply_agent_visibility_to_rollout(
+    rollout_path: &Path,
+    thread_id: ThreadId,
+    agent_hidden: bool,
+) -> ThreadStoreResult<()> {
+    let mut session_meta = read_latest_session_meta_line_for_thread(rollout_path, thread_id)
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to set agent visibility: {err}"),
+        })?;
+    if session_meta.meta.id != thread_id {
+        return Err(ThreadStoreError::Internal {
+            message: format!(
+                "failed to set agent visibility: rollout session metadata id mismatch: expected {thread_id}, found {}",
+                session_meta.meta.id
+            ),
+        });
+    }
+
+    session_meta.meta.agent_hidden = agent_hidden;
+    append_rollout_item_to_path(rollout_path, &RolloutItem::SessionMeta(session_meta))
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to set agent visibility: {err}"),
         })
 }
 
@@ -660,12 +703,11 @@ async fn apply_thread_memory_mode(
     thread_id: ThreadId,
     memory_mode: ThreadMemoryMode,
 ) -> ThreadStoreResult<()> {
-    let mut session_meta =
-        read_session_meta_line(rollout_path)
-            .await
-            .map_err(|err| ThreadStoreError::Internal {
-                message: format!("failed to set thread memory mode: {err}"),
-            })?;
+    let mut session_meta = read_latest_session_meta_line_for_thread(rollout_path, thread_id)
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to set thread memory mode: {err}"),
+        })?;
     if session_meta.meta.id != thread_id {
         return Err(ThreadStoreError::Internal {
             message: format!(
@@ -691,6 +733,35 @@ fn memory_mode_as_str(mode: ThreadMemoryMode) -> &'static str {
         ThreadMemoryMode::Enabled => "enabled",
         ThreadMemoryMode::Disabled => "disabled",
     }
+}
+
+async fn read_latest_session_meta_line_for_thread(
+    rollout_path: &Path,
+    thread_id: ThreadId,
+) -> std::io::Result<SessionMetaLine> {
+    let (items, _thread_id, _parse_errors) =
+        RolloutRecorder::load_rollout_items(rollout_path).await?;
+    items
+        .into_iter()
+        .rev()
+        .find_map(|item| match item {
+            RolloutItem::SessionMeta(meta_line) if meta_line.meta.id == thread_id => {
+                Some(meta_line)
+            }
+            RolloutItem::SessionMeta(_)
+            | RolloutItem::ResponseItem(_)
+            | RolloutItem::InterAgentCommunication(_)
+            | RolloutItem::Compacted(_)
+            | RolloutItem::TurnContext(_)
+            | RolloutItem::EventMsg(_) => None,
+        })
+        .ok_or_else(|| {
+            std::io::Error::other(format!(
+                "rollout at {} does not contain session metadata for thread {}",
+                rollout_path.display(),
+                thread_id
+            ))
+        })
 }
 
 async fn resolve_rollout_path(
@@ -1286,6 +1357,43 @@ mod tests {
 
         assert!(matches!(err, ThreadStoreError::Internal { .. }));
         assert!(err.to_string().contains("metadata id mismatch"));
+    }
+
+    #[tokio::test]
+    async fn update_thread_metadata_sets_agent_hidden_on_rollout() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let uuid = Uuid::from_u128(305);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let path =
+            write_session_file(home.path(), "2025-01-03T16-00-00", uuid).expect("session file");
+
+        let initial = store
+            .read_thread(ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+            .await
+            .expect("read initial thread");
+        assert_eq!(initial.agent_hidden, false);
+
+        let updated = store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    agent_hidden: Some(true),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("set agent visibility");
+
+        assert_eq!(updated.agent_hidden, true);
+        let appended = last_rollout_item(path.as_path());
+        assert_eq!(appended["type"], "session_meta");
+        assert_eq!(appended["payload"]["agent_hidden"], json!(true));
     }
 
     #[tokio::test]

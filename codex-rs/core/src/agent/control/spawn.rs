@@ -113,7 +113,7 @@ impl AgentControl {
 
     pub(crate) async fn ensure_v2_agent_loaded(
         &self,
-        config: Config,
+        mut config: Config,
         thread_id: ThreadId,
     ) -> CodexResult<()> {
         let state = self.upgrade()?;
@@ -153,6 +153,15 @@ impl AgentControl {
         let (session_source, _) = initial_history
             .get_resumed_session_sources()
             .unwrap_or((stored_source, None));
+        if let Some(tool_selection) = session_source.get_subagent_tool_selection().as_ref() {
+            config.tool_selection =
+                crate::config::ToolSelectionConfig::from_subagent_snapshot(tool_selection)
+                    .map_err(|err| {
+                        CodexErr::InvalidRequest(format!(
+                            "invalid persisted sub-agent tool selection: {err}"
+                        ))
+                    })?;
+        }
         let parent_thread_id = initial_history
             .get_resumed_parent_thread_id()
             .or(stored_parent_thread_id);
@@ -193,7 +202,7 @@ impl AgentControl {
 
     async fn spawn_agent_internal(
         &self,
-        config: Config,
+        mut config: Config,
         initial_operation: Op,
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
@@ -245,9 +254,20 @@ impl AgentControl {
                 agent_path,
                 agent_role,
                 thread_note,
+                initial_task,
                 action_policy,
+                tool_selection,
                 ..
             })) => {
+                if let Some(tool_selection) = tool_selection.as_ref() {
+                    config.tool_selection =
+                        crate::config::ToolSelectionConfig::from_subagent_snapshot(tool_selection)
+                            .map_err(|err| {
+                                CodexErr::InvalidRequest(format!(
+                                    "invalid persisted sub-agent tool selection: {err}"
+                                ))
+                            })?;
+                }
                 let (session_source, agent_metadata) = self.prepare_thread_spawn(
                     &mut reservation,
                     &config,
@@ -257,7 +277,9 @@ impl AgentControl {
                     agent_role,
                     /*preferred_agent_nickname*/ None,
                     thread_note.or(options.thread_note.clone()),
+                    initial_task,
                     action_policy,
+                    tool_selection,
                 )?;
                 (Some(session_source), agent_metadata)
             }
@@ -581,6 +603,8 @@ impl AgentControl {
                             agent_role: None,
                             thread_note: None,
                             action_policy: None,
+                            initial_task: None,
+                            tool_selection: None,
                         });
                     match Box::pin(self.resume_single_agent_from_rollout(
                         config.clone(),
@@ -607,7 +631,7 @@ impl AgentControl {
 
     async fn resume_single_agent_from_rollout(
         &self,
-        config: Config,
+        mut config: Config,
         thread_id: ThreadId,
         session_source: SessionSource,
     ) -> CodexResult<(ThreadId, MultiAgentVersion)> {
@@ -631,6 +655,7 @@ impl AgentControl {
         });
         let parent_thread_id = stored_thread.parent_thread_id;
         let persisted_action_policy = stored_thread.source.get_subagent_action_policy();
+        let persisted_tool_selection = stored_thread.source.get_subagent_tool_selection();
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
                 &initial_history,
@@ -650,7 +675,9 @@ impl AgentControl {
                 agent_role: _,
                 agent_nickname: _,
                 thread_note,
+                initial_task,
                 action_policy,
+                tool_selection,
             }) => {
                 let (resumed_agent_nickname, resumed_agent_role) =
                     if let Some(state_db_ctx) = state_db_ctx.as_ref() {
@@ -661,6 +688,16 @@ impl AgentControl {
                     } else {
                         (None, None)
                     };
+                let effective_tool_selection = persisted_tool_selection.or(tool_selection);
+                if let Some(tool_selection) = effective_tool_selection.as_ref() {
+                    config.tool_selection =
+                        crate::config::ToolSelectionConfig::from_subagent_snapshot(tool_selection)
+                            .map_err(|err| {
+                                CodexErr::InvalidRequest(format!(
+                                    "invalid persisted sub-agent tool selection: {err}"
+                                ))
+                            })?;
+                }
                 self.prepare_thread_spawn(
                     &mut reservation,
                     &config,
@@ -670,7 +707,9 @@ impl AgentControl {
                     resumed_agent_role,
                     resumed_agent_nickname,
                     thread_note.or(stored_thread.thread_note),
+                    initial_task,
                     persisted_action_policy.or(action_policy),
+                    effective_tool_selection,
                 )?
             }
             other => (other, AgentMetadata::default()),

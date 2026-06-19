@@ -2223,6 +2223,7 @@ mod tests {
             agent_role: None,
             thread_note: None,
             agent_path: None,
+            agent_hidden: false,
             git_info: None,
             approval_mode: AskForApproval::OnRequest,
             permission_profile: PermissionProfile::read_only(),

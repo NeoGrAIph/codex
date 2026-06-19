@@ -436,11 +436,23 @@ impl McpRequestProcessor {
                 .call_mcp_tool(&params.server, &params.tool, params.arguments, meta)
                 .await
                 .map(McpServerToolCallResponse::from)
-                .map_err(|error| internal_error(format!("{error:#}")));
+                .map_err(mcp_tool_call_error);
             outgoing.send_result(request_id, result).await;
         });
         Ok(())
     }
+}
+
+fn mcp_tool_call_error(error: anyhow::Error) -> JSONRPCErrorError {
+    let message = format!("{error:#}");
+    if message.contains("tool_selection.allowed_tools")
+        || message.contains("tool_selection.denied_tools")
+        || message.starts_with("MCP tool `") && message.ends_with("` is not available")
+    {
+        return invalid_request(message);
+    }
+
+    internal_error(message)
 }
 
 fn with_mcp_tool_call_thread_id_meta(

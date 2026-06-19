@@ -4,6 +4,7 @@
 //! between user and agent.
 
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::Mul;
@@ -2644,10 +2645,54 @@ pub enum SubAgentSource {
         thread_note: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
+        initial_task: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
         action_policy: Option<SubAgentActionPolicySnapshot>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        tool_selection: Option<SubAgentToolSelectionSnapshot>,
     },
     MemoryConsolidation,
     Other(String),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub struct SubAgentToolSelectionSnapshot {
+    pub version: u32,
+    pub source: SubAgentToolSelectionSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub allowed_tools: Option<BTreeSet<String>>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub denied_tools: BTreeSet<String>,
+}
+
+impl SubAgentToolSelectionSnapshot {
+    pub const VERSION: u32 = 1;
+
+    pub fn new(
+        source: SubAgentToolSelectionSource,
+        allowed_tools: Option<BTreeSet<String>>,
+        denied_tools: BTreeSet<String>,
+    ) -> Self {
+        Self {
+            version: Self::VERSION,
+            source,
+            allowed_tools,
+            denied_tools,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum SubAgentToolSelectionSource {
+    Config,
+    RoleAppliedConfig,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
@@ -2657,6 +2702,11 @@ pub struct SubAgentActionPolicySnapshot {
     pub version: u32,
     pub mode: SubAgentActionPolicyMode,
     pub source: SubAgentActionPolicySource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub allowed_actions: Option<BTreeSet<SubAgentActionPolicyAction>>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub denied_actions: BTreeSet<SubAgentActionPolicyAction>,
 }
 
 impl SubAgentActionPolicySnapshot {
@@ -2667,7 +2717,30 @@ impl SubAgentActionPolicySnapshot {
             version: Self::VERSION,
             mode: SubAgentActionPolicyMode::Default,
             source,
+            allowed_actions: None,
+            denied_actions: BTreeSet::new(),
         }
+    }
+
+    pub fn with_allow_deny(
+        source: SubAgentActionPolicySource,
+        allowed_actions: Option<BTreeSet<SubAgentActionPolicyAction>>,
+        denied_actions: BTreeSet<SubAgentActionPolicyAction>,
+    ) -> Self {
+        Self {
+            version: Self::VERSION,
+            mode: SubAgentActionPolicyMode::AllowDeny,
+            source,
+            allowed_actions,
+            denied_actions,
+        }
+    }
+
+    pub fn allows(&self, action: SubAgentActionPolicyAction) -> bool {
+        self.allowed_actions
+            .as_ref()
+            .is_none_or(|allowed_actions| allowed_actions.contains(&action))
+            && !self.denied_actions.contains(&action)
     }
 }
 
@@ -2676,6 +2749,21 @@ impl SubAgentActionPolicySnapshot {
 #[ts(rename_all = "snake_case")]
 pub enum SubAgentActionPolicyMode {
     Default,
+    AllowDeny,
+}
+
+#[derive(
+    Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, JsonSchema, TS,
+)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum SubAgentActionPolicyAction {
+    AgentMessageSend,
+    AgentFollowupSend,
+    AgentClose,
+    AgentDismiss,
+    AgentRetry,
+    AgentStopAll,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
@@ -2683,6 +2771,7 @@ pub enum SubAgentActionPolicyMode {
 #[ts(rename_all = "snake_case")]
 pub enum SubAgentActionPolicySource {
     Default,
+    Config,
     RoleAppliedConfig,
 }
 
@@ -2766,10 +2855,28 @@ impl SessionSource {
         }
     }
 
+    pub fn get_subagent_initial_task(&self) -> Option<String> {
+        match self {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { initial_task, .. }) => {
+                initial_task.clone()
+            }
+            _ => None,
+        }
+    }
+
     pub fn get_subagent_action_policy(&self) -> Option<SubAgentActionPolicySnapshot> {
         match self {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn { action_policy, .. }) => {
                 action_policy.clone()
+            }
+            _ => None,
+        }
+    }
+
+    pub fn get_subagent_tool_selection(&self) -> Option<SubAgentToolSelectionSnapshot> {
+        match self {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { tool_selection, .. }) => {
+                tool_selection.clone()
             }
             _ => None,
         }
@@ -2910,6 +3017,10 @@ pub enum MultiAgentVersion {
     V2,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// SessionMeta contains session-level data that doesn't correspond to a specific turn.
 ///
 /// NOTE: There used to be an `instructions` field here, which stored user_instructions, but we
@@ -2943,6 +3054,9 @@ pub struct SessionMeta {
     /// Optional short note attached to an AgentControl-spawned sub-agent thread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_note: Option<String>,
+    /// Workbench visibility marker for an AgentControl-spawned sub-agent thread.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub agent_hidden: bool,
     pub model_provider: Option<String>,
     /// base_instructions for the session. This *should* always be present when creating a new session,
     /// but may be missing for older sessions. If not present, fall back to rendering the base_instructions
@@ -2972,6 +3086,7 @@ impl Default for SessionMeta {
             agent_role: None,
             agent_path: None,
             thread_note: None,
+            agent_hidden: false,
             model_provider: None,
             base_instructions: None,
             dynamic_tools: None,

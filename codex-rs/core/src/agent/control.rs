@@ -31,6 +31,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentActionPolicySnapshot;
 use codex_protocol::protocol::SubAgentActionPolicySource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::SubAgentToolSelectionSnapshot;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::user_input::UserInput;
@@ -528,7 +529,9 @@ impl AgentControl {
         agent_role: Option<String>,
         preferred_agent_nickname: Option<String>,
         thread_note: Option<String>,
+        initial_task: Option<String>,
         action_policy: Option<SubAgentActionPolicySnapshot>,
+        tool_selection: Option<SubAgentToolSelectionSnapshot>,
     ) -> CodexResult<(SessionSource, AgentMetadata)> {
         if depth == 1 {
             self.state.register_root_thread(parent_thread_id);
@@ -549,9 +552,11 @@ impl AgentControl {
             agent_nickname: agent_nickname.clone(),
             agent_role: agent_role.clone(),
             thread_note: thread_note.clone(),
+            initial_task,
             action_policy: Some(action_policy.unwrap_or_else(|| {
                 SubAgentActionPolicySnapshot::new(SubAgentActionPolicySource::Default)
             })),
+            tool_selection,
         });
         let agent_metadata = AgentMetadata {
             agent_id: None,

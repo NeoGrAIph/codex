@@ -6,6 +6,7 @@ use codex_config::CONFIG_TOML_FILE;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerStack;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::SubAgentActionPolicyAction;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
@@ -41,10 +42,12 @@ async fn list_agent_role_templates_merges_user_roles_before_built_ins() {
             .iter()
             .map(|entry| entry.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["reviewer", "default", "explorer", "worker"]
+        vec!["reviewer", "default", "explorer", "reviewer", "worker"]
     );
     assert_eq!(entries[0].source, AgentRoleTemplateSource::User);
     assert_eq!(entries[1].source, AgentRoleTemplateSource::BuiltIn);
+    assert!(entries[0].shadows_built_in);
+    assert!(entries[3].is_shadowed);
 }
 
 #[tokio::test]
@@ -95,6 +98,13 @@ async fn list_agent_role_templates_marks_shadowed_built_in_roles() {
                 true,
                 false,
                 AgentRoleTemplateAvailability::ShadowedBuiltIn,
+            ),
+            (
+                "reviewer",
+                AgentRoleTemplateSource::BuiltIn,
+                false,
+                false,
+                AgentRoleTemplateAvailability::BuiltIn,
             ),
             (
                 "worker",
@@ -197,6 +207,7 @@ default_permissions = ":read-only"
 
 [tool_selection]
 allowed_tools = ["update_plan", "codex_app/lookup"]
+denied_tools = ["apply_patch", "shell_command"]
 
 [permissions.reviewer]
 description = "Reviewer read-only profile"
@@ -243,6 +254,7 @@ enabled = true
             reasoning_effort: Some("high".to_string()),
             service_tier: Some("priority".to_string()),
             allowed_tool_names: vec!["update_plan".to_string(), "codex_app/lookup".to_string()],
+            denied_tool_names: vec!["apply_patch".to_string(), "shell_command".to_string()],
             approval_policy: Some("on-request".to_string()),
             sandbox_mode: None,
             default_permissions: Some(":read-only".to_string()),
@@ -275,6 +287,7 @@ enabled = true
                 "mcp_servers".to_string(),
                 "hooks".to_string(),
                 "tool_selection.allowed_tools".to_string(),
+                "tool_selection.denied_tools".to_string(),
                 "skills.config".to_string(),
                 "apps".to_string(),
             ],
@@ -356,6 +369,11 @@ enabled = true
                 },
                 AgentRoleTemplateFieldProvenance {
                     field_name: "tool_selection.allowed_tools".to_string(),
+                    source: AgentRoleTemplateFieldProvenanceSource::EffectiveRoleFile,
+                    detail: None,
+                },
+                AgentRoleTemplateFieldProvenance {
+                    field_name: "tool_selection.denied_tools".to_string(),
                     source: AgentRoleTemplateFieldProvenanceSource::EffectiveRoleFile,
                     detail: None,
                 },
@@ -756,7 +774,7 @@ async fn create_user_agent_role_template_writes_valid_discovered_role_file() {
 #[tokio::test]
 async fn create_user_agent_role_template_from_draft_writes_valid_native_toml() {
     let (home, mut config) = test_config().await;
-    let draft = r#"name = "reviewer"
+    let draft = r#"name = "audit-reviewer"
 description = "Review code changes before handoff."
 nickname_candidates = ["Ada"]
 developer_instructions = "Review the diff and report concrete risks."
@@ -771,13 +789,13 @@ allowed_tools = ["update_plan"]
         .agent_roles
         .insert(created.name.clone(), created.config.clone());
 
-    assert_eq!(created.name, "reviewer");
-    assert_eq!(created.path, home.path().join("agents/reviewer.toml"));
+    assert_eq!(created.name, "audit-reviewer");
+    assert_eq!(created.path, home.path().join("agents/audit-reviewer.toml"));
     let contents = fs::read_to_string(&created.path).expect("read template");
     assert_eq!(contents, format!("{}\n", draft.trim()));
     assert!(contents.contains("[tool_selection]\nallowed_tools = [\"update_plan\"]"));
     assert_eq!(
-        resolve_role_config(&config, "reviewer")
+        resolve_role_config(&config, "audit-reviewer")
             .expect("role")
             .description
             .as_deref(),
@@ -847,9 +865,450 @@ async fn agent_role_template_current_model_draft_writes_native_model_defaults() 
 }
 
 #[tokio::test]
+async fn agent_role_template_explicit_model_defaults_draft_writes_native_model_defaults() {
+    let (home, config) = test_config().await;
+    let draft =
+        starter_agent_role_template_draft_with_model_defaults(&AgentRoleTemplateModelDefaults {
+            model: Some("deepseek/deepseek-v4-flash".to_string()),
+            model_provider: Some("deepseek".to_string()),
+            model_reasoning_effort: Some("high".to_string()),
+            service_tier: Some("priority".to_string()),
+        });
+
+    assert!(draft.contains("model = \"deepseek/deepseek-v4-flash\""));
+    assert!(draft.contains("model_provider = \"deepseek\""));
+    assert!(draft.contains("model_reasoning_effort = \"high\""));
+    assert!(draft.contains("service_tier = \"priority\""));
+    let created = create_user_agent_role_template_from_draft(&config, &draft).expect("created");
+
+    assert_eq!(created.name, "new-role");
+    assert_eq!(created.path, home.path().join("agents/new-role.toml"));
+    assert_eq!(
+        created
+            .config
+            .runtime_config_sources
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec![
+            "developer_instructions",
+            "model",
+            "model_provider",
+            "model_reasoning_effort",
+            "service_tier",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn user_agent_role_template_update_draft_rewrites_native_model_defaults() {
+    let (_home, mut config) = test_config().await;
+    config.model = Some("deepseek/deepseek-v4-flash".to_string());
+    config.model_provider_id = "deepseek".to_string();
+    config.model_reasoning_effort = Some(ReasoningEffort::High);
+    config.service_tier = Some("priority".to_string());
+    let initial = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+model = "gpt-5.3-codex"
+model_provider = "openai"
+model_reasoning_effort = "medium"
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+denied_tools = ["apply_patch"]
+
+[subagent_action_policy]
+allowed_actions = ["agent_message_send"]
+"#;
+    let created = create_user_agent_role_template_from_draft(&config, initial).expect("created");
+
+    let draft =
+        user_agent_role_template_draft_from_current_model(&config, "audit-reviewer", &created.path)
+            .expect("draft");
+    assert!(draft.contains("model = \"deepseek/deepseek-v4-flash\""));
+    assert!(draft.contains("model_provider = \"deepseek\""));
+    assert!(draft.contains("model_reasoning_effort = \"high\""));
+    assert!(draft.contains("service_tier = \"priority\""));
+    assert!(draft.contains("[tool_selection]\nallowed_tools = ["));
+    assert!(draft.contains("\"update_plan\""));
+    assert!(draft.contains("denied_tools = ["));
+    assert!(draft.contains("\"apply_patch\""));
+    assert!(draft.contains("[subagent_action_policy]\nallowed_actions = [\"agent_message_send\"]"));
+
+    let updated = update_user_agent_role_template_from_draft(
+        &config,
+        "audit-reviewer",
+        &created.path,
+        &draft,
+    )
+    .expect("updated");
+
+    assert_eq!(updated.name, "audit-reviewer");
+    let contents = fs::read_to_string(&created.path).expect("read template");
+    assert!(contents.contains("model = \"deepseek/deepseek-v4-flash\""));
+    assert!(contents.contains("model_provider = \"deepseek\""));
+    assert!(contents.contains("model_reasoning_effort = \"high\""));
+    assert!(contents.contains("service_tier = \"priority\""));
+    assert!(contents.contains("[tool_selection]\nallowed_tools = ["));
+    assert!(
+        contents.contains("[subagent_action_policy]\nallowed_actions = [\"agent_message_send\"]")
+    );
+}
+
+#[tokio::test]
+async fn user_agent_role_template_update_draft_rewrites_explicit_model_defaults() {
+    let (_home, config) = test_config().await;
+    let initial = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+model = "gpt-5.3-codex"
+model_provider = "openai"
+model_reasoning_effort = "medium"
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+denied_tools = ["apply_patch"]
+
+[subagent_action_policy]
+allowed_actions = ["agent_message_send"]
+"#;
+    let created = create_user_agent_role_template_from_draft(&config, initial).expect("created");
+
+    let draft = user_agent_role_template_draft_with_model_defaults(
+        &config,
+        "audit-reviewer",
+        &created.path,
+        &AgentRoleTemplateModelDefaults {
+            model: Some("deepseek/deepseek-v4-flash".to_string()),
+            model_provider: Some("deepseek".to_string()),
+            model_reasoning_effort: Some("high".to_string()),
+            service_tier: Some("priority".to_string()),
+        },
+    )
+    .expect("draft");
+
+    assert!(draft.contains("model = \"deepseek/deepseek-v4-flash\""));
+    assert!(draft.contains("model_provider = \"deepseek\""));
+    assert!(draft.contains("model_reasoning_effort = \"high\""));
+    assert!(draft.contains("service_tier = \"priority\""));
+    assert!(draft.contains("[tool_selection]\nallowed_tools = ["));
+    assert!(draft.contains("\"update_plan\""));
+    assert!(draft.contains("denied_tools = ["));
+    assert!(draft.contains("\"apply_patch\""));
+    assert!(draft.contains("[subagent_action_policy]\nallowed_actions = [\"agent_message_send\"]"));
+
+    let updated = update_user_agent_role_template_from_draft(
+        &config,
+        "audit-reviewer",
+        &created.path,
+        &draft,
+    )
+    .expect("updated");
+
+    assert_eq!(updated.name, "audit-reviewer");
+    let contents = fs::read_to_string(&created.path).expect("read template");
+    assert!(contents.contains("model = \"deepseek/deepseek-v4-flash\""));
+    assert!(contents.contains("model_provider = \"deepseek\""));
+    assert!(contents.contains("model_reasoning_effort = \"high\""));
+    assert!(contents.contains("service_tier = \"priority\""));
+    assert!(contents.contains("[tool_selection]\nallowed_tools = ["));
+    assert!(
+        contents.contains("[subagent_action_policy]\nallowed_actions = [\"agent_message_send\"]")
+    );
+}
+
+#[tokio::test]
+async fn user_agent_role_template_update_draft_rewrites_native_model_provider_defaults() {
+    let (_home, mut config) = test_config().await;
+    config.model = Some("deepseek/deepseek-v4-flash".to_string());
+    config.model_provider_id = "deepseek".to_string();
+    config.model_reasoning_effort = Some(ReasoningEffort::High);
+    config.service_tier = Some("priority".to_string());
+    let initial = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+model = "gpt-5.3-codex"
+model_provider = "openai"
+model_reasoning_effort = "medium"
+service_tier = "standard"
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+denied_tools = ["apply_patch"]
+
+[subagent_action_policy]
+allowed_actions = ["agent_message_send"]
+"#;
+    let created = create_user_agent_role_template_from_draft(&config, initial).expect("created");
+
+    let draft = user_agent_role_template_draft_from_current_model_provider(
+        &config,
+        "audit-reviewer",
+        &created.path,
+    )
+    .expect("draft");
+    assert!(draft.contains("model = \"deepseek/deepseek-v4-flash\""));
+    assert!(draft.contains("model_provider = \"deepseek\""));
+    assert!(draft.contains("model_reasoning_effort = \"medium\""));
+    assert!(draft.contains("service_tier = \"standard\""));
+    assert!(draft.contains("[tool_selection]\nallowed_tools = ["));
+    assert!(draft.contains("\"update_plan\""));
+    assert!(draft.contains("denied_tools = ["));
+    assert!(draft.contains("\"apply_patch\""));
+    assert!(draft.contains("[subagent_action_policy]\nallowed_actions = [\"agent_message_send\"]"));
+
+    let updated = update_user_agent_role_template_from_draft(
+        &config,
+        "audit-reviewer",
+        &created.path,
+        &draft,
+    )
+    .expect("updated");
+
+    assert_eq!(updated.name, "audit-reviewer");
+    let contents = fs::read_to_string(&created.path).expect("read template");
+    assert!(contents.contains("model = \"deepseek/deepseek-v4-flash\""));
+    assert!(contents.contains("model_provider = \"deepseek\""));
+    assert!(contents.contains("model_reasoning_effort = \"medium\""));
+    assert!(contents.contains("service_tier = \"standard\""));
+    assert!(contents.contains("[tool_selection]\nallowed_tools = ["));
+    assert!(
+        contents.contains("[subagent_action_policy]\nallowed_actions = [\"agent_message_send\"]")
+    );
+}
+
+#[tokio::test]
+async fn user_agent_role_template_update_draft_rewrites_native_reasoning_defaults() {
+    let (_home, mut config) = test_config().await;
+    config.model = Some("deepseek/deepseek-v4-flash".to_string());
+    config.model_provider_id = "deepseek".to_string();
+    config.model_reasoning_effort = Some(ReasoningEffort::High);
+    config.service_tier = Some("priority".to_string());
+    let initial = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+model = "gpt-5.3-codex"
+model_provider = "openai"
+model_reasoning_effort = "medium"
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+denied_tools = ["apply_patch"]
+
+[subagent_action_policy]
+allowed_actions = ["agent_message_send"]
+"#;
+    let created = create_user_agent_role_template_from_draft(&config, initial).expect("created");
+
+    let draft = user_agent_role_template_draft_from_current_reasoning(
+        &config,
+        "audit-reviewer",
+        &created.path,
+    )
+    .expect("draft");
+    assert!(draft.contains("model = \"gpt-5.3-codex\""));
+    assert!(draft.contains("model_provider = \"openai\""));
+    assert!(draft.contains("model_reasoning_effort = \"high\""));
+    assert!(draft.contains("service_tier = \"priority\""));
+    assert!(draft.contains("[tool_selection]\nallowed_tools = ["));
+    assert!(draft.contains("\"update_plan\""));
+    assert!(draft.contains("denied_tools = ["));
+    assert!(draft.contains("\"apply_patch\""));
+    assert!(draft.contains("[subagent_action_policy]\nallowed_actions = [\"agent_message_send\"]"));
+
+    let updated = update_user_agent_role_template_from_draft(
+        &config,
+        "audit-reviewer",
+        &created.path,
+        &draft,
+    )
+    .expect("updated");
+
+    assert_eq!(updated.name, "audit-reviewer");
+    let contents = fs::read_to_string(&created.path).expect("read template");
+    assert!(contents.contains("model = \"gpt-5.3-codex\""));
+    assert!(contents.contains("model_provider = \"openai\""));
+    assert!(contents.contains("model_reasoning_effort = \"high\""));
+    assert!(contents.contains("service_tier = \"priority\""));
+    assert!(contents.contains("[tool_selection]\nallowed_tools = ["));
+    assert!(
+        contents.contains("[subagent_action_policy]\nallowed_actions = [\"agent_message_send\"]")
+    );
+}
+
+#[tokio::test]
+async fn user_agent_role_template_update_draft_clears_native_model_defaults() {
+    let (_home, config) = test_config().await;
+    let initial = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+model = "deepseek/deepseek-v4-flash"
+model_provider = "deepseek"
+model_reasoning_effort = "high"
+service_tier = "priority"
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+denied_tools = ["apply_patch"]
+
+[subagent_action_policy]
+allowed_actions = ["agent_message_send"]
+"#;
+    let created = create_user_agent_role_template_from_draft(&config, initial).expect("created");
+
+    let draft = user_agent_role_template_draft_without_model_defaults(
+        &config,
+        "audit-reviewer",
+        &created.path,
+    )
+    .expect("draft");
+    assert!(!draft.contains("model = "));
+    assert!(!draft.contains("model_provider = "));
+    assert!(!draft.contains("model_reasoning_effort = "));
+    assert!(!draft.contains("service_tier = "));
+    assert!(draft.contains("[tool_selection]\nallowed_tools = ["));
+    assert!(draft.contains("\"update_plan\""));
+    assert!(draft.contains("denied_tools = ["));
+    assert!(draft.contains("\"apply_patch\""));
+    assert!(draft.contains("[subagent_action_policy]\nallowed_actions = [\"agent_message_send\"]"));
+
+    let updated = update_user_agent_role_template_from_draft(
+        &config,
+        "audit-reviewer",
+        &created.path,
+        &draft,
+    )
+    .expect("updated");
+
+    assert_eq!(updated.name, "audit-reviewer");
+    let contents = fs::read_to_string(&created.path).expect("read template");
+    assert!(!contents.contains("model = "));
+    assert!(!contents.contains("model_provider = "));
+    assert!(!contents.contains("model_reasoning_effort = "));
+    assert!(!contents.contains("service_tier = "));
+    assert!(contents.contains("[tool_selection]\nallowed_tools = ["));
+    assert!(
+        contents.contains("[subagent_action_policy]\nallowed_actions = [\"agent_message_send\"]")
+    );
+}
+
+#[tokio::test]
+async fn user_agent_role_template_draft_from_file_preserves_raw_native_toml() {
+    let (_home, config) = test_config().await;
+    let initial = r#"# reviewer role
+name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+
+# Keep this comment in the inline editor.
+[tool_selection]
+allowed_tools = ["update_plan"]
+"#;
+    let created = create_user_agent_role_template_from_draft(&config, initial).expect("created");
+
+    let draft = user_agent_role_template_draft_from_file(&config, "audit-reviewer", &created.path)
+        .expect("draft");
+
+    assert_eq!(draft, format!("{}\n", initial.trim()));
+}
+
+#[tokio::test]
 async fn user_agent_role_template_update_draft_rewrites_native_tool_selection() {
     let (_home, config) = test_config().await;
-    let initial = r#"name = "reviewer"
+    let initial = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+denied_tools = ["apply_patch"]
+"#;
+    let created = create_user_agent_role_template_from_draft(&config, initial).expect("created");
+
+    let draft = user_agent_role_template_draft_with_allowed_tools(
+        &config,
+        "audit-reviewer",
+        &created.path,
+        &["tool_search".to_string(), "update_plan".to_string()],
+    )
+    .expect("draft");
+    assert!(draft.contains("[tool_selection]\nallowed_tools = ["));
+    assert!(draft.contains("\"tool_search\""));
+    assert!(draft.contains("\"update_plan\""));
+
+    let updated = update_user_agent_role_template_from_draft(
+        &config,
+        "audit-reviewer",
+        &created.path,
+        &draft,
+    )
+    .expect("updated");
+
+    assert_eq!(updated.name, "audit-reviewer");
+    let contents = fs::read_to_string(&created.path).expect("read template");
+    assert!(contents.contains("[tool_selection]\nallowed_tools = ["));
+    assert!(contents.contains("\"tool_search\""));
+    assert!(contents.contains("\"update_plan\""));
+    assert!(contents.contains("denied_tools = ["));
+    assert!(contents.contains("\"apply_patch\""));
+}
+
+#[tokio::test]
+async fn user_agent_role_template_update_draft_rewrites_native_denied_tools() {
+    let (_home, config) = test_config().await;
+    let initial = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+denied_tools = ["apply_patch"]
+"#;
+    let created = create_user_agent_role_template_from_draft(&config, initial).expect("created");
+
+    let draft = user_agent_role_template_draft_with_denied_tools(
+        &config,
+        "audit-reviewer",
+        &created.path,
+        &["tool_search".to_string(), "apply_patch".to_string()],
+    )
+    .expect("draft");
+    assert!(draft.contains("[tool_selection]\nallowed_tools = ["));
+    assert!(draft.contains("\"update_plan\""));
+    assert!(draft.contains("denied_tools = ["));
+    assert!(draft.contains("\"tool_search\""));
+    assert!(draft.contains("\"apply_patch\""));
+
+    let updated = update_user_agent_role_template_from_draft(
+        &config,
+        "audit-reviewer",
+        &created.path,
+        &draft,
+    )
+    .expect("updated");
+
+    assert_eq!(updated.name, "audit-reviewer");
+    let contents = fs::read_to_string(&created.path).expect("read template");
+    assert!(contents.contains("[tool_selection]\nallowed_tools = ["));
+    assert!(contents.contains("\"update_plan\""));
+    assert!(contents.contains("denied_tools = ["));
+    assert!(contents.contains("\"tool_search\""));
+    assert!(contents.contains("\"apply_patch\""));
+}
+
+#[tokio::test]
+async fn user_agent_role_template_update_tool_selection_rewrites_allowlist_and_denylist() {
+    let (_home, config) = test_config().await;
+    let initial = r#"name = "audit-reviewer"
 description = "Review code changes before handoff."
 nickname_candidates = ["Ada"]
 developer_instructions = "Review the diff and report concrete risks."
@@ -859,26 +1318,140 @@ allowed_tools = ["update_plan"]
 "#;
     let created = create_user_agent_role_template_from_draft(&config, initial).expect("created");
 
-    let draft = user_agent_role_template_draft_with_allowed_tools(
+    let updated = update_user_agent_role_template_tool_selection(
         &config,
-        "reviewer",
+        "audit-reviewer",
         &created.path,
-        &["tool_search".to_string(), "update_plan".to_string()],
+        Some(&["tool_search".to_string(), "update_plan".to_string()]),
+        Some(&["apply_patch".to_string()]),
     )
-    .expect("draft");
-    assert!(draft.contains("[tool_selection]\nallowed_tools = ["));
-    assert!(draft.contains("\"tool_search\""));
-    assert!(draft.contains("\"update_plan\""));
+    .expect("updated");
 
-    let updated =
-        update_user_agent_role_template_from_draft(&config, "reviewer", &created.path, &draft)
-            .expect("updated");
-
-    assert_eq!(updated.name, "reviewer");
+    assert_eq!(updated.name, "audit-reviewer");
+    assert_eq!(
+        updated
+            .config
+            .runtime_config_sources
+            .keys()
+            .collect::<Vec<_>>(),
+        vec![
+            &"developer_instructions".to_string(),
+            &"tool_selection.allowed_tools".to_string(),
+            &"tool_selection.denied_tools".to_string()
+        ]
+    );
     let contents = fs::read_to_string(&created.path).expect("read template");
     assert!(contents.contains("[tool_selection]\nallowed_tools = ["));
     assert!(contents.contains("\"tool_search\""));
     assert!(contents.contains("\"update_plan\""));
+    assert!(contents.contains("denied_tools = ["));
+    assert!(contents.contains("\"apply_patch\""));
+}
+
+#[tokio::test]
+async fn user_agent_role_template_update_tool_selection_removes_section_for_null_policy() {
+    let (_home, config) = test_config().await;
+    let initial = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+
+[tool_selection]
+allowed_tools = ["update_plan"]
+denied_tools = ["apply_patch"]
+"#;
+    let created = create_user_agent_role_template_from_draft(&config, initial).expect("created");
+
+    let updated = update_user_agent_role_template_tool_selection(
+        &config,
+        "audit-reviewer",
+        &created.path,
+        None,
+        None,
+    )
+    .expect("updated");
+
+    assert_eq!(updated.name, "audit-reviewer");
+    let contents = fs::read_to_string(&created.path).expect("read template");
+    assert!(!contents.contains("[tool_selection]"));
+    assert!(!contents.contains("allowed_tools"));
+    assert!(!contents.contains("denied_tools"));
+}
+
+#[tokio::test]
+async fn user_agent_role_template_update_action_policy_rewrites_allowlist_and_denylist() {
+    let (_home, config) = test_config().await;
+    let initial = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+
+[subagent_action_policy]
+allowed_actions = ["agent_message_send"]
+"#;
+    let created = create_user_agent_role_template_from_draft(&config, initial).expect("created");
+
+    let updated = update_user_agent_role_template_action_policy(
+        &config,
+        "audit-reviewer",
+        &created.path,
+        Some(&[
+            SubAgentActionPolicyAction::AgentMessageSend,
+            SubAgentActionPolicyAction::AgentRetry,
+        ]),
+        Some(&[SubAgentActionPolicyAction::AgentClose]),
+    )
+    .expect("updated");
+
+    assert_eq!(updated.name, "audit-reviewer");
+    assert_eq!(
+        updated
+            .config
+            .runtime_config_sources
+            .keys()
+            .collect::<Vec<_>>(),
+        vec![
+            &"developer_instructions".to_string(),
+            &"subagent_action_policy.allowed_actions".to_string(),
+            &"subagent_action_policy.denied_actions".to_string()
+        ]
+    );
+    let contents = fs::read_to_string(&created.path).expect("read template");
+    assert!(contents.contains("[subagent_action_policy]\nallowed_actions = ["));
+    assert!(contents.contains("\"agent_message_send\""));
+    assert!(contents.contains("\"agent_retry\""));
+    assert!(contents.contains("denied_actions = ["));
+    assert!(contents.contains("\"agent_close\""));
+}
+
+#[tokio::test]
+async fn user_agent_role_template_update_action_policy_removes_section_for_null_policy() {
+    let (_home, config) = test_config().await;
+    let initial = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+
+[subagent_action_policy]
+allowed_actions = ["agent_message_send"]
+denied_actions = ["agent_close"]
+"#;
+    let created = create_user_agent_role_template_from_draft(&config, initial).expect("created");
+
+    let updated = update_user_agent_role_template_action_policy(
+        &config,
+        "audit-reviewer",
+        &created.path,
+        None,
+        None,
+    )
+    .expect("updated");
+
+    assert_eq!(updated.name, "audit-reviewer");
+    let contents = fs::read_to_string(&created.path).expect("read template");
+    assert!(!contents.contains("[subagent_action_policy]"));
+    assert!(!contents.contains("allowed_actions"));
+    assert!(!contents.contains("denied_actions"));
 }
 
 #[tokio::test]

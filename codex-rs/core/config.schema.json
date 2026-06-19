@@ -2696,6 +2696,37 @@
       },
       "type": "object"
     },
+    "SubAgentActionPolicyAction": {
+      "enum": [
+        "agent_message_send",
+        "agent_followup_send",
+        "agent_close",
+        "agent_dismiss",
+        "agent_retry",
+        "agent_stop_all"
+      ],
+      "type": "string"
+    },
+    "SubAgentActionPolicyToml": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_actions": {
+          "description": "Optional allowlist of workbench action ids. Absent means default allow.",
+          "items": {
+            "$ref": "#/definitions/SubAgentActionPolicyAction"
+          },
+          "type": "array"
+        },
+        "denied_actions": {
+          "description": "Denylist of workbench action ids. Denied actions are removed after any allowlist is applied.",
+          "items": {
+            "$ref": "#/definitions/SubAgentActionPolicyAction"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "ThreadStoreToml": {
       "oneOf": [
         {
@@ -2719,6 +2750,13 @@
       "properties": {
         "allowed_tools": {
           "description": "Allowlist of runtime tool identifiers. Entries use `name` for plain tools and `namespace/name` for namespaced tools.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "denied_tools": {
+          "description": "Denylist of runtime tool identifiers. Entries use `name` for plain tools and `namespace/name` for namespaced tools. Denied tools are removed after any allowlist is applied.",
           "items": {
             "type": "string"
           },
@@ -5247,6 +5285,14 @@
         }
       ],
       "description": "Directory where Codex stores the SQLite state DB. Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`."
+    },
+    "subagent_action_policy": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/SubAgentActionPolicyToml"
+        }
+      ],
+      "description": "Restricts workbench actions available to spawned sub-agents."
     },
     "suppress_unstable_features_warning": {
       "description": "Suppress warnings about unstable (under development) features.",

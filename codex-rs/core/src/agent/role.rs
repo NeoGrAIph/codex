@@ -324,7 +324,7 @@ mod built_in {
                         config_file: None,
                         nickname_candidates: None,
                         metadata_sources: Default::default(),
-            runtime_config_sources: Default::default(),
+                        runtime_config_sources: Default::default(),
                     },
                 ),
                 (
@@ -340,7 +340,23 @@ Rules:
                         config_file: Some("explorer.toml".to_string().parse().unwrap_or_default()),
                         nickname_candidates: None,
                         metadata_sources: Default::default(),
-            runtime_config_sources: Default::default(),
+                        runtime_config_sources: Default::default(),
+                    },
+                ),
+                (
+                    "reviewer".to_string(),
+                    AgentRoleConfig {
+                        description: Some(r#"Use `reviewer` for focused quality, safety, and regression review.
+Reviewers inspect completed or proposed work and report concrete findings.
+Rules:
+- Treat the assigned diff, files, or behavior contract as the review scope.
+- Prioritize correctness bugs, security/permission regressions, compatibility breaks, missing tests, and user-facing behavior regressions.
+- Cite concrete evidence from files, tests, command output, or runtime state.
+- Do not make code changes unless explicitly asked; if a fix is needed, report the finding and the smallest safe correction."#.to_string()),
+                        config_file: Some("reviewer.toml".to_string().parse().unwrap_or_default()),
+                        nickname_candidates: None,
+                        metadata_sources: Default::default(),
+                        runtime_config_sources: Default::default(),
                     },
                 ),
                 (
@@ -357,7 +373,7 @@ Rules:
                         config_file: None,
                         nickname_candidates: None,
                         metadata_sources: Default::default(),
-            runtime_config_sources: Default::default(),
+                        runtime_config_sources: Default::default(),
                     },
                 ),
                 // Awaiter is temp removed
@@ -386,9 +402,11 @@ Rules:
     /// Resolves a built-in role `config_file` path to embedded content.
     pub(super) fn config_file_contents(path: &Path) -> Option<&'static str> {
         const EXPLORER: &str = include_str!("builtins/explorer.toml");
+        const REVIEWER: &str = include_str!("builtins/reviewer.toml");
         const AWAITER: &str = include_str!("builtins/awaiter.toml");
         match path.to_str()? {
             "explorer.toml" => Some(EXPLORER),
+            "reviewer.toml" => Some(REVIEWER),
             "awaiter.toml" => Some(AWAITER),
             _ => None,
         }

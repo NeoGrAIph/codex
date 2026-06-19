@@ -22,12 +22,18 @@ use codex_app_server_client::TypedRequestError;
 use codex_app_server_protocol::Account;
 use codex_app_server_protocol::AgentCloseParams;
 use codex_app_server_protocol::AgentCloseResponse;
+use codex_app_server_protocol::AgentDismissParams;
+use codex_app_server_protocol::AgentDismissResponse;
 use codex_app_server_protocol::AgentFollowupSendParams;
 use codex_app_server_protocol::AgentFollowupSendResponse;
 use codex_app_server_protocol::AgentMessageSendParams;
 use codex_app_server_protocol::AgentMessageSendResponse;
+use codex_app_server_protocol::AgentRetryParams;
+use codex_app_server_protocol::AgentRetryResponse;
 use codex_app_server_protocol::AgentRoleToolSelectionCatalogReadParams;
 use codex_app_server_protocol::AgentRoleToolSelectionCatalogReadResponse;
+use codex_app_server_protocol::AgentStopAllParams;
+use codex_app_server_protocol::AgentStopAllResponse;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::ClientRequest;
@@ -158,6 +164,9 @@ const MODEL_PROVIDER_AUTH_REMOVE_METHOD: &str = "modelProvider/auth/remove";
 const AGENT_MESSAGE_SEND_METHOD: &str = "agent/message/send";
 const AGENT_FOLLOWUP_SEND_METHOD: &str = "agent/followup/send";
 const AGENT_CLOSE_METHOD: &str = "agent/close";
+const AGENT_DISMISS_METHOD: &str = "agent/dismiss";
+const AGENT_RETRY_METHOD: &str = "agent/retry";
+const AGENT_STOP_ALL_METHOD: &str = "agent/stopAll";
 
 fn bootstrap_request_error(context: &'static str, err: TypedRequestError) -> color_eyre::Report {
     color_eyre::eyre::eyre!("{context}: {err}")
@@ -213,6 +222,45 @@ fn agent_close_error(err: TypedRequestError) -> color_eyre::Report {
             )
         }
         err => color_eyre::eyre::eyre!("{AGENT_CLOSE_METHOD} failed in TUI: {err}"),
+    }
+}
+
+fn agent_dismiss_error(err: TypedRequestError) -> color_eyre::Report {
+    match err {
+        TypedRequestError::Server { source, .. }
+            if is_model_provider_request_unsupported(&source, AGENT_DISMISS_METHOD) =>
+        {
+            color_eyre::eyre::eyre!(
+                "Agent dismiss is not supported by the connected app-server. Restart Codex from this fork build."
+            )
+        }
+        err => color_eyre::eyre::eyre!("{AGENT_DISMISS_METHOD} failed in TUI: {err}"),
+    }
+}
+
+fn agent_retry_error(err: TypedRequestError) -> color_eyre::Report {
+    match err {
+        TypedRequestError::Server { source, .. }
+            if is_model_provider_request_unsupported(&source, AGENT_RETRY_METHOD) =>
+        {
+            color_eyre::eyre::eyre!(
+                "Agent retry is not supported by the connected app-server. Restart Codex from this fork build."
+            )
+        }
+        err => color_eyre::eyre::eyre!("{AGENT_RETRY_METHOD} failed in TUI: {err}"),
+    }
+}
+
+fn agent_stop_all_error(err: TypedRequestError) -> color_eyre::Report {
+    match err {
+        TypedRequestError::Server { source, .. }
+            if is_model_provider_request_unsupported(&source, AGENT_STOP_ALL_METHOD) =>
+        {
+            color_eyre::eyre::eyre!(
+                "Agent stop all is not supported by the connected app-server. Restart Codex from this fork build."
+            )
+        }
+        err => color_eyre::eyre::eyre!("{AGENT_STOP_ALL_METHOD} failed in TUI: {err}"),
     }
 }
 
@@ -882,6 +930,58 @@ impl AppServerSession {
             })
             .await
             .map_err(agent_close_error)
+    }
+
+    pub(crate) async fn agent_dismiss(
+        &mut self,
+        author_thread_id: ThreadId,
+        target_thread_id: ThreadId,
+    ) -> Result<AgentDismissResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentDismiss {
+                request_id,
+                params: AgentDismissParams {
+                    author_thread_id: author_thread_id.to_string(),
+                    target_thread_id: target_thread_id.to_string(),
+                },
+            })
+            .await
+            .map_err(agent_dismiss_error)
+    }
+
+    pub(crate) async fn agent_retry(
+        &mut self,
+        author_thread_id: ThreadId,
+        target_thread_id: ThreadId,
+    ) -> Result<AgentRetryResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentRetry {
+                request_id,
+                params: AgentRetryParams {
+                    author_thread_id: author_thread_id.to_string(),
+                    target_thread_id: target_thread_id.to_string(),
+                },
+            })
+            .await
+            .map_err(agent_retry_error)
+    }
+
+    pub(crate) async fn agent_stop_all(
+        &mut self,
+        author_thread_id: ThreadId,
+    ) -> Result<AgentStopAllResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::AgentStopAll {
+                request_id,
+                params: AgentStopAllParams {
+                    author_thread_id: author_thread_id.to_string(),
+                },
+            })
+            .await
+            .map_err(agent_stop_all_error)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2585,6 +2685,7 @@ mod tests {
                 cli_version: "0.0.0".to_string(),
                 source: codex_app_server_protocol::SessionSource::Cli,
                 thread_note: None,
+                agent_hidden: false,
                 thread_source: None,
                 agent_nickname: None,
                 agent_role: None,

@@ -476,6 +476,7 @@ mod thread_processor_behavior_tests {
             agent_role: None,
             thread_note: None,
             agent_path: None,
+            agent_hidden: false,
             git_info: None,
             approval_mode: AskForApproval::OnRequest,
             permission_profile: PermissionProfile::read_only(),
@@ -1058,6 +1059,8 @@ mod thread_processor_behavior_tests {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             }),
             thread_source: Some(codex_protocol::protocol::ThreadSource::Subagent),
             agent_nickname: Some("atlas".to_string()),
@@ -1201,6 +1204,8 @@ mod thread_processor_behavior_tests {
                 action_policy: Some(SubAgentActionPolicySnapshot::new(
                     SubAgentActionPolicySource::RoleAppliedConfig,
                 )),
+                initial_task: None,
+                tool_selection: None,
             }))?;
 
         let summary = summary_from_state_db_metadata(

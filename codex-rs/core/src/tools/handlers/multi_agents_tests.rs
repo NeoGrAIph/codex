@@ -1,15 +1,20 @@
 use super::*;
 use crate::ThreadManager;
 use crate::config::AgentRoleConfig;
+use crate::config::Constrained;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::config::DEFAULT_AGENT_MAX_THREADS;
 use crate::config::DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS;
+use crate::config::PermissionProfileSnapshot;
+use crate::config::Permissions;
+use crate::config::SubAgentActionPolicyConfig;
 use crate::function_tool::FunctionCallError;
 use crate::init_state_db;
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnEnvironment;
 use crate::session_prefix::format_subagent_notification_message;
 use crate::thread_manager::StartThreadOptions;
+use crate::thread_manager::record_agent_stop_all_target_result;
 use crate::thread_manager::thread_store_from_config;
 use crate::tools::context::ToolOutput;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
@@ -28,9 +33,14 @@ use codex_model_provider::create_model_provider;
 use codex_model_provider_info::built_in_model_providers;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
+use codex_protocol::ToolName;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
+use codex_protocol::error::CodexErr;
+use codex_protocol::error::Result as CodexResult;
+use codex_protocol::models::ActivePermissionProfile;
+use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -54,18 +64,22 @@ use codex_protocol::protocol::Op;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentActionPolicyAction;
 use codex_protocol::protocol::SubAgentActionPolicyMode;
 use codex_protocol::protocol::SubAgentActionPolicySource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::SubAgentToolSelectionSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
 use core_test_support::TempDirExt;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -145,9 +159,88 @@ model_reasoning_effort = "minimal"
     role_name
 }
 
+async fn install_read_only_role(turn: &mut TurnContext, role_name: &str) {
+    tokio::fs::create_dir_all(&turn.config.codex_home)
+        .await
+        .expect("codex home should be created");
+    let role_config_path = turn
+        .config
+        .codex_home
+        .as_path()
+        .join(format!("{role_name}.toml"));
+    tokio::fs::write(
+        &role_config_path,
+        r#"description = "Read-only test role"
+model = "gpt-5.4"
+default_permissions = ":read-only"
+"#,
+    )
+    .await
+    .expect("role config should be written");
+
+    let mut config = (*turn.config).clone();
+    config.agent_roles.insert(
+        role_name.to_string(),
+        AgentRoleConfig {
+            description: Some("Read-only test role".to_string()),
+            config_file: Some(role_config_path),
+            nickname_candidates: None,
+            metadata_sources: Default::default(),
+            runtime_config_sources: Default::default(),
+        },
+    );
+    set_turn_config(turn, config);
+}
+
+async fn install_action_policy_role(turn: &mut TurnContext, role_name: &str) {
+    tokio::fs::create_dir_all(&turn.config.codex_home)
+        .await
+        .expect("codex home should be created");
+    let role_config_path = turn
+        .config
+        .codex_home
+        .as_path()
+        .join(format!("{role_name}.toml"));
+    tokio::fs::write(
+        &role_config_path,
+        r#"description = "Action policy test role"
+model = "gpt-5.4"
+
+[subagent_action_policy]
+allowed_actions = ["agent_message_send", "agent_close"]
+denied_actions = ["agent_close"]
+"#,
+    )
+    .await
+    .expect("role config should be written");
+
+    let mut config = (*turn.config).clone();
+    config.agent_roles.insert(
+        role_name.to_string(),
+        AgentRoleConfig {
+            description: Some("Action policy test role".to_string()),
+            config_file: Some(role_config_path),
+            nickname_candidates: None,
+            metadata_sources: Default::default(),
+            runtime_config_sources: Default::default(),
+        },
+    );
+    set_turn_config(turn, config);
+}
+
 fn set_turn_config(turn: &mut TurnContext, config: crate::config::Config) {
     turn.multi_agent_version = config.multi_agent_version_from_features();
     turn.config = Arc::new(config);
+}
+
+fn expect_read_only_workbench_denial<T>(result: CodexResult<T>) {
+    let Err(err) = result else {
+        panic!("workbench mutation should be denied for read-only author");
+    };
+    assert!(
+        err.to_string().contains("read-only thread"),
+        "expected read-only denial, got {err}"
+    );
 }
 
 fn expect_text_output<T>(output: T) -> (String, Option<bool>)
@@ -334,6 +427,144 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
 }
 
 #[tokio::test]
+async fn spawn_agent_role_read_only_policy_survives_runtime_overrides() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+        nickname: Option<String>,
+    }
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let role_name = "read-only-worker";
+    install_read_only_role(&mut turn, role_name).await;
+    let parent_permission_profile = PermissionProfile::workspace_write();
+    turn.permission_profile = parent_permission_profile.clone();
+    assert_ne!(
+        parent_permission_profile,
+        PermissionProfile::read_only(),
+        "test requires a parent runtime profile that differs from the role profile"
+    );
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+
+    let output = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect without writing",
+                "agent_type": role_name
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    assert!(
+        result
+            .nickname
+            .as_deref()
+            .is_some_and(|nickname| !nickname.is_empty())
+    );
+    let agent_id = parse_agent_id(&result.agent_id);
+    let child_thread = manager
+        .get_thread(agent_id)
+        .await
+        .expect("spawned agent thread should exist");
+    let snapshot = child_thread.config_snapshot().await;
+    assert_eq!(snapshot.permission_profile, PermissionProfile::read_only());
+    let child_turn = child_thread.codex.session.new_default_turn().await;
+    assert_eq!(
+        child_turn.permission_profile(),
+        PermissionProfile::read_only()
+    );
+}
+
+#[tokio::test]
+async fn spawn_agent_persists_role_action_policy_snapshot() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        agent_id: String,
+    }
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let role_name = "action-policy-worker";
+    install_action_policy_role(&mut turn, role_name).await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+
+    let output = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect with action limits",
+                "agent_type": role_name
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let agent_id = parse_agent_id(&result.agent_id);
+    let snapshot = manager
+        .get_thread(agent_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+    let action_policy = snapshot
+        .session_source
+        .get_subagent_action_policy()
+        .expect("spawned role agent should carry an action policy snapshot");
+
+    assert_eq!(action_policy.version, 1);
+    assert_eq!(action_policy.mode, SubAgentActionPolicyMode::AllowDeny);
+    assert_eq!(
+        action_policy.source,
+        SubAgentActionPolicySource::RoleAppliedConfig
+    );
+    assert!(
+        action_policy
+            .allowed_actions
+            .as_ref()
+            .is_some_and(|actions| actions.contains(&SubAgentActionPolicyAction::AgentMessageSend))
+    );
+    assert!(
+        action_policy
+            .denied_actions
+            .contains(&SubAgentActionPolicyAction::AgentClose)
+    );
+}
+
+#[tokio::test]
+async fn subagent_action_policy_snapshot_marks_non_role_config_source() {
+    let (_session, turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    let mut denied = BTreeSet::new();
+    denied.insert(SubAgentActionPolicyAction::AgentRetry);
+    config.subagent_action_policy = SubAgentActionPolicyConfig {
+        allowed: None,
+        denied,
+    };
+
+    let action_policy = subagent_action_policy_snapshot(&config, None);
+
+    assert_eq!(action_policy.version, 1);
+    assert_eq!(action_policy.mode, SubAgentActionPolicyMode::AllowDeny);
+    assert_eq!(action_policy.source, SubAgentActionPolicySource::Config);
+    assert!(
+        action_policy
+            .denied_actions
+            .contains(&SubAgentActionPolicyAction::AgentRetry)
+    );
+}
+
+#[tokio::test]
 async fn spawn_agent_fork_context_rejects_agent_type_override() {
     let (mut session, mut turn) = make_session_and_context().await;
     let role_name = install_role_with_model_override(&mut turn).await;
@@ -342,6 +573,19 @@ async fn spawn_agent_fork_context_rejects_agent_type_override() {
         .start_thread((*turn.config).clone())
         .await
         .expect("root thread should start");
+    let mut author_config = (*turn.config).clone();
+    author_config.permissions = Permissions::from_approval_and_profile(
+        Constrained::allow_any(AskForApproval::Never),
+        Constrained::allow_any(PermissionProfile::workspace_write()),
+    )
+    .expect("workspace permissions should satisfy test constraints");
+    author_config
+        .permissions
+        .set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::active(
+            PermissionProfile::workspace_write(),
+            ActivePermissionProfile::new(BUILT_IN_PERMISSION_PROFILE_WORKSPACE),
+        ))
+        .expect("active workspace profile should satisfy test constraints");
     session.services.agent_control = manager.agent_control();
     session.thread_id = root.thread_id;
     let err = SpawnAgentHandler::default()
@@ -1218,6 +1462,13 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
         child_snapshot.session_source.get_agent_path().as_deref(),
         Some("/root/test_process")
     );
+    assert_eq!(
+        child_snapshot
+            .session_source
+            .get_subagent_initial_task()
+            .as_deref(),
+        Some("encrypted-spawn-message")
+    );
     assert!(manager.captured_ops().iter().any(|(id, op)| {
         *id == child_thread_id
             && matches!(
@@ -1426,6 +1677,8 @@ async fn thread_manager_agent_message_send_allows_subtree_owner_descendant() {
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             thread_source: None,
             dynamic_tools: Vec::new(),
@@ -1659,6 +1912,8 @@ async fn thread_manager_agent_followup_allows_subtree_owner_descendant() {
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             thread_source: None,
             dynamic_tools: Vec::new(),
@@ -1779,6 +2034,731 @@ async fn thread_manager_agent_close_closes_path_backed_descendant() {
 }
 
 #[tokio::test]
+async fn thread_manager_agent_stop_all_closes_live_descendants_in_scope() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let worker_path = AgentPath::try_from("/root/worker").expect("worker path");
+    let child_path = AgentPath::try_from("/root/worker/child").expect("child path");
+    let sibling_path = AgentPath::try_from("/root/sibling").expect("sibling path");
+    let hidden_path = AgentPath::try_from("/root/hidden").expect("hidden path");
+    let idle_path = AgentPath::try_from("/root/idle").expect("idle path");
+    let worker_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect this repo".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(worker_path),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: Some("inspect this repo".to_string()),
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("worker spawn should succeed")
+        .thread_id;
+    let child_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect child".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: worker_thread_id,
+                depth: 2,
+                agent_path: Some(child_path),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: Some("inspect child".to_string()),
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("child spawn should succeed")
+        .thread_id;
+    let sibling_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect sibling".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(sibling_path),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: Some("inspect sibling".to_string()),
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("sibling spawn should succeed")
+        .thread_id;
+    let hidden_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect hidden".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(hidden_path),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: Some("inspect hidden".to_string()),
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("hidden spawn should succeed")
+        .thread_id;
+    let hidden_thread = manager
+        .get_thread(hidden_thread_id)
+        .await
+        .expect("hidden thread should exist");
+    let hidden_turn = hidden_thread.codex.session.new_default_turn().await;
+    hidden_thread
+        .codex
+        .session
+        .send_event(
+            hidden_turn.as_ref(),
+            EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: hidden_turn.sub_id.clone(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }),
+        )
+        .await;
+    manager
+        .update_thread_metadata(
+            hidden_thread_id,
+            codex_thread_store::ThreadMetadataPatch {
+                agent_hidden: Some(true),
+                ..Default::default()
+            },
+            /*include_archived*/ true,
+        )
+        .await
+        .expect("hidden agent metadata should update");
+    let idle_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "already done".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(idle_path),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: Some("already done".to_string()),
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("idle spawn should succeed")
+        .thread_id;
+    let idle_thread = manager
+        .get_thread(idle_thread_id)
+        .await
+        .expect("idle thread should exist");
+    let idle_turn = idle_thread.codex.session.new_default_turn().await;
+    idle_thread
+        .codex
+        .session
+        .send_event(
+            idle_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: idle_turn.sub_id.clone(),
+                last_agent_message: Some("done".to_string()),
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    let result = manager
+        .stop_all_agents_from_workbench(root.thread_id)
+        .await
+        .expect("stop all should close live descendants");
+
+    assert_eq!(result.affected_count, 3);
+    assert_eq!(result.failed, Vec::new());
+    assert_eq!(result.stopped_thread_ids.len(), 3);
+    assert!(result.stopped_thread_ids.contains(&child_thread_id));
+    assert!(result.stopped_thread_ids.contains(&sibling_thread_id));
+    assert!(result.stopped_thread_ids.contains(&worker_thread_id));
+    let captured_ops = manager.captured_ops();
+    assert!(
+        captured_ops
+            .iter()
+            .any(|(id, op)| { *id == worker_thread_id && matches!(op, Op::Shutdown) })
+    );
+    assert!(
+        captured_ops
+            .iter()
+            .any(|(id, op)| { *id == child_thread_id && matches!(op, Op::Shutdown) })
+    );
+    assert!(
+        captured_ops
+            .iter()
+            .any(|(id, op)| { *id == sibling_thread_id && matches!(op, Op::Shutdown) })
+    );
+    assert!(
+        captured_ops
+            .iter()
+            .all(|(id, op)| { *id != hidden_thread_id || !matches!(op, Op::Shutdown) })
+    );
+    assert!(
+        captured_ops
+            .iter()
+            .all(|(id, op)| { *id != idle_thread_id || !matches!(op, Op::Shutdown) })
+    );
+}
+
+#[test]
+fn agent_stop_all_target_result_records_partial_failures() {
+    let worker_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    let sibling_thread_id = ThreadId::new();
+    let worker_path = AgentPath::try_from("/root/worker").expect("worker path");
+    let child_path = AgentPath::try_from("/root/worker/child").expect("child path");
+    let sibling_path = AgentPath::try_from("/root/sibling").expect("sibling path");
+    let candidates = vec![
+        (worker_thread_id, worker_path),
+        (child_thread_id, child_path),
+        (sibling_thread_id, sibling_path),
+    ];
+    let mut stopped_thread_ids = Vec::new();
+    let mut failed = Vec::new();
+
+    record_agent_stop_all_target_result(
+        &candidates,
+        &mut stopped_thread_ids,
+        &mut failed,
+        worker_thread_id,
+        Ok(String::new()),
+    );
+    record_agent_stop_all_target_result(
+        &candidates,
+        &mut stopped_thread_ids,
+        &mut failed,
+        sibling_thread_id,
+        Err(CodexErr::InvalidRequest("forced close failure".to_string())),
+    );
+
+    assert_eq!(stopped_thread_ids, vec![worker_thread_id, child_thread_id]);
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].thread_id, sibling_thread_id);
+    assert_eq!(failed[0].message, "forced close failure");
+
+    let mut stopped_thread_ids = Vec::new();
+    let mut failed = Vec::new();
+    record_agent_stop_all_target_result(
+        &candidates,
+        &mut stopped_thread_ids,
+        &mut failed,
+        worker_thread_id,
+        Err(CodexErr::InvalidRequest("parent close failure".to_string())),
+    );
+
+    assert_eq!(stopped_thread_ids, Vec::new());
+    assert_eq!(failed.len(), 2);
+    assert_eq!(failed[0].thread_id, worker_thread_id);
+    assert_eq!(failed[1].thread_id, child_thread_id);
+    assert!(
+        failed
+            .iter()
+            .all(|failure| failure.message == "parent close failure")
+    );
+}
+
+#[tokio::test]
+async fn thread_manager_workbench_mutations_reject_read_only_author() {
+    let (_session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    let mut read_only_config = (*turn.config).clone();
+    read_only_config.permissions = Permissions::from_approval_and_profile(
+        Constrained::allow_any(AskForApproval::Never),
+        Constrained::allow_any(PermissionProfile::read_only()),
+    )
+    .expect("read-only permissions should satisfy test constraints");
+    read_only_config
+        .permissions
+        .set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::active(
+            PermissionProfile::read_only(),
+            ActivePermissionProfile::read_only(),
+        ))
+        .expect("active read-only profile should satisfy test constraints");
+
+    let author_path = AgentPath::try_from("/root/worker").expect("author path");
+    let author_thread_id = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            read_only_config,
+            vec![UserInput::Text {
+                text: "coordinate descendants without writing".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(author_path),
+                agent_nickname: None,
+                agent_role: Some("read-only-worker".to_string()),
+                thread_note: None,
+                action_policy: None,
+                initial_task: Some("coordinate descendants without writing".to_string()),
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("read-only author spawn should succeed")
+        .thread_id;
+
+    let child_path = AgentPath::try_from("/root/worker/child").expect("child path");
+    let child_thread_id = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect this repo".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: author_thread_id,
+                depth: 2,
+                agent_path: Some(child_path),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: Some("inspect this repo".to_string()),
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("child spawn should succeed")
+        .thread_id;
+
+    expect_read_only_workbench_denial(
+        manager
+            .queue_inter_agent_message(author_thread_id, child_thread_id, "hello".to_string())
+            .await,
+    );
+    expect_read_only_workbench_denial(
+        manager
+            .send_inter_agent_followup(author_thread_id, child_thread_id, "next".to_string())
+            .await,
+    );
+    expect_read_only_workbench_denial(
+        manager
+            .close_agent_from_workbench(author_thread_id, child_thread_id)
+            .await,
+    );
+    expect_read_only_workbench_denial(
+        manager
+            .dismiss_agent_from_workbench(author_thread_id, child_thread_id)
+            .await,
+    );
+    expect_read_only_workbench_denial(
+        manager
+            .retry_agent_from_workbench(author_thread_id, child_thread_id)
+            .await,
+    );
+    expect_read_only_workbench_denial(
+        manager
+            .stop_all_agents_from_workbench(author_thread_id)
+            .await,
+    );
+
+    assert!(
+        manager
+            .captured_ops()
+            .iter()
+            .all(|(id, op)| { *id != child_thread_id || !matches!(op, Op::Shutdown) })
+    );
+}
+
+#[tokio::test]
+async fn thread_manager_workbench_action_policy_enforces_allow_and_deny() {
+    let (_session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    let mut allowed_actions = BTreeSet::new();
+    allowed_actions.insert(SubAgentActionPolicyAction::AgentMessageSend);
+    allowed_actions.insert(SubAgentActionPolicyAction::AgentClose);
+    let mut denied_actions = BTreeSet::new();
+    denied_actions.insert(SubAgentActionPolicyAction::AgentClose);
+    denied_actions.insert(SubAgentActionPolicyAction::AgentFollowupSend);
+    let action_policy = codex_protocol::protocol::SubAgentActionPolicySnapshot::with_allow_deny(
+        SubAgentActionPolicySource::RoleAppliedConfig,
+        Some(allowed_actions),
+        denied_actions,
+    );
+    let mut author_config = (*turn.config).clone();
+    author_config.permissions = Permissions::from_approval_and_profile(
+        Constrained::allow_any(AskForApproval::Never),
+        Constrained::allow_any(PermissionProfile::workspace_write()),
+    )
+    .expect("workspace permissions should satisfy test constraints");
+    author_config
+        .permissions
+        .set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::active(
+            PermissionProfile::workspace_write(),
+            ActivePermissionProfile::new(BUILT_IN_PERMISSION_PROFILE_WORKSPACE),
+        ))
+        .expect("active workspace profile should satisfy test constraints");
+
+    let author_path = AgentPath::try_from("/root/worker").expect("author path");
+    let author_thread_id = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            author_config,
+            vec![UserInput::Text {
+                text: "coordinate descendants with action policy".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(author_path),
+                agent_nickname: None,
+                agent_role: Some("limited-worker".to_string()),
+                thread_note: None,
+                action_policy: Some(action_policy),
+                initial_task: Some("coordinate descendants with action policy".to_string()),
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("limited author spawn should succeed")
+        .thread_id;
+
+    let child_path = AgentPath::try_from("/root/worker/child").expect("child path");
+    let child_thread_id = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect this repo".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: author_thread_id,
+                depth: 2,
+                agent_path: Some(child_path),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: Some("inspect this repo".to_string()),
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("child spawn should succeed")
+        .thread_id;
+
+    manager
+        .queue_inter_agent_message(author_thread_id, child_thread_id, "hello".to_string())
+        .await
+        .expect("allowed message action should succeed");
+    for result in [
+        manager
+            .send_inter_agent_followup(author_thread_id, child_thread_id, "next".to_string())
+            .await
+            .map(|_| ()),
+        manager
+            .close_agent_from_workbench(author_thread_id, child_thread_id)
+            .await
+            .map(|_| ()),
+        manager
+            .dismiss_agent_from_workbench(author_thread_id, child_thread_id)
+            .await
+            .map(|_| ()),
+        manager
+            .retry_agent_from_workbench(author_thread_id, child_thread_id)
+            .await
+            .map(|_| ()),
+        manager
+            .stop_all_agents_from_workbench(author_thread_id)
+            .await
+            .map(|_| ()),
+    ] {
+        let Err(err) = result else {
+            panic!("limited action should be denied");
+        };
+        assert!(
+            err.to_string().contains("action policy"),
+            "expected action policy denial, got {err}"
+        );
+    }
+    assert!(
+        manager
+            .captured_ops()
+            .iter()
+            .all(|(id, op)| { *id != child_thread_id || !matches!(op, Op::Shutdown) })
+    );
+}
+
+#[tokio::test]
+async fn thread_manager_agent_dismiss_marks_visibility_without_shutdown() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should accept v2 path");
+
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker path should resolve");
+    let stored_thread = manager
+        .dismiss_agent_from_workbench(root.thread_id, child_thread_id)
+        .await
+        .expect("agent should dismiss");
+
+    assert_eq!(stored_thread.agent_hidden, true);
+    assert!(
+        manager
+            .captured_ops()
+            .iter()
+            .all(|(id, op)| { *id != child_thread_id || !matches!(op, Op::Shutdown) })
+    );
+}
+
+#[tokio::test]
+async fn thread_manager_agent_retry_spawns_fresh_sibling_from_initial_task() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.tool_selection.allowed = Some([ToolName::plain("update_plan")].into_iter().collect());
+    config.tool_selection.denied = Some([ToolName::plain("view_image")].into_iter().collect());
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker",
+                "thread_note": "retry me"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should accept v2 path");
+
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker path should resolve");
+    let child_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    let child_turn = child_thread.codex.session.new_default_turn().await;
+    child_thread
+        .codex
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: child_turn.sub_id.clone(),
+                last_agent_message: Some("done".to_string()),
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    let retry = manager
+        .retry_agent_from_workbench(root.thread_id, child_thread_id)
+        .await
+        .expect("agent retry should spawn a fresh sibling");
+    assert_ne!(retry.thread_id, child_thread_id);
+
+    let retry_snapshot = manager
+        .get_thread(retry.thread_id)
+        .await
+        .expect("retry thread should exist")
+        .config_snapshot()
+        .await;
+    let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        agent_path: Some(agent_path),
+        thread_note,
+        initial_task,
+        tool_selection,
+        ..
+    }) = retry_snapshot.session_source
+    else {
+        panic!("retry thread should be a path-backed spawned sub-agent");
+    };
+    assert_eq!(parent_thread_id, root.thread_id);
+    assert!(agent_path.as_str().starts_with("/root/worker_retry_"));
+    assert_eq!(thread_note.as_deref(), Some("retry me"));
+    assert_eq!(initial_task.as_deref(), Some("inspect this repo"));
+    let tool_selection = tool_selection.expect("retry should preserve tool-selection snapshot");
+    assert_eq!(tool_selection.source, SubAgentToolSelectionSource::Config);
+    assert_eq!(
+        tool_selection.allowed_tools,
+        Some(["update_plan".to_string()].into_iter().collect())
+    );
+    assert_eq!(
+        tool_selection.denied_tools,
+        ["view_image".to_string()].into_iter().collect()
+    );
+    let retry_config = manager
+        .get_thread(retry.thread_id)
+        .await
+        .expect("retry thread should exist")
+        .config()
+        .await;
+    assert_eq!(
+        retry_config.tool_selection.allowed,
+        Some([ToolName::plain("update_plan")].into_iter().collect())
+    );
+    assert_eq!(
+        retry_config.tool_selection.denied,
+        Some([ToolName::plain("view_image")].into_iter().collect())
+    );
+    assert!(manager.captured_ops().iter().any(|(id, op)| {
+        *id == retry.thread_id
+            && matches!(
+                op,
+                Op::UserInput { items, .. }
+                    if items == &vec![UserInput::Text {
+                        text: "inspect this repo".to_string(),
+                        text_elements: Vec::new(),
+                    }]
+            )
+    }));
+    assert!(
+        manager
+            .captured_ops()
+            .iter()
+            .all(|(id, op)| { *id != child_thread_id || !matches!(op, Op::Shutdown) })
+    );
+}
+
+#[tokio::test]
 async fn thread_manager_agent_close_rejects_pathless_non_root_author() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
@@ -1828,6 +2808,8 @@ async fn thread_manager_agent_close_rejects_pathless_non_root_author() {
                 agent_role: Some("worker".to_string()),
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             thread_source: None,
             dynamic_tools: Vec::new(),
@@ -1847,6 +2829,60 @@ async fn thread_manager_agent_close_rejects_pathless_non_root_author() {
     assert!(
         err.to_string()
             .contains("Agent close requires a path-backed author.")
+    );
+}
+
+#[tokio::test]
+async fn thread_manager_agent_stop_all_rejects_pathless_non_root_author() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let pathless_author_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect this repo".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: Some("inspect this repo".to_string()),
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("pathless author spawn should succeed")
+        .thread_id;
+
+    let err = manager
+        .stop_all_agents_from_workbench(pathless_author_thread_id)
+        .await
+        .expect_err("pathless non-root author should be rejected");
+    assert!(
+        err.to_string()
+            .contains("Agent stop all requires a path-backed author.")
     );
 }
 
@@ -1956,6 +2992,140 @@ async fn multi_agent_v2_spawn_applies_cwd_and_thread_note_without_widening_permi
         .find(|agent| agent.agent_name == "/root/worker")
         .expect("worker should be listed");
     assert_eq!(worker.thread_note.as_deref(), Some("check runtime cwd"));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_persists_role_action_policy_snapshot() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let role_name = "action-policy-worker";
+    install_action_policy_role(&mut turn, role_name).await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect with action limits",
+                "task_name": "worker",
+                "agent_type": role_name,
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should accept v2 path");
+
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker path should resolve");
+    let child_snapshot = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist")
+        .config_snapshot()
+        .await;
+    let action_policy = child_snapshot
+        .session_source
+        .get_subagent_action_policy()
+        .expect("spawned role agent should carry an action policy snapshot");
+
+    assert_eq!(action_policy.version, 1);
+    assert_eq!(action_policy.mode, SubAgentActionPolicyMode::AllowDeny);
+    assert_eq!(
+        action_policy.source,
+        SubAgentActionPolicySource::RoleAppliedConfig
+    );
+    assert!(
+        action_policy
+            .allowed_actions
+            .as_ref()
+            .is_some_and(|actions| actions.contains(&SubAgentActionPolicyAction::AgentMessageSend))
+    );
+    assert!(
+        action_policy
+            .denied_actions
+            .contains(&SubAgentActionPolicyAction::AgentClose)
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_role_read_only_policy_survives_runtime_overrides() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let role_name = "read-only-reviewer";
+    install_read_only_role(&mut turn, role_name).await;
+    let parent_permission_profile = PermissionProfile::workspace_write();
+    turn.permission_profile = parent_permission_profile.clone();
+    assert_ne!(
+        parent_permission_profile,
+        PermissionProfile::read_only(),
+        "test requires a parent runtime profile that differs from the role profile"
+    );
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect without writing",
+                "agent_type": role_name,
+                "task_name": "readonly",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+        .expect("spawn_agent should succeed");
+
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "readonly")
+        .await
+        .expect("readonly path should resolve");
+    let child_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    let snapshot = child_thread.config_snapshot().await;
+    assert_eq!(snapshot.permission_profile, PermissionProfile::read_only());
+    let child_turn = child_thread.codex.session.new_default_turn().await;
+    assert_eq!(
+        child_turn.permission_profile(),
+        PermissionProfile::read_only()
+    );
 }
 
 #[tokio::test]
@@ -2403,6 +3573,8 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -2418,6 +3590,8 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         agent_role: None,
         thread_note: None,
         action_policy: None,
+        initial_task: None,
+        tool_selection: None,
     });
 
     SendMessageHandlerV2
@@ -2484,6 +3658,8 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -2499,6 +3675,8 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
         agent_role: None,
         thread_note: None,
         action_policy: None,
+        initial_task: None,
+        tool_selection: None,
     });
 
     let Err(err) = FollowupTaskHandlerV2
@@ -2660,6 +3838,8 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -2683,6 +3863,8 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -2697,6 +3879,8 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
         agent_role: None,
         thread_note: None,
         action_policy: None,
+        initial_task: None,
+        tool_selection: None,
     });
 
     let output = ListAgentsHandlerV2
@@ -2880,6 +4064,209 @@ async fn multi_agent_v2_set_thread_note_rejects_root_target() {
         err,
         FunctionCallError::RespondToModel("root is not a spawned agent".to_string())
     );
+}
+
+async fn pathless_mav2_author_with_target(
+    target_path: &str,
+) -> (
+    crate::session::session::Session,
+    TurnContext,
+    ThreadManager,
+    ThreadId,
+) {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let target_agent_path = AgentPath::try_from(target_path).expect("target path");
+    let target_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect this repo".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(target_agent_path),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: None,
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("target spawn should succeed")
+        .thread_id;
+    let pathless_author_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect this repo".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: None,
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("pathless author spawn should succeed")
+        .thread_id;
+
+    session.thread_id = pathless_author_thread_id;
+    turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: None,
+        agent_nickname: None,
+        agent_role: None,
+        thread_note: None,
+        action_policy: None,
+        initial_task: None,
+        tool_selection: None,
+    });
+    (session, turn, manager, target_thread_id)
+}
+
+#[tokio::test]
+async fn multi_agent_v2_send_message_rejects_pathless_non_root_author() {
+    let (session, turn, manager, target_thread_id) =
+        pathless_mav2_author_with_target("/root/target").await;
+
+    let err = SendMessageHandlerV2
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "send_message",
+            function_payload(json!({
+                "target": "/root/target",
+                "message": "hello from pathless author"
+            })),
+        ))
+        .await
+        .err()
+        .expect("send_message should reject pathless non-root author");
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("send_message requires a path-backed author".to_string())
+    );
+    assert!(!manager.captured_ops().iter().any(|(id, op)| {
+        *id == target_thread_id && matches!(op, Op::InterAgentCommunication { .. })
+    }));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_spawn_agent_rejects_pathless_non_root_author() {
+    let (session, turn, manager, _target_thread_id) =
+        pathless_mav2_author_with_target("/root/target").await;
+    let initial_thread_count = manager.list_thread_ids().await.len();
+
+    let err = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "spawn from pathless author",
+                "task_name": "new_child"
+            })),
+        ))
+        .await
+        .err()
+        .expect("spawn_agent should reject pathless non-root author");
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("spawn_agent requires a path-backed author".to_string())
+    );
+    assert_eq!(manager.list_thread_ids().await.len(), initial_thread_count);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_followup_task_rejects_pathless_non_root_author() {
+    let (session, turn, manager, target_thread_id) =
+        pathless_mav2_author_with_target("/root/target").await;
+
+    let err = FollowupTaskHandlerV2
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "followup_task",
+            function_payload(json!({
+                "target": "/root/target",
+                "message": "continue from pathless author"
+            })),
+        ))
+        .await
+        .err()
+        .expect("followup_task should reject pathless non-root author");
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("send_message requires a path-backed author".to_string())
+    );
+    assert!(!manager.captured_ops().iter().any(|(id, op)| {
+        *id == target_thread_id && matches!(op, Op::InterAgentCommunication { .. })
+    }));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_set_thread_note_rejects_pathless_non_root_author() {
+    let (session, turn, manager, target_thread_id) =
+        pathless_mav2_author_with_target("/root/target").await;
+
+    let err = SetThreadNoteHandlerV2
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "set_thread_note",
+            function_payload(json!({
+                "target": "/root/target",
+                "thread_note": "pathless author note"
+            })),
+        ))
+        .await
+        .err()
+        .expect("set_thread_note should reject pathless non-root author");
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "set_thread_note requires a path-backed author".to_string()
+        )
+    );
+    let target_thread = manager
+        .get_thread(target_thread_id)
+        .await
+        .expect("target thread should exist");
+    assert_eq!(target_thread.agent_status().await, AgentStatus::PendingInit);
 }
 
 #[tokio::test]
@@ -3603,6 +4990,8 @@ async fn spawn_agent_rejects_when_depth_limit_exceeded() {
         agent_role: None,
         thread_note: None,
         action_policy: None,
+        initial_task: None,
+        tool_selection: None,
     });
 
     let invocation = invocation(
@@ -3645,6 +5034,8 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
         agent_role: None,
         thread_note: None,
         action_policy: None,
+        initial_task: None,
+        tool_selection: None,
     });
 
     let invocation = invocation(
@@ -3702,6 +5093,8 @@ async fn multi_agent_v2_spawn_agent_ignores_configured_max_depth() {
         agent_role: None,
         thread_note: None,
         action_policy: None,
+        initial_task: None,
+        tool_selection: None,
     });
 
     let invocation = invocation(
@@ -4077,6 +5470,8 @@ async fn resume_agent_rejects_when_depth_limit_exceeded() {
         agent_role: None,
         thread_note: None,
         action_policy: None,
+        initial_task: None,
+        tool_selection: None,
     });
 
     let invocation = invocation(
@@ -5301,6 +6696,8 @@ async fn multi_agent_v2_interrupt_agent_rejects_cross_subtree_target() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -5325,6 +6722,8 @@ async fn multi_agent_v2_interrupt_agent_rejects_cross_subtree_target() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -5339,6 +6738,8 @@ async fn multi_agent_v2_interrupt_agent_rejects_cross_subtree_target() {
         agent_role: None,
         thread_note: None,
         action_policy: None,
+        initial_task: None,
+        tool_selection: None,
     });
 
     let err = InterruptAgentHandler
@@ -5363,6 +6764,35 @@ async fn multi_agent_v2_interrupt_agent_rejects_cross_subtree_target() {
             .captured_ops()
             .iter()
             .any(|(id, op)| { *id != worker_thread_id && matches!(op, Op::Interrupt) })
+    );
+}
+
+#[tokio::test]
+async fn multi_agent_v2_interrupt_agent_rejects_pathless_non_root_author() {
+    let (session, turn, manager, target_thread_id) =
+        pathless_mav2_author_with_target("/root/target").await;
+
+    let err = InterruptAgentHandler
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "interrupt_agent",
+            function_payload(json!({"target": "/root/target"})),
+        ))
+        .await
+        .err()
+        .expect("interrupt_agent should reject pathless non-root author");
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "interrupt_agent requires a path-backed author".to_string()
+        )
+    );
+    assert!(
+        !manager
+            .captured_ops()
+            .iter()
+            .any(|(id, op)| { *id == target_thread_id && matches!(op, Op::Interrupt) })
     );
 }
 
@@ -5403,6 +6833,8 @@ async fn multi_agent_v2_interrupt_agent_allows_descendant_target() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -5427,6 +6859,8 @@ async fn multi_agent_v2_interrupt_agent_allows_descendant_target() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -5442,6 +6876,8 @@ async fn multi_agent_v2_interrupt_agent_allows_descendant_target() {
         agent_role: None,
         thread_note: None,
         action_policy: None,
+        initial_task: None,
+        tool_selection: None,
     });
 
     let output = InterruptAgentHandler
@@ -5502,6 +6938,8 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_id() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -5517,6 +6955,8 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_id() {
         agent_role: None,
         thread_note: None,
         action_policy: None,
+        initial_task: None,
+        tool_selection: None,
     });
 
     let err = InterruptAgentHandler
@@ -5574,6 +7014,8 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_task_name() {
                 agent_role: None,
                 thread_note: None,
                 action_policy: None,
+                initial_task: None,
+                tool_selection: None,
             })),
             crate::agent::control::SpawnAgentOptions::default(),
         )
@@ -5589,6 +7031,8 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_task_name() {
         agent_role: None,
         thread_note: None,
         action_policy: None,
+        initial_task: None,
+        tool_selection: None,
     });
 
     let err = InterruptAgentHandler
@@ -5647,6 +7091,172 @@ async fn close_agent_submits_shutdown_and_returns_previous_status() {
 
     let status_after = manager.agent_control().get_status(agent_id).await;
     assert_eq!(status_after, AgentStatus::NotFound);
+}
+
+#[tokio::test]
+async fn close_agent_enforces_subtree_ownership_for_path_backed_callers() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let config = turn.config.as_ref().clone();
+    let root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("root thread should start");
+    let worker_path = AgentPath::try_from("/root/worker").expect("worker path");
+    let child_path = AgentPath::try_from("/root/worker/child").expect("child path");
+    let sibling_path = AgentPath::try_from("/root/sibling").expect("sibling path");
+    let worker_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "inspect this repo".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(worker_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: None,
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("worker spawn should succeed")
+        .thread_id;
+    let child_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "inspect child".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: worker_thread_id,
+                depth: 2,
+                agent_path: Some(child_path),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: None,
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("child spawn should succeed")
+        .thread_id;
+    let sibling_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config,
+            vec![UserInput::Text {
+                text: "inspect sibling".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(sibling_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: None,
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("sibling spawn should succeed")
+        .thread_id;
+
+    session.thread_id = worker_thread_id;
+    turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(worker_path.clone()),
+        agent_nickname: None,
+        agent_role: None,
+        thread_note: None,
+        action_policy: None,
+        initial_task: None,
+        tool_selection: None,
+    });
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    let Err(err) = CloseAgentHandler
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "close_agent",
+            function_payload(json!({"target": worker_thread_id.to_string()})),
+        ))
+        .await
+    else {
+        panic!("close_agent should reject self-target");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "an agent cannot close itself; return your result and let the parent close you if needed"
+                .to_string()
+        )
+    );
+
+    let close_child_output = CloseAgentHandler
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "close_agent",
+            function_payload(json!({"target": child_thread_id.to_string()})),
+        ))
+        .await
+        .expect("close_agent should close a descendant");
+    let (_close_child_content, close_child_success) = expect_text_output(close_child_output);
+    assert_eq!(close_child_success, Some(true));
+    assert_eq!(
+        manager.agent_control().get_status(child_thread_id).await,
+        AgentStatus::NotFound
+    );
+
+    let Err(err) = CloseAgentHandler
+        .handle(invocation(
+            session,
+            turn,
+            "close_agent",
+            function_payload(json!({"target": sibling_thread_id.to_string()})),
+        ))
+        .await
+    else {
+        panic!("close_agent should reject a sibling target");
+    };
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "agent `/root/worker` cannot close `/root/sibling` because the target is outside its sub-agent tree"
+                .to_string()
+        )
+    );
+    assert_ne!(
+        manager.agent_control().get_status(sibling_thread_id).await,
+        AgentStatus::NotFound
+    );
 }
 
 #[tokio::test]

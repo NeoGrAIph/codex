@@ -165,6 +165,9 @@ pub struct Thread {
     /// Optional short note attached to an AgentControl-spawned sub-agent thread.
     #[serde(default)]
     pub thread_note: Option<String>,
+    /// Whether this thread is hidden from the Agent Window workbench.
+    #[serde(default)]
+    pub agent_hidden: bool,
     /// Optional analytics source classification for this thread.
     pub thread_source: Option<ThreadSource>,
     /// Optional random unique nickname assigned to an AgentControl-spawned sub-agent.

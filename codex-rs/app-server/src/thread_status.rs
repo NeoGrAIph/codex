@@ -905,6 +905,7 @@ mod tests {
             agent_role: None,
             source,
             thread_note: None,
+            agent_hidden: false,
             thread_source: None,
             git_info: None,
             name: None,

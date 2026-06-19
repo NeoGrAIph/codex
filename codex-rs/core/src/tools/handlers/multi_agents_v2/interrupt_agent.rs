@@ -112,9 +112,15 @@ fn enforce_interrupt_ownership(
     current_session_source: &codex_protocol::protocol::SessionSource,
     target_agent_path: &AgentPath,
 ) -> Result<(), FunctionCallError> {
-    let current_agent_path = current_session_source
-        .get_agent_path()
-        .unwrap_or_else(AgentPath::root);
+    let current_agent_path = match current_session_source.get_agent_path() {
+        Some(agent_path) => agent_path,
+        None if current_session_source.is_non_root_agent() => {
+            return Err(FunctionCallError::RespondToModel(
+                "interrupt_agent requires a path-backed author".to_string(),
+            ));
+        }
+        None => AgentPath::root(),
+    };
     if current_agent_path.is_root()
         || agent_path_is_descendant_of(target_agent_path, &current_agent_path)
     {

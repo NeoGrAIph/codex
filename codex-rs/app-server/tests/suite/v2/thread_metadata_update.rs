@@ -185,6 +185,8 @@ async fn thread_metadata_update_patches_thread_note_through_source_metadata() ->
             action_policy: Some(SubAgentActionPolicySnapshot::new(
                 SubAgentActionPolicySource::RoleAppliedConfig,
             )),
+            initial_task: None,
+            tool_selection: None,
         }),
     )?;
 

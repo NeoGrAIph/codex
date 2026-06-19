@@ -1,5 +1,6 @@
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
+use crate::config::ToolSelectionConfig;
 use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
 use crate::tools::context::ToolInvocation;
@@ -199,10 +200,8 @@ fn build_tool_specs_and_registry(
     let mut catalog_tools = planned_tools.clone();
     append_tool_search_executor(&context, &mut catalog_tools);
     prepend_code_mode_executors(&context, &mut catalog_tools);
-    let catalog_entries = tool_selection_catalog_entries(
-        turn_context.config.tool_selection.allowed.as_ref(),
-        &catalog_tools,
-    );
+    let catalog_entries =
+        tool_selection_catalog_entries(&turn_context.config.tool_selection, &catalog_tools);
 
     apply_tool_selection_policy(turn_context, &mut planned_tools);
     append_tool_search_executor(&context, &mut planned_tools);
@@ -214,16 +213,18 @@ fn build_tool_specs_and_registry(
 }
 
 fn apply_tool_selection_policy(turn_context: &TurnContext, planned_tools: &mut PlannedTools) {
-    let Some(allowed_tools) = turn_context.config.tool_selection.allowed.as_ref() else {
-        return;
-    };
-
-    planned_tools
-        .runtimes
-        .retain(|runtime| allowed_tools.contains(&runtime.tool_name()));
-    planned_tools
-        .hosted_specs
-        .retain(|spec| allowed_tools.contains(&ToolName::plain(spec.name())));
+    planned_tools.runtimes.retain(|runtime| {
+        turn_context
+            .config
+            .tool_selection
+            .includes(&runtime.tool_name())
+    });
+    planned_tools.hosted_specs.retain(|spec| {
+        turn_context
+            .config
+            .tool_selection
+            .includes(&ToolName::plain(spec.name()))
+    });
 }
 
 fn tool_selection_diagnostics(
@@ -242,7 +243,7 @@ fn tool_selection_diagnostics(
 }
 
 fn tool_selection_catalog_entries(
-    allowed_tools: Option<&HashSet<ToolName>>,
+    tool_selection: &ToolSelectionConfig,
     planned_tools: &PlannedTools,
 ) -> Vec<ToolSelectionCatalogEntry> {
     let mut entries = BTreeMap::new();
@@ -252,8 +253,7 @@ fn tool_selection_catalog_entries(
         entries
             .entry(name.clone())
             .or_insert(ToolSelectionCatalogEntry {
-                selected: allowed_tools
-                    .is_none_or(|allowed_tools| allowed_tools.contains(&tool_name)),
+                selected: tool_selection.includes(&tool_name),
                 name,
                 exposure: catalog_exposure(runtime.exposure()),
             });
@@ -264,8 +264,7 @@ fn tool_selection_catalog_entries(
         entries
             .entry(name.clone())
             .or_insert(ToolSelectionCatalogEntry {
-                selected: allowed_tools
-                    .is_none_or(|allowed_tools| allowed_tools.contains(&tool_name)),
+                selected: tool_selection.includes(&tool_name),
                 name,
                 exposure: ToolSelectionCatalogExposure::Hosted,
             });

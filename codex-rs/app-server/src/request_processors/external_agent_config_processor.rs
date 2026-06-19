@@ -393,6 +393,7 @@ fn migration_items_need_runtime_refresh(items: &[ExternalAgentConfigMigrationIte
             ExternalAgentConfigMigrationItemType::Config
                 | ExternalAgentConfigMigrationItemType::Skills
                 | ExternalAgentConfigMigrationItemType::McpServerConfig
+                | ExternalAgentConfigMigrationItemType::Subagents
                 | ExternalAgentConfigMigrationItemType::Hooks
                 | ExternalAgentConfigMigrationItemType::Commands
                 | ExternalAgentConfigMigrationItemType::Plugins

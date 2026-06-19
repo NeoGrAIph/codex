@@ -582,6 +582,74 @@ impl ThreadRequestProcessor {
         ))
     }
 
+    pub(crate) async fn agent_dismiss(
+        &self,
+        params: AgentDismissParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let author_thread_id = ThreadId::from_string(&params.author_thread_id)
+            .map_err(|err| invalid_request(format!("invalid authorThreadId: {err}")))?;
+        let target_thread_id = ThreadId::from_string(&params.target_thread_id)
+            .map_err(|err| invalid_request(format!("invalid targetThreadId: {err}")))?;
+        self.thread_manager
+            .dismiss_agent_from_workbench(author_thread_id, target_thread_id)
+            .await
+            .map_err(|err| core_thread_write_error("dismiss agent", err))?;
+        Ok(Some(AgentDismissResponse {}.into()))
+    }
+
+    pub(crate) async fn agent_retry(
+        &self,
+        params: AgentRetryParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let author_thread_id = ThreadId::from_string(&params.author_thread_id)
+            .map_err(|err| invalid_request(format!("invalid authorThreadId: {err}")))?;
+        let target_thread_id = ThreadId::from_string(&params.target_thread_id)
+            .map_err(|err| invalid_request(format!("invalid targetThreadId: {err}")))?;
+        let new_thread = self
+            .thread_manager
+            .retry_agent_from_workbench(author_thread_id, target_thread_id)
+            .await
+            .map_err(|err| core_thread_write_error("retry agent", err))?;
+        Ok(Some(
+            AgentRetryResponse {
+                thread_id: new_thread.thread_id.to_string(),
+            }
+            .into(),
+        ))
+    }
+
+    pub(crate) async fn agent_stop_all(
+        &self,
+        params: AgentStopAllParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let author_thread_id = ThreadId::from_string(&params.author_thread_id)
+            .map_err(|err| invalid_request(format!("invalid authorThreadId: {err}")))?;
+        let result = self
+            .thread_manager
+            .stop_all_agents_from_workbench(author_thread_id)
+            .await
+            .map_err(|err| core_thread_write_error("stop all agents", err))?;
+        Ok(Some(
+            AgentStopAllResponse {
+                affected_count: result.affected_count,
+                stopped_thread_ids: result
+                    .stopped_thread_ids
+                    .into_iter()
+                    .map(|thread_id| thread_id.to_string())
+                    .collect(),
+                failed: result
+                    .failed
+                    .into_iter()
+                    .map(|failure| AgentStopAllFailure {
+                        thread_id: failure.thread_id.to_string(),
+                        message: failure.message,
+                    })
+                    .collect(),
+            }
+            .into(),
+        ))
+    }
+
     pub(crate) async fn thread_memory_mode_set(
         &self,
         params: ThreadMemoryModeSetParams,
@@ -4214,6 +4282,7 @@ pub(crate) fn thread_from_stored_thread(
     let history = thread.history;
     let thread_id = thread.thread_id.to_string();
     let thread_note = source.get_thread_note();
+    let agent_hidden = thread.agent_hidden;
     let thread = Thread {
         id: thread_id.clone(),
         session_id: thread_id,
@@ -4236,6 +4305,7 @@ pub(crate) fn thread_from_stored_thread(
         agent_role: source.get_agent_role(),
         source: source.into(),
         thread_note,
+        agent_hidden,
         thread_source: thread.thread_source.map(Into::into),
         git_info,
         name: thread.name,
@@ -4445,6 +4515,7 @@ fn build_thread_from_snapshot(
         agent_role: config_snapshot.session_source.get_agent_role(),
         source: config_snapshot.session_source.clone().into(),
         thread_note,
+        agent_hidden: false,
         thread_source: config_snapshot.thread_source.clone().map(Into::into),
         git_info: None,
         name: None,

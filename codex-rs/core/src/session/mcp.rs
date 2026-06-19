@@ -287,9 +287,31 @@ impl Session {
         arguments: Option<serde_json::Value>,
         meta: Option<serde_json::Value>,
     ) -> anyhow::Result<CallToolResult> {
-        self.services
-            .mcp_connection_manager
-            .load_full()
+        let mcp_connection_manager = self.services.mcp_connection_manager.load_full();
+        let config = self.get_config().await;
+        if config.tool_selection.is_active() {
+            let tool_name = mcp_connection_manager
+                .list_all_tools()
+                .await
+                .into_iter()
+                .find(|tool_info| tool_info.server_name == server && tool_info.tool.name == tool)
+                .map(|tool_info| tool_info.canonical_tool_name())
+                .ok_or_else(|| anyhow::anyhow!("MCP tool `{server}/{tool}` is not available"))?;
+
+            if !config.tool_selection.includes(&tool_name) {
+                let formatted_tool_name = format_tool_selection_name(&tool_name);
+                if config.tool_selection.denies(&tool_name) {
+                    anyhow::bail!(
+                        "MCP tool `{formatted_tool_name}` is blocked by tool_selection.denied_tools"
+                    );
+                }
+                anyhow::bail!(
+                    "MCP tool `{formatted_tool_name}` is not allowed by tool_selection.allowed_tools"
+                );
+            }
+        }
+
+        mcp_connection_manager
             .call_tool(server, tool, arguments, meta)
             .await
     }
@@ -600,6 +622,13 @@ fn meta_requests_approval_request(meta: &Option<Meta>) -> bool {
 
 fn metadata_str<'a>(meta: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
     meta.get(key).and_then(Value::as_str)
+}
+
+fn format_tool_selection_name(tool_name: &codex_protocol::ToolName) -> String {
+    match tool_name.namespace.as_deref() {
+        Some(namespace) => format!("{namespace}/{}", tool_name.name),
+        None => tool_name.name.clone(),
+    }
 }
 
 fn metadata_owned_string(meta: &Map<String, Value>, key: &str) -> Option<String> {

@@ -302,6 +302,8 @@ fn build_ws_client_metadata_includes_window_lineage_and_turn_metadata() {
         agent_role: None,
         thread_note: None,
         action_policy: None,
+        initial_task: None,
+        tool_selection: None,
     }));
 
     let thread_id = client.state.thread_id.to_string();

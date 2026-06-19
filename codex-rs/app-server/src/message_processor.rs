@@ -18,6 +18,7 @@ use crate::outgoing_message::ConnectionRequestId;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::RequestContext;
 use crate::request_processors::AccountRequestProcessor;
+use crate::request_processors::AgentRoleRequestProcessor;
 use crate::request_processors::AppsRequestProcessor;
 use crate::request_processors::CatalogRequestProcessor;
 use crate::request_processors::CommandExecRequestProcessor;
@@ -183,6 +184,7 @@ pub(crate) struct MessageProcessor {
     outgoing: Arc<OutgoingMessageSender>,
     skills_watcher: Arc<SkillsWatcher>,
     account_processor: AccountRequestProcessor,
+    agent_role_processor: AgentRoleRequestProcessor,
     apps_processor: AppsRequestProcessor,
     catalog_processor: CatalogRequestProcessor,
     command_exec_processor: CommandExecRequestProcessor,
@@ -510,6 +512,8 @@ impl MessageProcessor {
             thread_manager.clone(),
             analytics_events_client,
         );
+        let agent_role_processor =
+            AgentRoleRequestProcessor::new(Arc::clone(&thread_manager), config_manager.clone());
         let external_agent_config_processor = ExternalAgentConfigRequestProcessor::new(
             outgoing.clone(),
             Arc::clone(&thread_manager),
@@ -535,6 +539,7 @@ impl MessageProcessor {
             outgoing,
             skills_watcher,
             account_processor,
+            agent_role_processor,
             apps_processor,
             catalog_processor,
             command_exec_processor,
@@ -1274,6 +1279,12 @@ impl MessageProcessor {
                     .agent_role_tool_selection_catalog_read(params)
                     .await
             }
+            ClientRequest::AgentRoleToolSelectionSet { params, .. } => {
+                self.agent_role_processor.tool_selection_set(params).await
+            }
+            ClientRequest::AgentRoleActionPolicySet { params, .. } => {
+                self.agent_role_processor.action_policy_set(params).await
+            }
             ClientRequest::ModelProviderConfigWrite { params, .. } => {
                 self.catalog_processor
                     .model_provider_config_write(params)
@@ -1326,6 +1337,15 @@ impl MessageProcessor {
             }
             ClientRequest::AgentClose { params, .. } => {
                 self.thread_processor.agent_close(params).await
+            }
+            ClientRequest::AgentDismiss { params, .. } => {
+                self.thread_processor.agent_dismiss(params).await
+            }
+            ClientRequest::AgentRetry { params, .. } => {
+                self.thread_processor.agent_retry(params).await
+            }
+            ClientRequest::AgentStopAll { params, .. } => {
+                self.thread_processor.agent_stop_all(params).await
             }
             ClientRequest::TurnSteer { params, .. } => {
                 self.turn_processor.turn_steer(&request_id, params).await

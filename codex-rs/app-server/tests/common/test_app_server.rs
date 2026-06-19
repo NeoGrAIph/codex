@@ -13,9 +13,14 @@ use tokio::process::ChildStdout;
 
 use anyhow::Context;
 use codex_app_server_protocol::AgentCloseParams;
+use codex_app_server_protocol::AgentDismissParams;
 use codex_app_server_protocol::AgentFollowupSendParams;
 use codex_app_server_protocol::AgentMessageSendParams;
+use codex_app_server_protocol::AgentRetryParams;
+use codex_app_server_protocol::AgentRoleActionPolicySetParams;
 use codex_app_server_protocol::AgentRoleToolSelectionCatalogReadParams;
+use codex_app_server_protocol::AgentRoleToolSelectionSetParams;
+use codex_app_server_protocol::AgentStopAllParams;
 use codex_app_server_protocol::AppsListParams;
 use codex_app_server_protocol::CancelLoginAccountParams;
 use codex_app_server_protocol::ClientInfo;
@@ -647,6 +652,24 @@ impl TestAppServer {
             .await
     }
 
+    pub async fn send_agent_role_tool_selection_set_request(
+        &mut self,
+        params: AgentRoleToolSelectionSetParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agentRole/toolSelection/set", params)
+            .await
+    }
+
+    pub async fn send_agent_role_action_policy_set_request(
+        &mut self,
+        params: AgentRoleActionPolicySetParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agentRole/actionPolicy/set", params)
+            .await
+    }
+
     pub async fn send_agent_message_send_request(
         &mut self,
         params: AgentMessageSendParams,
@@ -669,6 +692,30 @@ impl TestAppServer {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("agent/close", params).await
+    }
+
+    pub async fn send_agent_dismiss_request(
+        &mut self,
+        params: AgentDismissParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/dismiss", params).await
+    }
+
+    pub async fn send_agent_retry_request(
+        &mut self,
+        params: AgentRetryParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/retry", params).await
+    }
+
+    pub async fn send_agent_stop_all_request(
+        &mut self,
+        params: AgentStopAllParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("agent/stopAll", params).await
     }
 
     pub async fn send_model_provider_config_write_request(

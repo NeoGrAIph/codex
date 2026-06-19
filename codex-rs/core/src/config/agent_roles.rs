@@ -283,6 +283,30 @@ fn agent_role_runtime_config_field_names(role_toml: &TomlValue) -> Vec<String> {
         fields.push("tool_selection.allowed_tools".to_string());
     }
     if role_toml
+        .get("tool_selection")
+        .and_then(TomlValue::as_table)
+        .and_then(|tool_selection| tool_selection.get("denied_tools"))
+        .is_some()
+    {
+        fields.push("tool_selection.denied_tools".to_string());
+    }
+    if role_toml
+        .get("subagent_action_policy")
+        .and_then(TomlValue::as_table)
+        .and_then(|action_policy| action_policy.get("allowed_actions"))
+        .is_some()
+    {
+        fields.push("subagent_action_policy.allowed_actions".to_string());
+    }
+    if role_toml
+        .get("subagent_action_policy")
+        .and_then(TomlValue::as_table)
+        .and_then(|action_policy| action_policy.get("denied_actions"))
+        .is_some()
+    {
+        fields.push("subagent_action_policy.denied_actions".to_string());
+    }
+    if role_toml
         .get("skills")
         .and_then(TomlValue::as_table)
         .and_then(|skills| skills.get("config"))
@@ -417,6 +441,7 @@ pub(crate) fn parse_agent_role_file_contents(
         role_name_hint.is_none(),
     )?;
     super::validate_tool_selection_config_toml(&parsed.config)?;
+    super::validate_subagent_action_policy_config_toml(&parsed.config)?;
 
     let role_name = parsed
         .name

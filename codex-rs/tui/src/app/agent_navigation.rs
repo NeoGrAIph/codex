@@ -60,10 +60,14 @@ pub(crate) struct AgentPickerThreadDetail {
     pub(crate) agent_path: Option<String>,
     pub(crate) prompt_preview: Option<String>,
     pub(crate) thread_note: Option<String>,
+    pub(crate) agent_hidden: bool,
+    pub(crate) retry_available: Option<bool>,
     pub(crate) cwd: Option<String>,
     pub(crate) model_provider: Option<String>,
     pub(crate) created_at: Option<i64>,
     pub(crate) updated_at: Option<i64>,
+    pub(crate) tool_selection_summary: Option<String>,
+    pub(crate) action_policy_summary: Option<String>,
 }
 
 impl AgentNavigationState {
@@ -104,6 +108,12 @@ impl AgentNavigationState {
         let previous_agent_path = previous_entry.and_then(|entry| entry.agent_path.clone());
         let previous_prompt_preview = previous_entry.and_then(|entry| entry.prompt_preview.clone());
         let previous_thread_note = previous_entry.and_then(|entry| entry.thread_note.clone());
+        let previous_agent_hidden = previous_entry
+            .map(|entry| entry.agent_hidden)
+            .unwrap_or(false);
+        let previous_retry_available = previous_entry
+            .map(|entry| entry.retry_available)
+            .unwrap_or(false);
         let previous_cwd = previous_entry.and_then(|entry| entry.cwd.clone());
         let previous_model_provider = previous_entry.and_then(|entry| entry.model_provider.clone());
         let previous_created_at = previous_entry.and_then(|entry| entry.created_at);
@@ -112,6 +122,10 @@ impl AgentNavigationState {
         let previous_reasoning_effort =
             previous_entry.and_then(|entry| entry.reasoning_effort.clone());
         let previous_service_tier = previous_entry.and_then(|entry| entry.service_tier.clone());
+        let previous_tool_selection_summary =
+            previous_entry.and_then(|entry| entry.tool_selection_summary.clone());
+        let previous_action_policy_summary =
+            previous_entry.and_then(|entry| entry.action_policy_summary.clone());
         let previous_status = previous_entry
             .map(|entry| entry.status)
             .unwrap_or(AgentPickerThreadStatus::Idle);
@@ -130,6 +144,8 @@ impl AgentNavigationState {
                 agent_path: previous_agent_path,
                 prompt_preview: previous_prompt_preview,
                 thread_note: previous_thread_note,
+                agent_hidden: previous_agent_hidden,
+                retry_available: previous_retry_available,
                 cwd: previous_cwd,
                 model_provider: previous_model_provider,
                 created_at: previous_created_at,
@@ -137,6 +153,8 @@ impl AgentNavigationState {
                 model: previous_model,
                 reasoning_effort: previous_reasoning_effort,
                 service_tier: previous_service_tier,
+                tool_selection_summary: previous_tool_selection_summary,
+                action_policy_summary: previous_action_policy_summary,
                 status,
             },
         );
@@ -155,6 +173,8 @@ impl AgentNavigationState {
                     agent_path: None,
                     prompt_preview: None,
                     thread_note: None,
+                    agent_hidden: false,
+                    retry_available: false,
                     cwd: None,
                     model_provider: None,
                     created_at: None,
@@ -162,6 +182,8 @@ impl AgentNavigationState {
                     model: None,
                     reasoning_effort: None,
                     service_tier: None,
+                    tool_selection_summary: None,
+                    action_policy_summary: None,
                     status: AgentPickerThreadStatus::Idle,
                 });
         entry.agent_path = Some(activity.agent_path);
@@ -212,6 +234,10 @@ impl AgentNavigationState {
                 entry.prompt_preview = Some(prompt_preview);
             }
             entry.thread_note = detail.thread_note.filter(|value| !value.trim().is_empty());
+            entry.agent_hidden = detail.agent_hidden;
+            if let Some(retry_available) = detail.retry_available {
+                entry.retry_available = retry_available;
+            }
             if let Some(cwd) = detail.cwd.filter(|value| !value.trim().is_empty()) {
                 entry.cwd = Some(cwd);
             }
@@ -227,6 +253,12 @@ impl AgentNavigationState {
             if let Some(updated_at) = detail.updated_at.filter(|value| *value > 0) {
                 entry.updated_at = Some(updated_at);
             }
+            entry.tool_selection_summary = detail
+                .tool_selection_summary
+                .filter(|value| !value.trim().is_empty());
+            entry.action_policy_summary = detail
+                .action_policy_summary
+                .filter(|value| !value.trim().is_empty());
         }
     }
 
@@ -328,6 +360,14 @@ impl AgentNavigationState {
                         .as_deref()
                         .is_some_and(|agent_path| !agent_path.trim().is_empty())
             })
+            .collect()
+    }
+
+    /// Returns the ordered threads that should be visible in Agent Window.
+    pub(crate) fn ordered_workbench_threads(&self) -> Vec<(ThreadId, &AgentPickerThreadEntry)> {
+        self.ordered_threads()
+            .into_iter()
+            .filter(|(_thread_id, entry)| !entry.agent_hidden)
             .collect()
     }
 

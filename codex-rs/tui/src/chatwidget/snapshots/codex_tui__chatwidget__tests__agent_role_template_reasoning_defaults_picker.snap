@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup
+---
+  Select role reasoning for deepseek/deepseek-v4-flash
+  Provider: deepseek
+
+› 1. Medium (default)  medium
+  2. High              high
+
+  Press enter to confirm or esc to go back

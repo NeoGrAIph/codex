@@ -29,6 +29,7 @@ use crate::config::agent_roles::agent_role_runtime_config_sources;
 use crate::config::agent_roles::parse_agent_role_file_contents;
 use codex_config::CONFIG_TOML_FILE;
 use codex_config::format_config_layer_source;
+use codex_protocol::protocol::SubAgentActionPolicyAction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentRoleTemplateSource {
@@ -90,6 +91,7 @@ pub struct AgentRoleTemplateLocks {
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
     pub allowed_tool_names: Vec<String>,
+    pub denied_tool_names: Vec<String>,
     pub approval_policy: Option<String>,
     pub sandbox_mode: Option<String>,
     pub default_permissions: Option<String>,
@@ -101,6 +103,14 @@ pub struct AgentRoleTemplateLocks {
     pub app_config_count: usize,
     pub has_apps_default_config: bool,
     pub has_developer_instructions: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentRoleTemplateModelDefaults {
+    pub model: Option<String>,
+    pub model_provider: Option<String>,
+    pub model_reasoning_effort: Option<String>,
+    pub service_tier: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -244,28 +254,13 @@ pub fn starter_agent_role_template_draft_with_allowed_tools(allowed_tools: &[Str
 }
 
 pub fn starter_agent_role_template_draft_from_current_model(config: &Config) -> String {
-    starter_template_contents(
-        "new-role",
-        None,
-        StarterModelDefaults {
-            model: config
-                .model
-                .as_deref()
-                .filter(|model| !model.trim().is_empty())
-                .map(str::to_string),
-            model_provider: (!config.model_provider_id.trim().is_empty())
-                .then(|| config.model_provider_id.clone()),
-            model_reasoning_effort: config
-                .model_reasoning_effort
-                .as_ref()
-                .map(ToString::to_string),
-            service_tier: config
-                .service_tier
-                .as_deref()
-                .filter(|service_tier| !service_tier.trim().is_empty())
-                .map(str::to_string),
-        },
-    )
+    starter_template_contents("new-role", None, model_defaults_from_current_config(config))
+}
+
+pub fn starter_agent_role_template_draft_with_model_defaults(
+    model_defaults: &AgentRoleTemplateModelDefaults,
+) -> String {
+    starter_template_contents("new-role", None, model_defaults.clone().into())
 }
 
 pub fn user_agent_role_template_draft_with_allowed_tools(
@@ -273,6 +268,111 @@ pub fn user_agent_role_template_draft_with_allowed_tools(
     role_name: &str,
     path: &Path,
     allowed_tools: &[String],
+) -> Result<String, AgentRoleTemplateCreateError> {
+    let role_toml = read_user_agent_role_template_toml(path)?;
+    let denied_tools = denied_tool_names(&role_toml);
+    let denied_tools = (!denied_tools.is_empty()).then_some(denied_tools.as_slice());
+    user_agent_role_template_draft_with_tool_selection_from_toml(
+        config,
+        role_name,
+        path,
+        role_toml,
+        Some(allowed_tools),
+        denied_tools,
+    )
+}
+
+pub fn user_agent_role_template_draft_with_denied_tools(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
+    denied_tools: &[String],
+) -> Result<String, AgentRoleTemplateCreateError> {
+    let role_toml = read_user_agent_role_template_toml(path)?;
+    let allowed_tools = allowed_tool_names(&role_toml);
+    let allowed_tools = (!allowed_tools.is_empty()).then_some(allowed_tools.as_slice());
+    user_agent_role_template_draft_with_tool_selection_from_toml(
+        config,
+        role_name,
+        path,
+        role_toml,
+        allowed_tools,
+        Some(denied_tools),
+    )
+}
+
+pub fn user_agent_role_template_draft_from_current_model(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
+) -> Result<String, AgentRoleTemplateCreateError> {
+    let role_toml = read_user_agent_role_template_toml(path)?;
+    user_agent_role_template_draft_with_model_defaults_from_toml(
+        config,
+        role_name,
+        path,
+        role_toml,
+        model_defaults_from_current_config(config),
+    )
+}
+
+pub fn user_agent_role_template_draft_with_model_defaults(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
+    model_defaults: &AgentRoleTemplateModelDefaults,
+) -> Result<String, AgentRoleTemplateCreateError> {
+    let role_toml = read_user_agent_role_template_toml(path)?;
+    user_agent_role_template_draft_with_model_defaults_from_toml(
+        config,
+        role_name,
+        path,
+        role_toml,
+        model_defaults.clone().into(),
+    )
+}
+
+pub fn user_agent_role_template_draft_from_current_model_provider(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
+) -> Result<String, AgentRoleTemplateCreateError> {
+    let role_toml = read_user_agent_role_template_toml(path)?;
+    user_agent_role_template_draft_with_model_provider_defaults_from_toml(
+        config, role_name, path, role_toml,
+    )
+}
+
+pub fn user_agent_role_template_draft_from_current_reasoning(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
+) -> Result<String, AgentRoleTemplateCreateError> {
+    let role_toml = read_user_agent_role_template_toml(path)?;
+    user_agent_role_template_draft_with_reasoning_defaults_from_toml(
+        config, role_name, path, role_toml,
+    )
+}
+
+pub fn user_agent_role_template_draft_without_model_defaults(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
+) -> Result<String, AgentRoleTemplateCreateError> {
+    let role_toml = read_user_agent_role_template_toml(path)?;
+    user_agent_role_template_draft_with_model_defaults_from_toml(
+        config,
+        role_name,
+        path,
+        role_toml,
+        StarterModelDefaults::default(),
+    )
+}
+
+pub fn user_agent_role_template_draft_from_file(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
 ) -> Result<String, AgentRoleTemplateCreateError> {
     let mut contents = String::new();
     let path_buf = path.to_path_buf();
@@ -292,37 +392,337 @@ pub fn user_agent_role_template_draft_with_allowed_tools(
             path: path_buf.clone(),
             source_message: err.to_string(),
         })?;
+    validate_user_agent_role_template_update(config, role_name, path, &contents)?;
+    Ok(contents)
+}
 
-    let mut role_toml: TomlValue = toml::from_str(&contents).map_err(|err| {
+pub fn user_agent_role_template_draft_with_tool_selection(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
+    allowed_tools: Option<&[String]>,
+    denied_tools: Option<&[String]>,
+) -> Result<String, AgentRoleTemplateCreateError> {
+    let role_toml = read_user_agent_role_template_toml(path)?;
+    user_agent_role_template_draft_with_tool_selection_from_toml(
+        config,
+        role_name,
+        path,
+        role_toml,
+        allowed_tools,
+        denied_tools,
+    )
+}
+
+pub fn user_agent_role_template_draft_with_action_policy(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
+    allowed_actions: Option<&[SubAgentActionPolicyAction]>,
+    denied_actions: Option<&[SubAgentActionPolicyAction]>,
+) -> Result<String, AgentRoleTemplateCreateError> {
+    let role_toml = read_user_agent_role_template_toml(path)?;
+    user_agent_role_template_draft_with_action_policy_from_toml(
+        config,
+        role_name,
+        path,
+        role_toml,
+        allowed_actions,
+        denied_actions,
+    )
+}
+
+fn read_user_agent_role_template_toml(
+    path: &Path,
+) -> Result<TomlValue, AgentRoleTemplateCreateError> {
+    let mut contents = String::new();
+    let path_buf = path.to_path_buf();
+    fs::File::open(path)
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                AgentRoleTemplateCreateError::FileMissing(path_buf.clone())
+            } else {
+                AgentRoleTemplateCreateError::Write {
+                    path: path_buf.clone(),
+                    source_message: err.to_string(),
+                }
+            }
+        })?
+        .read_to_string(&mut contents)
+        .map_err(|err| AgentRoleTemplateCreateError::Write {
+            path: path_buf.clone(),
+            source_message: err.to_string(),
+        })?;
+
+    toml::from_str(&contents).map_err(|err| {
         AgentRoleTemplateCreateError::InvalidTemplate(format!(
             "failed to parse agent role file at {}: {err}",
             path.display()
         ))
-    })?;
+    })
+}
+
+fn user_agent_role_template_draft_with_tool_selection_from_toml(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
+    mut role_toml: TomlValue,
+    allowed_tools: Option<&[String]>,
+    denied_tools: Option<&[String]>,
+) -> Result<String, AgentRoleTemplateCreateError> {
     let Some(table) = role_toml.as_table_mut() else {
         return Err(AgentRoleTemplateCreateError::InvalidTemplate(format!(
             "agent role file at {} must contain a TOML table",
             path.display()
         )));
     };
-    let mut tool_selection = toml::Table::new();
-    tool_selection.insert(
-        "allowed_tools".to_string(),
-        TomlValue::Array(
-            allowed_tools
-                .iter()
-                .map(|tool| TomlValue::String(tool.clone()))
-                .collect(),
-        ),
-    );
-    table.insert(
-        "tool_selection".to_string(),
-        TomlValue::Table(tool_selection),
-    );
+    match (allowed_tools, denied_tools) {
+        (None, None) => {
+            table.remove("tool_selection");
+        }
+        _ => {
+            let mut tool_selection = toml::Table::new();
+            if let Some(allowed_tools) = allowed_tools {
+                tool_selection.insert(
+                    "allowed_tools".to_string(),
+                    TomlValue::Array(
+                        allowed_tools
+                            .iter()
+                            .map(|tool| TomlValue::String(tool.clone()))
+                            .collect(),
+                    ),
+                );
+            }
+            if let Some(denied_tools) = denied_tools {
+                tool_selection.insert(
+                    "denied_tools".to_string(),
+                    TomlValue::Array(
+                        denied_tools
+                            .iter()
+                            .map(|tool| TomlValue::String(tool.clone()))
+                            .collect(),
+                    ),
+                );
+            }
+            table.insert(
+                "tool_selection".to_string(),
+                TomlValue::Table(tool_selection),
+            );
+        }
+    }
     let draft = toml::to_string_pretty(&role_toml)
         .map_err(|err| AgentRoleTemplateCreateError::InvalidTemplate(err.to_string()))?;
     validate_user_agent_role_template_update(config, role_name, path, &draft)?;
     Ok(draft)
+}
+
+fn user_agent_role_template_draft_with_model_defaults_from_toml(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
+    mut role_toml: TomlValue,
+    model_defaults: StarterModelDefaults,
+) -> Result<String, AgentRoleTemplateCreateError> {
+    let Some(table) = role_toml.as_table_mut() else {
+        return Err(AgentRoleTemplateCreateError::InvalidTemplate(format!(
+            "agent role file at {} must contain a TOML table",
+            path.display()
+        )));
+    };
+
+    update_optional_string_field(table, "model", model_defaults.model);
+    update_optional_string_field(table, "model_provider", model_defaults.model_provider);
+    update_optional_string_field(
+        table,
+        "model_reasoning_effort",
+        model_defaults.model_reasoning_effort,
+    );
+    update_optional_string_field(table, "service_tier", model_defaults.service_tier);
+
+    let draft = toml::to_string_pretty(&role_toml)
+        .map_err(|err| AgentRoleTemplateCreateError::InvalidTemplate(err.to_string()))?;
+    validate_user_agent_role_template_update(config, role_name, path, &draft)?;
+    Ok(draft)
+}
+
+fn user_agent_role_template_draft_with_reasoning_defaults_from_toml(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
+    mut role_toml: TomlValue,
+) -> Result<String, AgentRoleTemplateCreateError> {
+    let Some(table) = role_toml.as_table_mut() else {
+        return Err(AgentRoleTemplateCreateError::InvalidTemplate(format!(
+            "agent role file at {} must contain a TOML table",
+            path.display()
+        )));
+    };
+
+    update_optional_string_field(
+        table,
+        "model_reasoning_effort",
+        config
+            .model_reasoning_effort
+            .as_ref()
+            .map(ToString::to_string),
+    );
+    update_optional_string_field(
+        table,
+        "service_tier",
+        config
+            .service_tier
+            .as_deref()
+            .filter(|service_tier| !service_tier.trim().is_empty())
+            .map(str::to_string),
+    );
+
+    let draft = toml::to_string_pretty(&role_toml)
+        .map_err(|err| AgentRoleTemplateCreateError::InvalidTemplate(err.to_string()))?;
+    validate_user_agent_role_template_update(config, role_name, path, &draft)?;
+    Ok(draft)
+}
+
+fn user_agent_role_template_draft_with_model_provider_defaults_from_toml(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
+    mut role_toml: TomlValue,
+) -> Result<String, AgentRoleTemplateCreateError> {
+    let Some(table) = role_toml.as_table_mut() else {
+        return Err(AgentRoleTemplateCreateError::InvalidTemplate(format!(
+            "agent role file at {} must contain a TOML table",
+            path.display()
+        )));
+    };
+
+    update_optional_string_field(
+        table,
+        "model",
+        config
+            .model
+            .as_deref()
+            .filter(|model| !model.trim().is_empty())
+            .map(str::to_string),
+    );
+    update_optional_string_field(
+        table,
+        "model_provider",
+        (!config.model_provider_id.trim().is_empty()).then(|| config.model_provider_id.clone()),
+    );
+
+    let draft = toml::to_string_pretty(&role_toml)
+        .map_err(|err| AgentRoleTemplateCreateError::InvalidTemplate(err.to_string()))?;
+    validate_user_agent_role_template_update(config, role_name, path, &draft)?;
+    Ok(draft)
+}
+
+fn update_optional_string_field(
+    table: &mut toml::map::Map<String, TomlValue>,
+    field_name: &str,
+    value: Option<String>,
+) {
+    match value {
+        Some(value) => {
+            table.insert(field_name.to_string(), TomlValue::String(value));
+        }
+        None => {
+            table.remove(field_name);
+        }
+    }
+}
+
+fn user_agent_role_template_draft_with_action_policy_from_toml(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
+    mut role_toml: TomlValue,
+    allowed_actions: Option<&[SubAgentActionPolicyAction]>,
+    denied_actions: Option<&[SubAgentActionPolicyAction]>,
+) -> Result<String, AgentRoleTemplateCreateError> {
+    let Some(table) = role_toml.as_table_mut() else {
+        return Err(AgentRoleTemplateCreateError::InvalidTemplate(format!(
+            "agent role file at {} must contain a TOML table",
+            path.display()
+        )));
+    };
+    match (allowed_actions, denied_actions) {
+        (None, None) => {
+            table.remove("subagent_action_policy");
+        }
+        _ => {
+            let mut action_policy = toml::Table::new();
+            if let Some(allowed_actions) = allowed_actions {
+                action_policy.insert(
+                    "allowed_actions".to_string(),
+                    TomlValue::Array(
+                        allowed_actions
+                            .iter()
+                            .copied()
+                            .map(subagent_action_policy_action_value)
+                            .collect(),
+                    ),
+                );
+            }
+            if let Some(denied_actions) = denied_actions {
+                action_policy.insert(
+                    "denied_actions".to_string(),
+                    TomlValue::Array(
+                        denied_actions
+                            .iter()
+                            .copied()
+                            .map(subagent_action_policy_action_value)
+                            .collect(),
+                    ),
+                );
+            }
+            table.insert(
+                "subagent_action_policy".to_string(),
+                TomlValue::Table(action_policy),
+            );
+        }
+    }
+    let draft = toml::to_string_pretty(&role_toml)
+        .map_err(|err| AgentRoleTemplateCreateError::InvalidTemplate(err.to_string()))?;
+    validate_user_agent_role_template_update(config, role_name, path, &draft)?;
+    Ok(draft)
+}
+
+fn subagent_action_policy_action_value(action: SubAgentActionPolicyAction) -> TomlValue {
+    TomlValue::try_from(action).expect("subagent action policy action should serialize")
+}
+
+pub fn update_user_agent_role_template_tool_selection(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
+    allowed_tools: Option<&[String]>,
+    denied_tools: Option<&[String]>,
+) -> Result<CreatedAgentRoleTemplate, AgentRoleTemplateCreateError> {
+    let draft = user_agent_role_template_draft_with_tool_selection(
+        config,
+        role_name,
+        path,
+        allowed_tools,
+        denied_tools,
+    )?;
+    update_user_agent_role_template_from_draft(config, role_name, path, &draft)
+}
+
+pub fn update_user_agent_role_template_action_policy(
+    config: &Config,
+    role_name: &str,
+    path: &Path,
+    allowed_actions: Option<&[SubAgentActionPolicyAction]>,
+    denied_actions: Option<&[SubAgentActionPolicyAction]>,
+) -> Result<CreatedAgentRoleTemplate, AgentRoleTemplateCreateError> {
+    let draft = user_agent_role_template_draft_with_action_policy(
+        config,
+        role_name,
+        path,
+        allowed_actions,
+        denied_actions,
+    )?;
+    update_user_agent_role_template_from_draft(config, role_name, path, &draft)
 }
 
 pub fn create_user_agent_role_template_from_draft(
@@ -691,6 +1091,7 @@ fn bounded_field_provenance(
                 | "mcp_servers"
                 | "hooks"
                 | "tool_selection.allowed_tools"
+                | "tool_selection.denied_tools"
                 | "skills.config"
                 | "apps"
         );
@@ -960,6 +1361,7 @@ fn locks_from_toml(role_toml: &TomlValue) -> AgentRoleTemplateLocks {
             .and_then(TomlValue::as_str)
             .map(str::to_string),
         allowed_tool_names: allowed_tool_names(role_toml),
+        denied_tool_names: denied_tool_names(role_toml),
         approval_policy: role_toml
             .get("approval_policy")
             .and_then(TomlValue::as_str)
@@ -1009,10 +1411,18 @@ fn locks_from_toml(role_toml: &TomlValue) -> AgentRoleTemplateLocks {
 }
 
 fn allowed_tool_names(role_toml: &TomlValue) -> Vec<String> {
+    tool_selection_names(role_toml, "allowed_tools")
+}
+
+fn denied_tool_names(role_toml: &TomlValue) -> Vec<String> {
+    tool_selection_names(role_toml, "denied_tools")
+}
+
+fn tool_selection_names(role_toml: &TomlValue, key: &str) -> Vec<String> {
     role_toml
         .get("tool_selection")
         .and_then(TomlValue::as_table)
-        .and_then(|tool_selection| tool_selection.get("allowed_tools"))
+        .and_then(|tool_selection| tool_selection.get(key))
         .and_then(TomlValue::as_array)
         .into_iter()
         .flatten()
@@ -1074,6 +1484,38 @@ struct StarterModelDefaults {
     model_provider: Option<String>,
     model_reasoning_effort: Option<String>,
     service_tier: Option<String>,
+}
+
+impl From<AgentRoleTemplateModelDefaults> for StarterModelDefaults {
+    fn from(value: AgentRoleTemplateModelDefaults) -> Self {
+        Self {
+            model: value.model,
+            model_provider: value.model_provider,
+            model_reasoning_effort: value.model_reasoning_effort,
+            service_tier: value.service_tier,
+        }
+    }
+}
+
+fn model_defaults_from_current_config(config: &Config) -> StarterModelDefaults {
+    StarterModelDefaults {
+        model: config
+            .model
+            .as_deref()
+            .filter(|model| !model.trim().is_empty())
+            .map(str::to_string),
+        model_provider: (!config.model_provider_id.trim().is_empty())
+            .then(|| config.model_provider_id.clone()),
+        model_reasoning_effort: config
+            .model_reasoning_effort
+            .as_ref()
+            .map(ToString::to_string),
+        service_tier: config
+            .service_tier
+            .as_deref()
+            .filter(|service_tier| !service_tier.trim().is_empty())
+            .map(str::to_string),
+    }
 }
 
 #[derive(Serialize)]

@@ -31,11 +31,13 @@ use std::sync::Arc;
 use crate::app::App;
 use crate::app_command::AppCommand;
 use crate::app_event::AppEvent;
+use crate::app_server_session::AppServerSession;
 use crate::chatwidget::UserMessage;
 #[cfg(test)]
 use crate::history_cell::AgentMessageCell;
 use crate::history_cell::SessionInfoCell;
 use crate::history_cell::UserHistoryCell;
+use crate::key_hint::KeyBindingListExt;
 use crate::pager_overlay::Overlay;
 use crate::tui;
 use crate::tui::TuiEvent;
@@ -49,6 +51,12 @@ use crossterm::event::KeyEventKind;
 const NO_PREVIOUS_MESSAGE_TO_EDIT: &str = "No previous message to edit.";
 pub(crate) const SIDE_EDIT_PREVIOUS_UNAVAILABLE_MESSAGE: &str =
     "Editing previous prompts is unavailable in side conversations.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TranscriptShortcutAction {
+    OpenTranscript,
+    OpenAgentWindow,
+}
 
 /// Aggregates all backtrack-related state used by the App.
 #[derive(Default)]
@@ -113,8 +121,17 @@ impl App {
     pub(crate) async fn handle_backtrack_overlay_event(
         &mut self,
         tui: &mut tui::Tui,
+        app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<bool> {
+        if let TuiEvent::Key(key_event) = event
+            && self.should_cycle_transcript_shortcut_to_agent_picker(key_event)
+        {
+            self.close_transcript_overlay(tui);
+            self.open_agent_picker(app_server).await;
+            return Ok(true);
+        }
+
         if self.backtrack.overlay_preview_active {
             match event {
                 TuiEvent::Key(KeyEvent {
@@ -167,6 +184,33 @@ impl App {
             // Not in backtrack mode: forward events to the overlay widget.
             self.overlay_forward_event(tui, event)?;
             Ok(true)
+        }
+    }
+
+    pub(crate) fn should_cycle_transcript_shortcut_to_agent_picker(
+        &self,
+        key_event: KeyEvent,
+    ) -> bool {
+        matches!(
+            self.transcript_shortcut_action(key_event),
+            Some(TranscriptShortcutAction::OpenAgentWindow)
+        )
+    }
+
+    pub(crate) fn transcript_shortcut_action(
+        &self,
+        key_event: KeyEvent,
+    ) -> Option<TranscriptShortcutAction> {
+        if !self.keymap.app.open_transcript.is_pressed(key_event) {
+            return None;
+        }
+
+        // First Ctrl+T is owned by native transcript opening; only a repeated press while that
+        // transcript overlay is active cycles into Agent Window.
+        if matches!(self.overlay, Some(Overlay::Transcript(_))) {
+            Some(TranscriptShortcutAction::OpenAgentWindow)
+        } else {
+            Some(TranscriptShortcutAction::OpenTranscript)
         }
     }
 

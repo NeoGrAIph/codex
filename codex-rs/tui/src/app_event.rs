@@ -194,12 +194,45 @@ pub(crate) enum AppEvent {
     CloseAgentThreadConfirmed {
         thread_id: ThreadId,
     },
+    /// Hide one sub-agent thread from Agent Window without closing it.
+    DismissAgentThread {
+        thread_id: ThreadId,
+    },
+    /// Open confirmation before retrying one sub-agent as a new sibling.
+    OpenAgentRetryConfirmation {
+        thread_id: ThreadId,
+    },
+    /// Retry one sub-agent as a new sibling after confirmation.
+    RetryAgentThreadConfirmed {
+        thread_id: ThreadId,
+    },
+    /// Open destructive confirmation before stopping all live agents in the current workbench scope.
+    OpenAgentStopAllConfirmation,
+    /// Stop all live agents in the current workbench scope after confirmation.
+    StopAllAgentThreadsConfirmed,
     /// Open the role-template manager for sub-agent roles.
     OpenAgentRoleTemplates,
     /// Open the prompt used to create a new user role template file.
     OpenAgentRoleTemplateCreatePrompt,
     /// Open the role-template create prompt seeded with current model defaults.
     OpenAgentRoleTemplateCreatePromptFromCurrentModel,
+    /// Open the role-template model catalog picker for a new user role template.
+    OpenAgentRoleTemplateCreateModelPicker,
+    /// Open the role-template model catalog picker for an existing user role template.
+    OpenAgentRoleTemplateEditModelPicker {
+        role_name: String,
+        role_path: PathBuf,
+    },
+    /// Open the role-template reasoning picker for a selected model.
+    OpenAgentRoleTemplateCreateReasoningPicker {
+        model: ModelPreset,
+    },
+    /// Open the role-template reasoning picker for a selected model on an existing role.
+    OpenAgentRoleTemplateEditReasoningPicker {
+        role_name: String,
+        role_path: PathBuf,
+        model: ModelPreset,
+    },
     /// Open a runtime-catalog picker that prepares a native role TOML draft.
     OpenAgentRoleTemplateToolSelectionPicker {
         catalog_entries: Vec<AgentRoleToolSelectionCatalogEntry>,
@@ -211,15 +244,69 @@ pub(crate) enum AppEvent {
         selected_tools: Vec<String>,
         catalog_entries: Vec<AgentRoleToolSelectionCatalogEntry>,
     },
+    /// Open a runtime-catalog picker that edits an existing native role TOML denylist draft.
+    OpenAgentRoleTemplateDeniedToolSelectionPickerForRole {
+        role_name: String,
+        role_path: PathBuf,
+        selected_tools: Vec<String>,
+        catalog_entries: Vec<AgentRoleToolSelectionCatalogEntry>,
+    },
+    /// Open the role-template edit prompt with the current native TOML file contents.
+    OpenAgentRoleTemplateEditPrompt {
+        role_name: String,
+        role_path: PathBuf,
+    },
+    /// Open the role-template edit prompt with current model defaults.
+    OpenAgentRoleTemplateEditPromptFromCurrentModel {
+        role_name: String,
+        role_path: PathBuf,
+    },
+    /// Open the role-template edit prompt with current model/provider defaults.
+    OpenAgentRoleTemplateEditPromptFromCurrentModelProvider {
+        role_name: String,
+        role_path: PathBuf,
+    },
+    /// Open the role-template edit prompt with current reasoning defaults.
+    OpenAgentRoleTemplateEditPromptFromCurrentReasoning {
+        role_name: String,
+        role_path: PathBuf,
+    },
+    /// Open the role-template edit prompt with role-local model defaults removed.
+    OpenAgentRoleTemplateEditPromptWithoutModelDefaults {
+        role_name: String,
+        role_path: PathBuf,
+    },
     /// Open the role-template create prompt with a generated tool allowlist.
     OpenAgentRoleTemplateCreatePromptWithAllowedTools {
         allowed_tools: Vec<String>,
+    },
+    /// Open the role-template create prompt with selected catalog model defaults.
+    OpenAgentRoleTemplateCreatePromptWithModelDefaults {
+        model_provider: String,
+        model: String,
+        reasoning_effort: Option<ReasoningEffort>,
+        service_tier: Option<String>,
     },
     /// Open the role-template edit prompt with a generated tool allowlist.
     OpenAgentRoleTemplateEditPromptWithAllowedTools {
         role_name: String,
         role_path: PathBuf,
         allowed_tools: Vec<String>,
+    },
+    /// Open the role-template edit prompt with a generated tool denylist.
+    OpenAgentRoleTemplateEditPromptWithDeniedTools {
+        role_name: String,
+        role_path: PathBuf,
+        denied_tools: Vec<String>,
+    },
+    /// Open the role-template edit prompt with selected catalog model defaults.
+    OpenAgentRoleTemplateEditPromptWithModelDefaults {
+        role_name: String,
+        role_path: PathBuf,
+        model_provider: String,
+        model: String,
+        reasoning_effort: Option<ReasoningEffort>,
+        service_tier: Option<String>,
     },
     /// Create a user role template from a submitted native TOML draft.
     CreateAgentRoleTemplateFromDraft {

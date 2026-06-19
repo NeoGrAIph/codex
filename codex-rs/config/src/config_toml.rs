@@ -49,6 +49,7 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::SubAgentActionPolicyAction;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path::normalize_for_path_comparison;
 use schemars::JsonSchema;
@@ -423,6 +424,9 @@ pub struct ConfigToml {
     /// config layers; absent means all native tools remain available.
     pub tool_selection: Option<ToolSelectionToml>,
 
+    /// Restricts workbench actions available to spawned sub-agents.
+    pub subagent_action_policy: Option<SubAgentActionPolicyToml>,
+
     /// Additional discoverable tools that can be suggested for installation.
     pub tool_suggest: Option<ToolSuggestConfig>,
 
@@ -645,6 +649,22 @@ pub struct ToolSelectionToml {
     /// Allowlist of runtime tool identifiers. Entries use `name` for plain
     /// tools and `namespace/name` for namespaced tools.
     pub allowed_tools: Option<Vec<String>>,
+
+    /// Denylist of runtime tool identifiers. Entries use `name` for plain
+    /// tools and `namespace/name` for namespaced tools. Denied tools are
+    /// removed after any allowlist is applied.
+    pub denied_tools: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct SubAgentActionPolicyToml {
+    /// Optional allowlist of workbench action ids. Absent means default allow.
+    pub allowed_actions: Option<Vec<SubAgentActionPolicyAction>>,
+
+    /// Denylist of workbench action ids. Denied actions are removed after any
+    /// allowlist is applied.
+    pub denied_actions: Option<Vec<SubAgentActionPolicyAction>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]

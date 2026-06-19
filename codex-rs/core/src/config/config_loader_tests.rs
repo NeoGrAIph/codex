@@ -2840,17 +2840,29 @@ profile = "ignored"
         .into_iter()
         .filter(|layer| matches!(layer.name, ConfigLayerSource::Project { .. }))
         .collect();
-    assert_eq!(project_layers_untrusted.len(), 1);
     assert!(
-        project_layers_untrusted[0].disabled_reason.is_some(),
-        "expected untrusted project layer to be disabled"
+        !project_layers_untrusted.is_empty(),
+        "expected untrusted project layers"
     );
+    assert!(
+        project_layers_untrusted
+            .iter()
+            .all(|layer| layer.disabled_reason.is_some()),
+        "expected every untrusted project layer to be disabled"
+    );
+    let child_project_layer_untrusted = project_layers_untrusted
+        .iter()
+        .find(|layer| layer.config.get("foo").is_some())
+        .expect("expected child project config layer");
     assert_eq!(
-        project_layers_untrusted[0].config.get("foo"),
+        child_project_layer_untrusted.config.get("foo"),
         Some(&TomlValue::String("child".to_string()))
     );
     assert!(
-        project_layers_untrusted[0].config.get("profile").is_none(),
+        child_project_layer_untrusted
+            .config
+            .get("profile")
+            .is_none(),
         "expected unsupported project config keys to be ignored even when the layer is disabled"
     );
     assert_eq!(
@@ -2886,17 +2898,26 @@ profile = "ignored"
         .into_iter()
         .filter(|layer| matches!(layer.name, ConfigLayerSource::Project { .. }))
         .collect();
-    assert_eq!(project_layers_unknown.len(), 1);
     assert!(
-        project_layers_unknown[0].disabled_reason.is_some(),
-        "expected unknown-trust project layer to be disabled"
+        !project_layers_unknown.is_empty(),
+        "expected unknown-trust project layers"
     );
+    assert!(
+        project_layers_unknown
+            .iter()
+            .all(|layer| layer.disabled_reason.is_some()),
+        "expected every unknown-trust project layer to be disabled"
+    );
+    let child_project_layer_unknown = project_layers_unknown
+        .iter()
+        .find(|layer| layer.config.get("foo").is_some())
+        .expect("expected child project config layer");
     assert_eq!(
-        project_layers_unknown[0].config.get("foo"),
+        child_project_layer_unknown.config.get("foo"),
         Some(&TomlValue::String("child".to_string()))
     );
     assert!(
-        project_layers_unknown[0].config.get("profile").is_none(),
+        child_project_layer_unknown.config.get("profile").is_none(),
         "expected unsupported project config keys to be ignored even when the layer is disabled"
     );
     assert_eq!(

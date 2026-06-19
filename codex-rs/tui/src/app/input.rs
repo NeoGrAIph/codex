@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::app_backtrack::SIDE_EDIT_PREVIOUS_UNAVAILABLE_MESSAGE;
+use crate::app_backtrack::TranscriptShortcutAction;
 
 impl App {
     pub(super) async fn launch_external_editor(&mut self, tui: &mut tui::Tui) {
@@ -164,14 +165,13 @@ impl App {
             return;
         }
 
-        if app_keymap_shortcuts_available && self.keymap.app.open_transcript.is_pressed(key_event) {
-            // Enter alternate screen and set viewport to full size.
-            let _ = tui.enter_alt_screen();
-            self.overlay = Some(Overlay::new_transcript(
-                self.transcript_cells.clone(),
-                self.keymap.pager.clone(),
-            ));
-            tui.frame_requester().schedule_frame();
+        if app_keymap_shortcuts_available
+            && matches!(
+                self.transcript_shortcut_action(key_event),
+                Some(TranscriptShortcutAction::OpenTranscript)
+            )
+        {
+            self.open_transcript_overlay(tui);
             return;
         }
 

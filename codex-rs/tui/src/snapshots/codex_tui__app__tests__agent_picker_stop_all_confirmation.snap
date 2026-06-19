@@ -1,0 +1,12 @@
+---
+source: tui/src/app/tests.rs
+expression: rendered.clone()
+---
+  Stop all agents?
+  root tree · 1 live agents
+
+› 1. Cancel              Keep all agents running.
+  2. !! Stop all agents  Stop 1 running/waiting agents in this scope. Idle, completed and errored
+                         agents are unchanged.
+
+  Press enter to confirm or esc to go back

@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/tests/popups_and_settings.rs
+expression: popup.clone()
+---
+  Select model defaults for reviewer
+  Writes model, model_provider, model_reasoning_effort and service_tier into native role TOML only
+
+› 1. shared-model (openai)    Shared model from openai · provider openai
+  2. shared-model (deepseek)  Shared model from deepseek · provider deepseek
+
+  Press enter to confirm or esc to go back

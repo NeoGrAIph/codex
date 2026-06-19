@@ -90,10 +90,11 @@ async fn handle_spawn_agent(
         args.service_tier.as_deref(),
     )
     .await?;
-    apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+    apply_spawn_agent_runtime_context_overrides(&mut config, turn.as_ref())?;
     let cwd_override_applied = apply_spawn_agent_cwd_override(&mut config, args.cwd.as_deref())?;
     let thread_note = normalize_thread_note(args.thread_note)?;
-    let action_policy = subagent_action_policy_snapshot(role_name);
+    let action_policy = subagent_action_policy_snapshot(&config, role_name);
+    let tool_selection = subagent_tool_selection_snapshot(&config, role_name);
     let child_environments =
         spawn_agent_child_environment_selections(turn.as_ref(), &config.cwd, cwd_override_applied);
 
@@ -104,7 +105,9 @@ async fn handle_spawn_agent(
         role_name,
         Some(args.task_name.clone()),
         thread_note.clone(),
+        Some(message.clone()),
         Some(action_policy),
+        tool_selection,
     )?;
     let new_agent_path = spawn_source.get_agent_path().ok_or_else(|| {
         FunctionCallError::RespondToModel(
@@ -120,10 +123,15 @@ async fn handle_spawn_agent(
                         .iter()
                         .all(|item| matches!(item, UserInput::Text { .. })) =>
                 {
-                    let author = turn
-                        .session_source
-                        .get_agent_path()
-                        .unwrap_or_else(AgentPath::root);
+                    let author = match turn.session_source.get_agent_path() {
+                        Some(agent_path) => agent_path,
+                        None if turn.session_source.is_non_root_agent() => {
+                            return Err(FunctionCallError::RespondToModel(
+                                "spawn_agent requires a path-backed author".to_string(),
+                            ));
+                        }
+                        None => AgentPath::root(),
+                    };
                     let communication =
                         communication_from_tool_message(author, new_agent_path.clone(), message);
                     Op::InterAgentCommunication { communication }

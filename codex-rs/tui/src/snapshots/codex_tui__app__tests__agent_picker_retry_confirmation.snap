@@ -1,0 +1,11 @@
+---
+source: tui/src/app/tests.rs
+expression: rendered.clone()
+---
+  Retry this agent?
+  Robie [explorer] · /root/worker · current status: idle
+
+› 1. Cancel         Keep the current agent unchanged.
+  2. r Retry agent  Current status: idle. Spawn a fresh sibling from the stored initial task.
+
+  Press enter to confirm or esc to go back

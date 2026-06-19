@@ -5,6 +5,7 @@ use crate::skills_load_input_from_config;
 use codex_config::ConfigLayerStackOrdering;
 use codex_core_plugins::PluginsManager;
 use codex_protocol::config_types::ServiceTier;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
@@ -281,6 +282,52 @@ async fn apply_role_preserves_existing_service_tier_without_override() {
     assert_eq!(
         config.service_tier,
         Some(ServiceTier::Fast.request_value().to_string())
+    );
+}
+
+#[tokio::test]
+async fn apply_role_sets_native_read_only_permission_profile() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    let role_path = write_role_config(
+        &home,
+        "read-only-role.toml",
+        r#"developer_instructions = "Inspect and report evidence only."
+default_permissions = ":read-only"
+"#,
+    )
+    .await;
+    config.agent_roles.insert(
+        "readonly".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+            metadata_sources: Default::default(),
+            runtime_config_sources: Default::default(),
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("readonly"))
+        .await
+        .expect("readonly role should apply");
+
+    assert_eq!(
+        config.permissions.effective_permission_profile(),
+        PermissionProfile::read_only()
+    );
+}
+
+#[tokio::test]
+async fn apply_built_in_reviewer_role_sets_native_read_only_permission_profile() {
+    let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+
+    apply_role_to_config(&mut config, Some("reviewer"))
+        .await
+        .expect("reviewer role should apply");
+
+    assert_eq!(
+        config.permissions.effective_permission_profile(),
+        PermissionProfile::read_only()
     );
 }
 
@@ -583,7 +630,9 @@ fn spawn_tool_spec_marks_role_locked_service_tier() {
 }
 
 #[test]
-fn built_in_config_file_contents_resolves_explorer_only() {
+fn built_in_config_file_contents_resolves_known_embedded_roles() {
+    assert!(built_in::config_file_contents(Path::new("explorer.toml")).is_some());
+    assert!(built_in::config_file_contents(Path::new("reviewer.toml")).is_some());
     assert_eq!(
         built_in::config_file_contents(Path::new("missing.toml")),
         None

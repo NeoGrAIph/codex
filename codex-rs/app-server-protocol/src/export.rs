@@ -43,6 +43,10 @@ const JSON_V1_ALLOWLIST: &[&str] = &["InitializeParams", "InitializeResponse"];
 const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
     "AgentRoleToolSelectionCatalogEntry",
     "AgentRoleToolSelectionCatalogExposure",
+    "AgentRoleActionPolicySetParams",
+    "AgentRoleActionPolicySetResponse",
+    "AgentRoleToolSelectionSetParams",
+    "AgentRoleToolSelectionSetResponse",
     "ModelProvider",
     "ModelProviderAuthStatus",
     "RemoteControlClient",
@@ -2368,6 +2372,10 @@ mod tests {
         assert!(types.contains("ModelProviderAuthStatus"));
         assert!(types.contains("AgentRoleToolSelectionCatalogEntry"));
         assert!(types.contains("AgentRoleToolSelectionCatalogExposure"));
+        assert!(types.contains("AgentRoleActionPolicySetParams"));
+        assert!(types.contains("AgentRoleActionPolicySetResponse"));
+        assert!(types.contains("AgentRoleToolSelectionSetParams"));
+        assert!(types.contains("AgentRoleToolSelectionSetResponse"));
         assert!(!types.contains("ConfigWriteResponse"));
     }
 

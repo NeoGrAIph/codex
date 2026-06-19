@@ -344,6 +344,15 @@ fn set_tool_selection_allowlist(
     });
 }
 
+fn set_tool_selection_denylist(
+    turn: &mut TurnContext,
+    denied_tools: impl IntoIterator<Item = ToolName>,
+) {
+    update_config(turn, |config| {
+        config.tool_selection.denied = Some(denied_tools.into_iter().collect::<HashSet<_>>());
+    });
+}
+
 fn set_web_search_mode(turn: &mut TurnContext, mode: WebSearchMode) {
     update_config(turn, |config| {
         config
@@ -876,6 +885,49 @@ async fn tool_selection_allowlist_filters_visible_specs_and_registry() {
 }
 
 #[tokio::test]
+async fn tool_selection_denylist_filters_visible_specs_and_registry() {
+    let plan = probe(|turn| {
+        set_tool_selection_denylist(turn, [ToolName::plain("view_image")]);
+    })
+    .await;
+
+    plan.assert_visible_contains(&["update_plan", "request_user_input"]);
+    plan.assert_visible_lacks(&["view_image"]);
+    plan.assert_registered_contains(&["update_plan", "request_user_input"]);
+    plan.assert_registered_lacks(&["view_image"]);
+}
+
+#[tokio::test]
+async fn tool_selection_denylist_wins_over_allowlist() {
+    let plan = probe(|turn| {
+        set_tool_selection_allowlist(
+            turn,
+            [
+                ToolName::plain("update_plan"),
+                ToolName::plain("view_image"),
+            ],
+        );
+        set_tool_selection_denylist(turn, [ToolName::plain("view_image")]);
+    })
+    .await;
+
+    plan.assert_visible_contains(&["update_plan"]);
+    plan.assert_visible_lacks(&["view_image", "request_user_input"]);
+    plan.assert_registered_contains(&["update_plan"]);
+    plan.assert_registered_lacks(&["view_image", "request_user_input"]);
+}
+
+#[tokio::test]
+async fn tool_selection_catalog_marks_denied_tools_unselected() {
+    let plan = probe(|turn| {
+        set_tool_selection_denylist(turn, [ToolName::plain("view_image")]);
+    })
+    .await;
+
+    plan.assert_tool_selection_catalog_contains(&[("update_plan", true), ("view_image", false)]);
+}
+
+#[tokio::test]
 async fn tool_selection_missing_policy_keeps_native_tools_unrestricted() {
     let plan = probe(|_| {}).await;
 
@@ -1192,6 +1244,22 @@ async fn tool_selection_filters_direct_and_deferred_mcp_tools() {
         &["lookup".to_string()]
     );
     direct_allowed.assert_registered_contains(&[&direct_tool.to_string()]);
+
+    let direct_denied = probe_with(
+        |turn| {
+            set_tool_selection_denylist(turn, [direct_tool.clone()]);
+        },
+        ToolPlanInputs {
+            mcp_tools: Some(vec![mcp_tool("direct", "mcp__direct", "lookup")]),
+            ..ToolPlanInputs::default()
+        },
+    )
+    .await;
+    assert_eq!(
+        direct_denied.namespace_function_names("mcp__direct"),
+        Vec::<String>::new().as_slice()
+    );
+    direct_denied.assert_registered_lacks(&[&direct_tool.to_string()]);
 
     let deferred_tool = ToolName::namespaced("mcp__searchable", "lookup");
     let deferred_allowed = probe_with(

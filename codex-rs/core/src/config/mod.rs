@@ -104,6 +104,9 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::protocol::SubAgentActionPolicyAction;
+use codex_protocol::protocol::SubAgentToolSelectionSnapshot;
+use codex_protocol::protocol::SubAgentToolSelectionSource;
 use codex_secrets::SecretName;
 use codex_secrets::SecretScope;
 use codex_secrets::SecretsBackendKind;
@@ -118,6 +121,7 @@ use rmcp::model::UrlElicitationCapability;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::ErrorKind;
@@ -1052,6 +1056,9 @@ pub struct Config {
     /// Optional role/config-level allowlist for the effective runtime tool set.
     pub tool_selection: ToolSelectionConfig,
 
+    /// Optional role/config-level allow/deny policy for sub-agent workbench actions.
+    pub subagent_action_policy: SubAgentActionPolicyConfig,
+
     /// OTEL configuration (exporter type, endpoint, headers, etc.).
     pub otel: codex_config::types::OtelConfig,
 }
@@ -1059,6 +1066,77 @@ pub struct Config {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolSelectionConfig {
     pub allowed: Option<HashSet<ToolName>>,
+    pub denied: Option<HashSet<ToolName>>,
+}
+
+impl ToolSelectionConfig {
+    pub fn is_active(&self) -> bool {
+        self.allowed.is_some() || self.denied.is_some()
+    }
+
+    pub fn includes(&self, tool_name: &ToolName) -> bool {
+        self.allowed
+            .as_ref()
+            .is_none_or(|allowed_tools| allowed_tools.contains(tool_name))
+            && self
+                .denied
+                .as_ref()
+                .is_none_or(|denied_tools| !denied_tools.contains(tool_name))
+    }
+
+    pub fn denies(&self, tool_name: &ToolName) -> bool {
+        self.denied
+            .as_ref()
+            .is_some_and(|denied_tools| denied_tools.contains(tool_name))
+    }
+
+    pub(crate) fn to_subagent_snapshot(
+        &self,
+        source: SubAgentToolSelectionSource,
+    ) -> Option<SubAgentToolSelectionSnapshot> {
+        self.is_active().then(|| {
+            SubAgentToolSelectionSnapshot::new(
+                source,
+                self.allowed.as_ref().map(format_tool_selection_tools),
+                self.denied
+                    .as_ref()
+                    .map(format_tool_selection_tools)
+                    .unwrap_or_default(),
+            )
+        })
+    }
+
+    pub(crate) fn from_subagent_snapshot(
+        snapshot: &SubAgentToolSelectionSnapshot,
+    ) -> std::io::Result<Self> {
+        let allowed_tools = snapshot
+            .allowed_tools
+            .as_ref()
+            .map(|tools| tools.iter().cloned().collect::<Vec<_>>());
+        let denied_tools = snapshot.denied_tools.iter().cloned().collect::<Vec<_>>();
+        Ok(Self {
+            allowed: parse_tool_selection_tools(
+                allowed_tools.as_deref(),
+                "thread_spawn.tool_selection.allowed_tools",
+            )?,
+            denied: parse_tool_selection_tools(
+                Some(denied_tools.as_slice()),
+                "thread_spawn.tool_selection.denied_tools",
+            )?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubAgentActionPolicyConfig {
+    pub allowed: Option<BTreeSet<SubAgentActionPolicyAction>>,
+    pub denied: BTreeSet<SubAgentActionPolicyAction>,
+}
+
+impl SubAgentActionPolicyConfig {
+    pub fn is_active(&self) -> bool {
+        self.allowed.is_some() || !self.denied.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -2462,42 +2540,102 @@ fn resolve_experimental_request_user_input_enabled(config_toml: &ConfigToml) -> 
 }
 
 fn resolve_tool_selection_config(config_toml: &ConfigToml) -> std::io::Result<ToolSelectionConfig> {
-    let Some(allowed_tools) = parse_tool_selection_allowed_tools(config_toml)? else {
+    let Some(tool_selection) = config_toml.tool_selection.as_ref() else {
         return Ok(ToolSelectionConfig::default());
     };
 
     Ok(ToolSelectionConfig {
-        allowed: Some(allowed_tools),
+        allowed: parse_tool_selection_tools(
+            tool_selection.allowed_tools.as_deref(),
+            "tool_selection.allowed_tools",
+        )?,
+        denied: parse_tool_selection_tools(
+            tool_selection.denied_tools.as_deref(),
+            "tool_selection.denied_tools",
+        )?,
     })
 }
 
 fn validate_tool_selection_config_toml(config_toml: &ConfigToml) -> std::io::Result<()> {
-    parse_tool_selection_allowed_tools(config_toml).map(|_| ())
+    resolve_tool_selection_config(config_toml).map(|_| ())
 }
 
-fn parse_tool_selection_allowed_tools(
+fn format_tool_selection_tools(tools: &HashSet<ToolName>) -> BTreeSet<String> {
+    tools.iter().map(format_tool_selection_name).collect()
+}
+
+fn format_tool_selection_name(tool_name: &ToolName) -> String {
+    match tool_name.namespace.as_deref() {
+        Some(namespace) => format!("{namespace}/{}", tool_name.name),
+        None => tool_name.name.clone(),
+    }
+}
+
+fn resolve_subagent_action_policy_config(
     config_toml: &ConfigToml,
-) -> std::io::Result<Option<HashSet<ToolName>>> {
-    let Some(tool_selection) = config_toml.tool_selection.as_ref() else {
-        return Ok(None);
+) -> std::io::Result<SubAgentActionPolicyConfig> {
+    let Some(action_policy) = config_toml.subagent_action_policy.as_ref() else {
+        return Ok(SubAgentActionPolicyConfig::default());
     };
-    let Some(configured_allowed_tools) = tool_selection.allowed_tools.as_ref() else {
+
+    Ok(SubAgentActionPolicyConfig {
+        allowed: parse_subagent_action_policy_actions(
+            action_policy.allowed_actions.as_deref(),
+            "subagent_action_policy.allowed_actions",
+        )?,
+        denied: parse_subagent_action_policy_actions(
+            action_policy.denied_actions.as_deref(),
+            "subagent_action_policy.denied_actions",
+        )?
+        .unwrap_or_default(),
+    })
+}
+
+fn validate_subagent_action_policy_config_toml(config_toml: &ConfigToml) -> std::io::Result<()> {
+    resolve_subagent_action_policy_config(config_toml).map(|_| ())
+}
+
+fn parse_subagent_action_policy_actions(
+    entries: Option<&[SubAgentActionPolicyAction]>,
+    field_label: &str,
+) -> std::io::Result<Option<BTreeSet<SubAgentActionPolicyAction>>> {
+    let Some(entries) = entries else {
         return Ok(None);
     };
 
-    let mut allowed_tools = HashSet::new();
-    for (index, entry) in configured_allowed_tools.iter().enumerate() {
-        let tool_name =
-            parse_tool_selection_entry(&format!("tool_selection.allowed_tools[{index}]"), entry)?;
-        if !allowed_tools.insert(tool_name) {
+    let mut actions = BTreeSet::new();
+    for (index, action) in entries.iter().copied().enumerate() {
+        if !actions.insert(action) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("duplicate tool_selection.allowed_tools entry `{entry}`"),
+                format!("duplicate {field_label}[{index}] entry `{action:?}`"),
             ));
         }
     }
 
-    Ok(Some(allowed_tools))
+    Ok(Some(actions))
+}
+
+fn parse_tool_selection_tools(
+    entries: Option<&[String]>,
+    field_label: &str,
+) -> std::io::Result<Option<HashSet<ToolName>>> {
+    let Some(entries) = entries else {
+        return Ok(None);
+    };
+
+    let mut tools = HashSet::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let tool_name = parse_tool_selection_entry(&format!("{field_label}[{index}]"), entry)?;
+        if !tools.insert(tool_name) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("duplicate {field_label} entry `{entry}`"),
+            ));
+        }
+    }
+
+    Ok(Some(tools))
 }
 
 fn parse_tool_selection_entry(field_label: &str, entry: &str) -> std::io::Result<ToolName> {
@@ -3333,6 +3471,7 @@ impl Config {
         let experimental_request_user_input_enabled =
             resolve_experimental_request_user_input_enabled(&cfg);
         let tool_selection = resolve_tool_selection_config(&cfg)?;
+        let subagent_action_policy = resolve_subagent_action_policy_config(&cfg)?;
         let code_mode = resolve_code_mode_config(&cfg);
         let multi_agent_v2 = resolve_multi_agent_v2_config(&cfg);
         let terminal_resize_reflow = resolve_terminal_resize_reflow_config(&cfg);
@@ -3892,6 +4031,7 @@ impl Config {
                 .unwrap_or(true),
             tool_suggest,
             tool_selection,
+            subagent_action_policy,
             tui_notifications: cfg
                 .tui
                 .as_ref()

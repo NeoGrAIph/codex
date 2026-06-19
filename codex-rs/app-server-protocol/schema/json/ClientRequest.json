@@ -3190,6 +3190,17 @@
       ],
       "type": "string"
     },
+    "SubAgentActionPolicyAction": {
+      "enum": [
+        "agent_message_send",
+        "agent_followup_send",
+        "agent_close",
+        "agent_dismiss",
+        "agent_retry",
+        "agent_stop_all"
+      ],
+      "type": "string"
+    },
     "SubagentMigration": {
       "properties": {
         "name": {
