@@ -270,15 +270,14 @@ pub fn user_agent_role_template_draft_with_allowed_tools(
     allowed_tools: &[String],
 ) -> Result<String, AgentRoleTemplateCreateError> {
     let role_toml = read_user_agent_role_template_toml(path)?;
-    let denied_tools = denied_tool_names(&role_toml);
-    let denied_tools = (!denied_tools.is_empty()).then_some(denied_tools.as_slice());
+    let denied_tools = denied_tool_names_if_present(&role_toml);
     user_agent_role_template_draft_with_tool_selection_from_toml(
         config,
         role_name,
         path,
         role_toml,
         Some(allowed_tools),
-        denied_tools,
+        denied_tools.as_deref(),
     )
 }
 
@@ -289,14 +288,13 @@ pub fn user_agent_role_template_draft_with_denied_tools(
     denied_tools: &[String],
 ) -> Result<String, AgentRoleTemplateCreateError> {
     let role_toml = read_user_agent_role_template_toml(path)?;
-    let allowed_tools = allowed_tool_names(&role_toml);
-    let allowed_tools = (!allowed_tools.is_empty()).then_some(allowed_tools.as_slice());
+    let allowed_tools = allowed_tool_names_if_present(&role_toml);
     user_agent_role_template_draft_with_tool_selection_from_toml(
         config,
         role_name,
         path,
         role_toml,
-        allowed_tools,
+        allowed_tools.as_deref(),
         Some(denied_tools),
     )
 }
@@ -1418,19 +1416,33 @@ fn denied_tool_names(role_toml: &TomlValue) -> Vec<String> {
     tool_selection_names(role_toml, "denied_tools")
 }
 
+fn allowed_tool_names_if_present(role_toml: &TomlValue) -> Option<Vec<String>> {
+    tool_selection_names_if_present(role_toml, "allowed_tools")
+}
+
+fn denied_tool_names_if_present(role_toml: &TomlValue) -> Option<Vec<String>> {
+    tool_selection_names_if_present(role_toml, "denied_tools")
+}
+
 fn tool_selection_names(role_toml: &TomlValue, key: &str) -> Vec<String> {
+    tool_selection_names_if_present(role_toml, key).unwrap_or_default()
+}
+
+fn tool_selection_names_if_present(role_toml: &TomlValue, key: &str) -> Option<Vec<String>> {
     role_toml
         .get("tool_selection")
         .and_then(TomlValue::as_table)
         .and_then(|tool_selection| tool_selection.get(key))
         .and_then(TomlValue::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(TomlValue::as_str)
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-        .collect()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(TomlValue::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
 }
 
 fn hook_handler_count(role_toml: &TomlValue) -> usize {

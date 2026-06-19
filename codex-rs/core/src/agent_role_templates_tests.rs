@@ -1306,6 +1306,48 @@ denied_tools = ["apply_patch"]
 }
 
 #[tokio::test]
+async fn user_agent_role_template_denied_tools_draft_preserves_empty_allowlist() {
+    let (_home, config) = test_config().await;
+    let initial = r#"name = "audit-reviewer"
+description = "Review code changes before handoff."
+nickname_candidates = ["Ada"]
+developer_instructions = "Review the diff and report concrete risks."
+
+[tool_selection]
+allowed_tools = []
+denied_tools = ["apply_patch"]
+"#;
+    let created = create_user_agent_role_template_from_draft(&config, initial).expect("created");
+
+    let draft = user_agent_role_template_draft_with_denied_tools(
+        &config,
+        "audit-reviewer",
+        &created.path,
+        &["tool_search".to_string(), "apply_patch".to_string()],
+    )
+    .expect("draft");
+    assert!(draft.contains("[tool_selection]\nallowed_tools = []"));
+    assert!(draft.contains("denied_tools = ["));
+    assert!(draft.contains("\"tool_search\""));
+    assert!(draft.contains("\"apply_patch\""));
+
+    let updated = update_user_agent_role_template_from_draft(
+        &config,
+        "audit-reviewer",
+        &created.path,
+        &draft,
+    )
+    .expect("updated");
+
+    assert_eq!(updated.name, "audit-reviewer");
+    let contents = fs::read_to_string(&created.path).expect("read template");
+    assert!(contents.contains("[tool_selection]\nallowed_tools = []"));
+    assert!(contents.contains("denied_tools = ["));
+    assert!(contents.contains("\"tool_search\""));
+    assert!(contents.contains("\"apply_patch\""));
+}
+
+#[tokio::test]
 async fn user_agent_role_template_update_tool_selection_rewrites_allowlist_and_denylist() {
     let (_home, config) = test_config().await;
     let initial = r#"name = "audit-reviewer"
