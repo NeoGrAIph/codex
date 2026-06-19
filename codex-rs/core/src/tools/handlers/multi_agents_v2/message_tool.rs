@@ -75,19 +75,16 @@ pub(crate) async fn handle_message_string_tool(
         .agent_control
         .ensure_agent_known(receiver_thread_id)
         .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
-    if mode == MessageDeliveryMode::TriggerTurn
-        && receiver_agent
-            .agent_path
-            .as_ref()
-            .is_some_and(AgentPath::is_root)
-    {
-        return Err(FunctionCallError::RespondToModel(
-            "Follow-up tasks can't target the root agent".to_string(),
-        ));
-    }
     let receiver_agent_path = receiver_agent.agent_path.clone().ok_or_else(|| {
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
+    if receiver_agent_path.is_root() {
+        let message = match mode {
+            MessageDeliveryMode::QueueOnly => "Agent messaging cannot target the root agent.",
+            MessageDeliveryMode::TriggerTurn => "Follow-up tasks can't target the root agent",
+        };
+        return Err(FunctionCallError::RespondToModel(message.to_string()));
+    }
     let resume_config = build_agent_resume_config(turn.as_ref())?;
     session
         .services
@@ -98,12 +95,17 @@ pub(crate) async fn handle_message_string_tool(
     let author = match turn.session_source.get_agent_path() {
         Some(agent_path) => agent_path,
         None if turn.session_source.is_non_root_agent() => {
-            return Err(FunctionCallError::RespondToModel(
-                "send_message requires a path-backed author".to_string(),
-            ));
+            let tool_name = match mode {
+                MessageDeliveryMode::QueueOnly => "send_message",
+                MessageDeliveryMode::TriggerTurn => "followup_task",
+            };
+            return Err(FunctionCallError::RespondToModel(format!(
+                "{tool_name} requires a path-backed author"
+            )));
         }
         None => AgentPath::root(),
     };
+    enforce_message_ownership(mode, &author, &receiver_agent_path)?;
     let communication =
         communication_from_tool_message(author, receiver_agent_path.clone(), message);
     let result = session
@@ -128,4 +130,39 @@ pub(crate) async fn handle_message_string_tool(
         .await;
 
     Ok(FunctionToolOutput::from_text(String::new(), Some(true)))
+}
+
+fn enforce_message_ownership(
+    mode: MessageDeliveryMode,
+    author: &AgentPath,
+    target: &AgentPath,
+) -> Result<(), FunctionCallError> {
+    if target == author {
+        let message = match mode {
+            MessageDeliveryMode::QueueOnly => "Cannot send an agent message to the current thread.",
+            MessageDeliveryMode::TriggerTurn => {
+                "Cannot send an agent follow-up to the current thread."
+            }
+        };
+        return Err(FunctionCallError::RespondToModel(message.to_string()));
+    }
+    if author.is_root() || agent_path_is_descendant_of(target, author) {
+        return Ok(());
+    }
+    let action = match mode {
+        MessageDeliveryMode::QueueOnly => "send_message",
+        MessageDeliveryMode::TriggerTurn => "followup_task",
+    };
+    Err(FunctionCallError::RespondToModel(format!(
+        "agent `{}` cannot {action} to `{}` because the target is outside its sub-agent tree",
+        author.as_str(),
+        target.as_str()
+    )))
+}
+
+fn agent_path_is_descendant_of(agent_path: &AgentPath, ancestor: &AgentPath) -> bool {
+    agent_path
+        .as_str()
+        .strip_prefix(ancestor.as_str())
+        .is_some_and(|suffix| suffix.starts_with('/'))
 }

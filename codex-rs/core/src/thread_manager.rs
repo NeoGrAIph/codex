@@ -914,7 +914,7 @@ impl ThreadManager {
                 self.agent_control().close_agent(target_thread_id).await,
             );
         }
-        stopped_thread_ids.sort_by_key(|thread_id| thread_id.to_string());
+        stopped_thread_ids.sort_by_key(std::string::ToString::to_string);
         stopped_thread_ids.dedup();
 
         Ok(AgentStopAllResult {
@@ -1532,14 +1532,17 @@ pub(crate) fn record_agent_stop_all_target_result(
                 });
                 return;
             };
-            failed.extend(candidates.iter().filter_map(|(thread_id, agent_path)| {
-                agent_path_is_same_or_descendant_of(agent_path, target_path).then(|| {
-                    AgentStopAllFailure {
+            failed.extend(
+                candidates
+                    .iter()
+                    .filter(|&(_thread_id, agent_path)| {
+                        agent_path_is_same_or_descendant_of(agent_path, target_path)
+                    })
+                    .map(|(thread_id, _agent_path)| AgentStopAllFailure {
                         thread_id: *thread_id,
                         message: message.clone(),
-                    }
-                })
-            }));
+                    }),
+            );
         }
     }
 }

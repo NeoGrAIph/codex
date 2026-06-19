@@ -9,12 +9,14 @@ expression: popup
 
   1. Create new template                 Edit a native TOML role draft for future sub-agent spawns
   2. Create template from current model  Seed a native TOML role draft with current model defaults
-  3. [built-in active] default           Default agent.
-  4. [built-in active] explorer          Use `explorer` for specific codebase questions.
-  5. [built-in active] reviewer          Use `reviewer` for focused quality, safety, and
+  3. Create template from model catalog  Choose model/provider/reasoning defaults from native
+                                         catalog
+  4. [built-in active] default           Default agent.
+  5. [built-in active] explorer          Use `explorer` for specific codebase questions.
+  6. [built-in active] reviewer          Use `reviewer` for focused quality, safety, and
                                          regression review.
-  6. [built-in active] worker            Use for execution and production work.
-› 7. Import markdown/frontmatter agents  Opens the existing /import flow. Markdown/frontmatter
+  7. [built-in active] worker            Use for execution and production work.
+› 8. Import markdown/frontmatter agents  Opens the existing /import flow. Markdown/frontmatter
                                          agents are compiled into native $CODEX_HOME/agents/*.toml
                                          files; Codex does not load markdown profiles at runtime.
 

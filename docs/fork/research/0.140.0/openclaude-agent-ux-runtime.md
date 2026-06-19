@@ -27,8 +27,8 @@ Codex already has separate native substrates that must remain authoritative:
 | Sub-agent lineage | `SessionSource::SubAgent(ThreadSpawn { parent_thread_id, agent_path, agent_nickname, agent_role, thread_note })` | app-server `Thread.source`, TUI `AgentNavigationState`, loaded thread backfill | detail now surfaces path/role/note/cwd/model provider when available; model/reasoning/service-tier and token anchors hydrate from native TUI session state / token notifications when available |
 | Runtime status | `AgentControl`, `AgentStatus`, app-server `ThreadStatus` and active flags | `/agent`, `/subagents`, `agent_status_feed` | derived status covers running/idle/waiting/error/closed; age semantics remain unresolved |
 | Activity preview | `ThreadItem`, `ThreadEventStore`, `agent_status_feed` bounded summaries | unified `/agent` picker detail and legacy status-feed reference | selected detail read model exists for bounded recent activity plus prompt/context/token/plan-progress anchors; richer progress beyond latest `TurnPlanUpdated` remains pending |
-| Lifecycle actions | MAv2 `spawn`, `followup_task`, `send_message`, `interrupt_agent`, `list_agents`, `wait_agent`, native `AgentControl::close_agent` | model tools, TUI thread selection, confirmed `interrupt one`, root/subtree-owner queue-only `send-message`, root/subtree-owner trigger-turn `follow-up` and confirmed `close one` | dismiss-only hiding, retry and stop-all remain deferred contracts |
-| Tool availability | `spec_plan`, `ToolRegistry`, MCP `ToolFilter`, `ToolsToml`, permission profiles | model-visible tool specs and dispatch registry | allowlist-only role tool selection, stale-id diagnostics, TOML draft authoring and discovered user-role allowlist editing are implemented; external app-server write/management API remains deferred |
+| Lifecycle actions | MAv2 `spawn`, `followup_task`, `send_message`, `interrupt_agent`, `list_agents`, `wait_agent`, native `AgentControl::close_agent` | model tools, TUI thread selection, confirmed `interrupt one`, root/subtree-owner queue-only `send-message`, root/subtree-owner trigger-turn `follow-up`, confirmed `close one`, dismiss-only hiding, retry and stop-all | Remaining gaps are UX refinements and future recovery affordances, not a second lifecycle state |
+| Tool availability | `spec_plan`, `ToolRegistry`, MCP `ToolFilter`, `ToolsToml`, permission profiles | model-visible tool specs and dispatch registry | typed allow/deny role tool selection, stale-id diagnostics, TOML draft authoring, discovered user-role editing and experimental app-server `agentRole/toolSelection/set` management are implemented through native role TOML/config reload paths |
 
 ## Capability findings
 
@@ -66,7 +66,7 @@ OpenClaude team layer uses its own team file, mailbox and pane backend. Codex sh
 
 ### Role-level tool selection
 
-OpenClaude `ToolSelector` is valuable UX, but Codex must not copy its markdown `tools`/`disallowedTools` profile fields. The first fork/140 runtime slice implements allowlist-only `[tool_selection] allowed_tools` through native `ConfigToml`/`Config` and enforces it in `spec_plan` before `tool_search`, Code Mode nested tools, hosted tools and `ToolRegistry` dispatch are built. Permission profiles remain a separate security boundary and must not be widened by tool selection.
+OpenClaude `ToolSelector` is valuable UX, but Codex must not copy its markdown `tools`/`disallowedTools` profile fields. The fork/140 runtime slice implements native `[tool_selection] allowed_tools` and `denied_tools` through `ConfigToml`/`Config`, enforces deny-after-allow in `spec_plan` before `tool_search`, Code Mode nested tools, hosted tools and `ToolRegistry` dispatch are built, and exposes experimental `agentRole/toolSelection/set` for discovered user role TOML management. Permission profiles remain a separate security boundary and must not be widened by tool selection.
 
 ## Maintained documents
 
@@ -80,5 +80,5 @@ OpenClaude `ToolSelector` is valuable UX, but Codex must not copy its markdown `
 
 - Whether current-session role reload is required for the wizard or the contract remains “new sessions load new roles”.
 - Whether app-server protocol needs top-level model/token/detail anchors, or TUI should keep assembling workbench detail from existing `Thread.source`, thread metadata and local config.
-- Whether role-level tool selection should stay allowlist-only or later add denylist/MCP bucket authoring with deterministic merge and conflict rules.
+- Whether future role-level tool selection UX should add MCP bucket authoring or OpenClaude alias mapping beyond the current native allow/deny TOML contract.
 - Whether team/status layer remains observational in v1 or grows root-owned bulk lifecycle actions after separate destructive-action contracts.

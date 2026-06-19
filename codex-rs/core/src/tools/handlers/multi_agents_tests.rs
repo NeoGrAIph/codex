@@ -3538,7 +3538,7 @@ async fn multi_agent_v2_spawn_rejects_zero_fork_turns() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
+async fn multi_agent_v2_send_message_rejects_root_target_from_child() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let mut config = (*turn.config).clone();
@@ -3594,7 +3594,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         tool_selection: None,
     });
 
-    SendMessageHandlerV2
+    let err = SendMessageHandlerV2
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -3605,20 +3605,17 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
             })),
         ))
         .await
-        .expect("send_message should accept the root agent path");
+        .err()
+        .expect("send_message should reject the root agent path");
 
-    assert!(manager.captured_ops().iter().any(|(id, op)| {
-        *id == root.thread_id
-            && matches!(
-                op,
-                Op::InterAgentCommunication { communication }
-                    if communication.author == child_path
-                        && communication.recipient == AgentPath::root()
-                        && communication.other_recipients.is_empty()
-                        && communication.content.is_empty()
-                        && communication.encrypted_content.as_deref() == Some("encrypted-done")
-                        && !communication.trigger_turn
-            )
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "Agent messaging cannot target the root agent.".to_string()
+        )
+    );
+    assert!(!manager.captured_ops().iter().any(|(id, op)| {
+        *id == root.thread_id && matches!(op, Op::InterAgentCommunication { .. })
     }));
 }
 
@@ -3711,6 +3708,252 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
             .iter()
             .any(|op| matches!(op, Op::InterAgentCommunication { .. }))
     );
+}
+
+async fn path_backed_mav2_author_with_descendant_and_sibling() -> (
+    crate::session::session::Session,
+    TurnContext,
+    ThreadManager,
+    ThreadId,
+    ThreadId,
+    AgentPath,
+    AgentPath,
+) {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+
+    let author_path = AgentPath::try_from("/root/worker").expect("author path");
+    let descendant_path = AgentPath::try_from("/root/worker/child").expect("descendant path");
+    let sibling_path = AgentPath::try_from("/root/sibling").expect("sibling path");
+    let author_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect this repo".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(author_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: None,
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("author spawn should succeed")
+        .thread_id;
+    let descendant_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect child".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: author_thread_id,
+                depth: 2,
+                agent_path: Some(descendant_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: None,
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("descendant spawn should succeed")
+        .thread_id;
+    let sibling_thread_id = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            (*turn.config).clone(),
+            vec![UserInput::Text {
+                text: "inspect sibling".to_string(),
+                text_elements: Vec::new(),
+            }]
+            .into(),
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(sibling_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+                thread_note: None,
+                action_policy: None,
+                initial_task: None,
+                tool_selection: None,
+            })),
+            crate::agent::control::SpawnAgentOptions::default(),
+        )
+        .await
+        .expect("sibling spawn should succeed")
+        .thread_id;
+
+    session.thread_id = author_thread_id;
+    turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(author_path),
+        agent_nickname: None,
+        agent_role: None,
+        thread_note: None,
+        action_policy: None,
+        initial_task: None,
+        tool_selection: None,
+    });
+
+    (
+        session,
+        turn,
+        manager,
+        descendant_thread_id,
+        sibling_thread_id,
+        descendant_path,
+        sibling_path,
+    )
+}
+
+#[tokio::test]
+async fn multi_agent_v2_send_message_allows_descendant_target_from_child() {
+    let (
+        session,
+        turn,
+        manager,
+        descendant_thread_id,
+        _sibling_thread_id,
+        descendant_path,
+        _sibling_path,
+    ) = path_backed_mav2_author_with_descendant_and_sibling().await;
+
+    SendMessageHandlerV2
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "send_message",
+            function_payload(json!({
+                "target": descendant_path.to_string(),
+                "message": "descendant-message"
+            })),
+        ))
+        .await
+        .expect("send_message should allow descendant target");
+
+    assert!(manager.captured_ops().iter().any(|(id, op)| {
+        *id == descendant_thread_id
+            && matches!(
+                op,
+                Op::InterAgentCommunication { communication }
+                    if communication.author.as_str() == "/root/worker"
+                        && communication.recipient == descendant_path
+                        && communication.other_recipients.is_empty()
+                        && communication.content.is_empty()
+                        && communication.encrypted_content.as_deref() == Some("descendant-message")
+                        && !communication.trigger_turn
+            )
+    }));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_send_message_rejects_sibling_target_from_child() {
+    let (
+        session,
+        turn,
+        manager,
+        _descendant_thread_id,
+        sibling_thread_id,
+        _descendant_path,
+        sibling_path,
+    ) = path_backed_mav2_author_with_descendant_and_sibling().await;
+
+    let err = SendMessageHandlerV2
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "send_message",
+            function_payload(json!({
+                "target": sibling_path.to_string(),
+                "message": "sibling-message"
+            })),
+        ))
+        .await
+        .err()
+        .expect("send_message should reject sibling target");
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "agent `/root/worker` cannot send_message to `/root/sibling` because the target is outside its sub-agent tree"
+                .to_string()
+        )
+    );
+    assert!(!manager.captured_ops().iter().any(|(id, op)| {
+        *id == sibling_thread_id && matches!(op, Op::InterAgentCommunication { .. })
+    }));
+}
+
+#[tokio::test]
+async fn multi_agent_v2_followup_task_rejects_sibling_target_from_child() {
+    let (
+        session,
+        turn,
+        manager,
+        _descendant_thread_id,
+        sibling_thread_id,
+        _descendant_path,
+        sibling_path,
+    ) = path_backed_mav2_author_with_descendant_and_sibling().await;
+
+    let err = FollowupTaskHandlerV2
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "followup_task",
+            function_payload(json!({
+                "target": sibling_path.to_string(),
+                "message": "sibling-followup"
+            })),
+        ))
+        .await
+        .err()
+        .expect("followup_task should reject sibling target");
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "agent `/root/worker` cannot followup_task to `/root/sibling` because the target is outside its sub-agent tree"
+                .to_string()
+        )
+    );
+    assert!(!manager.captured_ops().iter().any(|(id, op)| {
+        *id == sibling_thread_id && matches!(op, Op::InterAgentCommunication { .. })
+    }));
 }
 
 #[tokio::test]
@@ -4231,7 +4474,9 @@ async fn multi_agent_v2_followup_task_rejects_pathless_non_root_author() {
         .expect("followup_task should reject pathless non-root author");
     assert_eq!(
         err,
-        FunctionCallError::RespondToModel("send_message requires a path-backed author".to_string())
+        FunctionCallError::RespondToModel(
+            "followup_task requires a path-backed author".to_string()
+        )
     );
     assert!(!manager.captured_ops().iter().any(|(id, op)| {
         *id == target_thread_id && matches!(op, Op::InterAgentCommunication { .. })
