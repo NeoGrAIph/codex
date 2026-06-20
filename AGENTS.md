@@ -81,6 +81,7 @@ Fork-specific документация в этом репозитории вед
 - Use `scripts/codex-fork-build.sh` from the repository root to build the fork release binary at `codex-rs/target/release/codex` and record the build hash.
 - Use `scripts/codex-fork-install-binary.sh` after a successful build to актуализировать the executable `codex` binary resolved from `PATH` with the binary built from this fork.
 - Use `scripts/codex-fork-install-binary.sh --dry-run` to verify source and target paths without changing files.
+- Use `scripts/codex-fork-sync-runtime.sh` to synchronize the managed app-server daemon binary at `$CODEX_HOME/packages/standalone/current/codex` with this fork and restart only the managed daemon when its running executable is stale.
 - Keep build and binary replacement as explicit separate steps; do not silently replace the system `codex` binary as part of ordinary tests or feature implementation.
 
 ### Fork Change Integration Agreement
