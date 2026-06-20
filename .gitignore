@@ -80,6 +80,9 @@ Icon?
 .yarn/
 yarn.lock
 
+# Fork-local build/install runtime artifacts
+scripts/.codex-build-hash
+
 # release
 package.json-e
 session.ts-e

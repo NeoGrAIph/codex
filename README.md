@@ -7,6 +7,8 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 </br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
 </br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
 
+> This is an independent public fork maintained by `NeoGrAIph`. It is not an official OpenAI release channel and does not imply endorsement, sponsorship, or approval by OpenAI.
+
 ---
 
 ## Quickstart
@@ -60,6 +62,20 @@ Each archive contains a single entry with the platform baked into the name (e.g.
 Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
 
 You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
+
+## Maintainer role
+
+`NeoGrAIph` is the primary maintainer of this fork.
+
+Maintainer responsibilities for this repository include:
+
+* keeping the fork reviewable and aligned with upstream;
+* maintaining local branches for focused experiments;
+* avoiding unrelated or noisy changes;
+* validating proposed changes before publishing them;
+* documenting maintenance decisions;
+* reviewing changes for regressions and security impact;
+* ensuring that any security review is limited to authorized repositories, branches, and codebases.
 
 ## Docs
 
