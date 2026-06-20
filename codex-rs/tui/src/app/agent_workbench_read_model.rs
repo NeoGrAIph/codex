@@ -38,6 +38,10 @@ pub(super) struct AgentWorkbenchRow {
     pub(super) selected_description: String,
     pub(super) is_current: bool,
     pub(super) search_value: String,
+    pub(super) prompt_context: Vec<String>,
+    pub(super) recent_activity: Vec<String>,
+    pub(super) token_usage_summary: Option<String>,
+    pub(super) plan_progress_summary: Option<String>,
 }
 
 impl AgentWorkbenchReadModel {
@@ -84,6 +88,8 @@ impl AgentWorkbenchReadModel {
                     .plan_progress_by_thread_id
                     .get(&thread_id)
                     .map(String::as_str);
+                let prompt_context_vec = prompt_context.to_vec();
+                let recent_activity_vec = recent_activity.to_vec();
                 AgentWorkbenchRow {
                     thread_id,
                     name: name.clone(),
@@ -103,6 +109,10 @@ impl AgentWorkbenchReadModel {
                     ),
                     is_current,
                     search_value: format!("{name} {uuid}"),
+                    prompt_context: prompt_context_vec,
+                    recent_activity: recent_activity_vec,
+                    token_usage_summary: token_usage_summary.map(str::to_string),
+                    plan_progress_summary: plan_progress_summary.map(str::to_string),
                 }
             })
             .collect();

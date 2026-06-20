@@ -216,6 +216,22 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn open_subagent_workbench(
+        &mut self,
+        rows: Vec<crate::bottom_pane::SubagentWorkbenchRow>,
+        initial_selected_idx: Option<usize>,
+    ) {
+        let view = crate::bottom_pane::SubagentWorkbenchView::new(
+            rows,
+            initial_selected_idx,
+            self.app_event_tx.clone(),
+            self.bottom_pane.list_keymap(),
+        );
+        self.bottom_pane.show_view(Box::new(view));
+        self.refresh_plan_mode_nudge();
+        self.request_redraw();
+    }
+
     pub(crate) fn no_modal_or_popup_active(&self) -> bool {
         self.bottom_pane.no_modal_or_popup_active()
     }

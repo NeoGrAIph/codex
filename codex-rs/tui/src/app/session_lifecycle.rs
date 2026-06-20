@@ -7,7 +7,10 @@
 use super::*;
 
 impl App {
-    pub(crate) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
+    async fn prepare_agent_workbench_read_model(
+        &mut self,
+        app_server: &mut AppServerSession,
+    ) -> Option<AgentWorkbenchReadModel> {
         self.backfill_loaded_subagent_threads(app_server).await;
         // V2 subagents are identified by canonical paths observed from activity events or loaded
         // thread metadata. Prefer local buffered turn state for liveness, and fall back to
@@ -62,13 +65,13 @@ impl App {
             .has_non_primary_thread(self.primary_thread_id);
         if !self.config.features.enabled(Feature::Collab) && !has_non_primary_agent_thread {
             self.chat_widget.open_multi_agent_enable_prompt();
-            return;
+            return None;
         }
 
         if self.agent_navigation.is_empty() {
             self.chat_widget
                 .add_info_message("No agents available yet.".to_string(), /*hint*/ None);
-            return;
+            return None;
         }
 
         let ordered_thread_ids = self
@@ -112,6 +115,30 @@ impl App {
                 plan_progress_by_thread_id: &plan_progress_by_thread_id,
             },
         );
+        Some(read_model)
+    }
+
+    pub(crate) async fn open_subagent_workbench(&mut self, app_server: &mut AppServerSession) {
+        let Some(read_model) = self.prepare_agent_workbench_read_model(app_server).await else {
+            return;
+        };
+        let initial_selected_idx = read_model.initial_selected_idx;
+        let rows = self.subagent_workbench_rows(read_model);
+        if rows.is_empty() {
+            self.chat_widget.add_info_message(
+                "No visible agents available.".to_string(),
+                Some("Dismissed agents remain available through native thread history and resume paths.".to_string()),
+            );
+            return;
+        }
+        self.chat_widget
+            .open_subagent_workbench(rows, initial_selected_idx);
+    }
+
+    pub(crate) async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
+        let Some(read_model) = self.prepare_agent_workbench_read_model(app_server).await else {
+            return;
+        };
         let AgentWorkbenchReadModel {
             summary_line,
             rows,
@@ -381,6 +408,119 @@ impl App {
             initial_selected_idx,
             ..Default::default()
         });
+    }
+
+    fn subagent_workbench_rows(
+        &self,
+        read_model: AgentWorkbenchReadModel,
+    ) -> Vec<SubagentWorkbenchRow> {
+        read_model
+            .rows
+            .into_iter()
+            .filter_map(|row| {
+                let entry = self.agent_navigation.get(&row.thread_id)?;
+                let request = row
+                    .prompt_context
+                    .iter()
+                    .find_map(|context| context.strip_prefix("Initial request: "))
+                    .or(entry.prompt_preview.as_deref())
+                    .map(bounded_saw_text);
+                let workdir = entry
+                    .cwd
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|cwd| !cwd.is_empty())
+                    .map(|cwd| {
+                        crate::status::format_directory_display(std::path::Path::new(cwd), Some(48))
+                    });
+                let current_activity = row
+                    .recent_activity
+                    .last()
+                    .map(|activity| bounded_saw_text(activity));
+                let last_tool = current_activity
+                    .as_deref()
+                    .and_then(last_tool_from_activity);
+                Some(SubagentWorkbenchRow {
+                    thread_id: row.thread_id,
+                    label: row.name,
+                    status: entry.status.label().to_string(),
+                    role: entry.agent_role.clone(),
+                    model: entry.model.clone(),
+                    reasoning: entry.reasoning_effort.clone(),
+                    service_tier: entry.service_tier.clone(),
+                    spawned: entry.created_at.map(format_saw_timestamp),
+                    context: context_left_summary(row.token_usage_summary.as_deref()),
+                    workdir,
+                    note: entry.thread_note.clone(),
+                    last_tool,
+                    current_activity,
+                    plan: row
+                        .plan_progress_summary
+                        .map(|plan| bounded_saw_text(&plan)),
+                    request,
+                    is_current: row.is_current,
+                    actions: self.subagent_workbench_actions(row.thread_id, row.is_current),
+                })
+            })
+            .collect()
+    }
+
+    fn subagent_workbench_actions(
+        &self,
+        thread_id: ThreadId,
+        is_current: bool,
+    ) -> Vec<SubagentWorkbenchAction> {
+        let mut actions = vec![SubagentWorkbenchAction {
+            label: if is_current {
+                "Stay connected".to_string()
+            } else {
+                "Connect".to_string()
+            },
+            kind: SubagentWorkbenchActionKind::Connect { thread_id },
+        }];
+        if self.agent_picker_message_preflight(thread_id).is_ok() {
+            actions.push(SubagentWorkbenchAction {
+                label: "Send message".to_string(),
+                kind: SubagentWorkbenchActionKind::Message { thread_id },
+            });
+        }
+        if self.agent_picker_followup_preflight(thread_id).is_ok() {
+            actions.push(SubagentWorkbenchAction {
+                label: "Follow up".to_string(),
+                kind: SubagentWorkbenchActionKind::FollowUp { thread_id },
+            });
+        }
+        if self.agent_picker_interrupt_preflight(thread_id).is_ok() {
+            actions.push(SubagentWorkbenchAction {
+                label: "Interrupt".to_string(),
+                kind: SubagentWorkbenchActionKind::Interrupt { thread_id },
+            });
+        }
+        if self.agent_picker_close_preflight(thread_id).is_ok() {
+            actions.push(SubagentWorkbenchAction {
+                label: "Close".to_string(),
+                kind: SubagentWorkbenchActionKind::Close { thread_id },
+            });
+        }
+        if self.agent_picker_retry_preflight(thread_id).is_ok() {
+            actions.push(SubagentWorkbenchAction {
+                label: "Retry".to_string(),
+                kind: SubagentWorkbenchActionKind::Retry { thread_id },
+            });
+        }
+        if self.agent_picker_dismiss_preflight(thread_id).is_ok() {
+            actions.push(SubagentWorkbenchAction {
+                label: "Dismiss".to_string(),
+                kind: SubagentWorkbenchActionKind::Dismiss { thread_id },
+            });
+        }
+        if is_current && self.agent_picker_stop_all_targets().is_ok() {
+            actions.push(SubagentWorkbenchAction {
+                label: "Stop all".to_string(),
+                kind: SubagentWorkbenchActionKind::StopAll,
+            });
+        }
+        actions
     }
 
     pub(super) fn open_agent_message_prompt(&mut self, thread_id: ThreadId) {
@@ -2271,6 +2411,56 @@ fn collab_agent_state_status_label(state: &codex_app_server_protocol::CollabAgen
         codex_app_server_protocol::CollabAgentStatus::Shutdown => "shutdown".to_string(),
         codex_app_server_protocol::CollabAgentStatus::NotFound => "not found".to_string(),
     }
+}
+
+fn bounded_saw_text(value: &str) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    crate::text_formatting::truncate_text(compact.trim(), /*max_graphemes*/ 180)
+}
+
+fn last_tool_from_activity(activity: &str) -> Option<String> {
+    if let Some(command) = activity.strip_prefix("$ ") {
+        return command.split_whitespace().next().map(|command| {
+            crate::text_formatting::truncate_text(command, /*max_graphemes*/ 32)
+        });
+    }
+    let (prefix, rest) = activity.split_once(' ')?;
+    match prefix {
+        "Tool" | "MCP" => rest
+            .split_whitespace()
+            .next()
+            .map(|tool| crate::text_formatting::truncate_text(tool, /*max_graphemes*/ 32)),
+        _ => None,
+    }
+}
+
+fn context_left_summary(summary: Option<&str>) -> Option<String> {
+    let summary = summary?;
+    let context = summary.split("context ").nth(1)?;
+    let context = context.split(" · ").next().unwrap_or(context).trim();
+    let (used, limit) = context.split_once('/')?;
+    let used = parse_token_count(used)?;
+    let limit = parse_token_count(limit)?;
+    let left = limit.saturating_sub(used);
+    Some(format!(
+        "{} tokens",
+        crate::status::format_tokens_compact(left as i64)
+    ))
+}
+
+fn parse_token_count(value: &str) -> Option<u64> {
+    value
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
+fn format_saw_timestamp(timestamp_seconds: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp_seconds, /*nanos*/ 0)
+        .map(|timestamp| timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| timestamp_seconds.to_string())
 }
 
 #[cfg(test)]

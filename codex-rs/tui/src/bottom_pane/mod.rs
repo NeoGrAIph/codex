@@ -59,6 +59,7 @@ mod request_user_input;
 mod status_line_setup;
 mod status_line_style;
 mod status_surface_preview;
+mod subagent_workbench_view;
 mod title_setup;
 pub(crate) use action_required_title::ACTION_REQUIRED_PREVIEW_PREFIX;
 pub(crate) use action_required_title::build_action_required_title_text;
@@ -135,6 +136,10 @@ pub(crate) use status_line_setup::StatusLineItem;
 pub(crate) use status_line_setup::StatusLineSetupView;
 pub(crate) use status_surface_preview::StatusSurfacePreviewData;
 pub(crate) use status_surface_preview::StatusSurfacePreviewItem;
+pub(crate) use subagent_workbench_view::SubagentWorkbenchAction;
+pub(crate) use subagent_workbench_view::SubagentWorkbenchActionKind;
+pub(crate) use subagent_workbench_view::SubagentWorkbenchRow;
+pub(crate) use subagent_workbench_view::SubagentWorkbenchView;
 pub(crate) use title_setup::TerminalTitleItem;
 pub(crate) use title_setup::TerminalTitleSetupView;
 #[cfg(test)]

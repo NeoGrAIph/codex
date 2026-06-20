@@ -125,10 +125,10 @@ impl App {
         event: TuiEvent,
     ) -> Result<bool> {
         if let TuiEvent::Key(key_event) = event
-            && self.should_cycle_transcript_shortcut_to_agent_picker(key_event)
+            && self.should_cycle_transcript_shortcut_to_agent_window(key_event)
         {
             self.close_transcript_overlay(tui);
-            self.open_agent_picker(app_server).await;
+            self.open_subagent_workbench(app_server).await;
             return Ok(true);
         }
 
@@ -187,7 +187,7 @@ impl App {
         }
     }
 
-    pub(crate) fn should_cycle_transcript_shortcut_to_agent_picker(
+    pub(crate) fn should_cycle_transcript_shortcut_to_agent_window(
         &self,
         key_event: KeyEvent,
     ) -> bool {

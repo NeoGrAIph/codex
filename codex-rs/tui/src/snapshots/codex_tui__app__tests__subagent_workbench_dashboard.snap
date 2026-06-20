@@ -1,0 +1,26 @@
+---
+source: tui/src/app/tests.rs
+expression: rendered.clone()
+---
+    Main [default]  • Completed  Role: agent  Model: —  Reasoning: —  Spawned: —
+    Context left: —  |  Workdir: —
+    Last tool: —                    |  Current: Sent input to an agent
+  ▶ Robie [explorer]  • Working  Role: explorer  Model: gpt-5.5  Reasoning: high  Spawned: 2026-05-03 03:06:40 UTC
+    Context left: 950K tokens  |  Workdir: /workspace/codex-rs
+    Last tool: —                    |  Current: Checked selected detail activity.
+    Plan:
+      Note: parser anchors
+      [>] 1/3 complete · now: Verify workbench anchors
+
+  Actions for Robie [explorer]:
+    Stay connected
+
+  Inspect:
+    Thread: 00000000-0000-0000-0000-000000000102
+    Note: parser anchors
+    Directory: /workspace/codex-rs
+    Service tier: default
+    Request:
+      Map parser entry points. Report evidence.
+
+↑/↓ agents/actions · → actions · ← agents · enter select · esc close

@@ -2359,7 +2359,7 @@ async fn repeated_ctrl_t_cycles_from_native_transcript_to_agent_window() {
         app.transcript_shortcut_action(ctrl_t),
         Some(TranscriptShortcutAction::OpenTranscript)
     );
-    assert!(!app.should_cycle_transcript_shortcut_to_agent_picker(ctrl_t));
+    assert!(!app.should_cycle_transcript_shortcut_to_agent_window(ctrl_t));
 
     app.overlay = Some(Overlay::new_transcript(
         Vec::new(),
@@ -2370,13 +2370,13 @@ async fn repeated_ctrl_t_cycles_from_native_transcript_to_agent_window() {
         app.transcript_shortcut_action(ctrl_t),
         Some(TranscriptShortcutAction::OpenAgentWindow)
     );
-    assert!(app.should_cycle_transcript_shortcut_to_agent_picker(ctrl_t));
+    assert!(app.should_cycle_transcript_shortcut_to_agent_window(ctrl_t));
     assert_eq!(
         app.transcript_shortcut_action(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE)),
         None
     );
     assert!(
-        !app.should_cycle_transcript_shortcut_to_agent_picker(KeyEvent::new(
+        !app.should_cycle_transcript_shortcut_to_agent_window(KeyEvent::new(
             KeyCode::Char('t'),
             KeyModifiers::NONE
         ))
@@ -2563,6 +2563,46 @@ async fn agent_picker_workbench_snapshot() -> Result<()> {
 
     let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 100);
     assert_app_snapshot!("agent_picker_workbench", rendered.clone());
+    assert!(!rendered.contains("secret command output"));
+    assert!(!rendered.contains("hidden raw reasoning"));
+    assert!(!rendered.contains("raw parent prompt"));
+    assert!(!rendered.contains("hidden explanation"));
+
+    app.agent_navigation.update_thread_detail(
+        agent_thread_id,
+        AgentPickerThreadDetail {
+            agent_path: Some("/root/worker".to_string()),
+            prompt_preview: Some(
+                "Inspect the parser state\nand report concise evidence.".to_string(),
+            ),
+            thread_note: Some("parser anchors".to_string()),
+            agent_hidden: false,
+            retry_available: Some(true),
+            cwd: Some("/workspace/codex-rs".to_string()),
+            model_provider: Some("openai".to_string()),
+            created_at: Some(1_777_777_600),
+            updated_at: None,
+            tool_selection_summary: None,
+            action_policy_summary: None,
+        },
+    );
+    app.agent_navigation.update_thread_session_detail(
+        agent_thread_id,
+        Some("openai".to_string()),
+        Some("gpt-5.5".to_string()),
+        Some("high".to_string()),
+        Some("default".to_string()),
+    );
+
+    Box::pin(app.open_subagent_workbench(&mut app_server)).await;
+
+    let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 120);
+    assert_app_snapshot!("subagent_workbench_dashboard", rendered.clone());
+    assert!(rendered.contains("Role: explorer"));
+    assert!(rendered.contains("Model: gpt-5.5"));
+    assert!(rendered.contains("Actions for Robie [explorer]:"));
+    assert!(rendered.contains("Inspect:"));
+    assert!(!rendered.contains("› 1."));
     assert!(!rendered.contains("secret command output"));
     assert!(!rendered.contains("hidden raw reasoning"));
     assert!(!rendered.contains("raw parent prompt"));
