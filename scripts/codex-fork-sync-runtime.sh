@@ -12,6 +12,8 @@ fi
 SOURCE="$REPO/codex-rs/target/release/codex"
 DRY_RUN=0
 FORCE=0
+TERM_TIMEOUT_SECONDS=10
+KILL_TIMEOUT_SECONDS=5
 
 usage() {
   cat <<EOF
@@ -102,6 +104,15 @@ daemon_status() {
   python3 -c 'import json, sys; print(json.load(sys.stdin).get("status", "unknown"))' <<<"$output" 2>/dev/null || echo "unknown"
 }
 
+daemon_backend() {
+  local output
+  if ! output="$("$SOURCE" app-server daemon version 2>/dev/null)"; then
+    echo ""
+    return 0
+  fi
+  python3 -c 'import json, sys; print(json.load(sys.stdin).get("backend") or "")' <<<"$output" 2>/dev/null || echo ""
+}
+
 daemon_pid() {
   if [ -f "$PID_FILE" ]; then
     python3 - "$PID_FILE" <<'PY' 2>/dev/null || sed -n '1p' "$PID_FILE" 2>/dev/null || true
@@ -189,6 +200,121 @@ running_daemon_needs_restart() {
   return 1
 }
 
+socket_owner_pids() {
+  local socket_path="$1"
+  python3 - "$socket_path" <<'PY' 2>/dev/null || true
+import os
+import sys
+
+socket_path = os.path.realpath(sys.argv[1])
+inodes = set()
+
+try:
+    with open("/proc/net/unix", encoding="utf-8", errors="replace") as proc_net_unix:
+        next(proc_net_unix, None)
+        for line in proc_net_unix:
+            parts = line.split()
+            if len(parts) < 8:
+                continue
+            path = parts[-1]
+            if path and os.path.realpath(path) == socket_path:
+                inodes.add(parts[6])
+except OSError:
+    pass
+
+if not inodes:
+    raise SystemExit
+
+pids = set()
+for proc_name in os.listdir("/proc"):
+    if not proc_name.isdigit():
+        continue
+    fd_dir = os.path.join("/proc", proc_name, "fd")
+    try:
+        fd_names = os.listdir(fd_dir)
+    except OSError:
+        continue
+    for fd_name in fd_names:
+        try:
+            target = os.readlink(os.path.join(fd_dir, fd_name))
+        except OSError:
+            continue
+        if target.startswith("socket:[") and target[8:-1] in inodes:
+            pids.add(int(proc_name))
+            break
+
+for pid in sorted(pids):
+    print(pid)
+PY
+}
+
+probe_app_server_socket() {
+  "$SOURCE" app-server daemon version >/dev/null 2>&1
+}
+
+wait_for_socket_to_clear() {
+  local deadline="$1"
+  local now
+
+  while probe_app_server_socket; do
+    now="$(date +%s)"
+    if [ "$now" -ge "$deadline" ]; then
+      return 1
+    fi
+    sleep 0.2
+  done
+
+  return 0
+}
+
+terminate_pids() {
+  local signal="$1"
+  shift
+  local pid
+
+  for pid in "$@"; do
+    if is_pid_running "$pid"; then
+      kill "-$signal" "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
+hard_stop_unmanaged_app_server() {
+  local pids deadline
+
+  mapfile -t pids < <(socket_owner_pids "$CODEX_HOME/app-server-control/app-server-control.sock")
+  if [ "${#pids[@]}" -eq 0 ]; then
+    log "unmanaged app-server socket is reachable but no socket owner pid was found"
+    return 1
+  fi
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "would terminate unmanaged app-server socket owner pid(s): ${pids[*]}"
+    return 0
+  fi
+
+  log "terminating unmanaged app-server socket owner pid(s): ${pids[*]}"
+  terminate_pids TERM "${pids[@]}"
+  deadline="$(($(date +%s) + TERM_TIMEOUT_SECONDS))"
+  if wait_for_socket_to_clear "$deadline"; then
+    return 0
+  fi
+
+  mapfile -t pids < <(socket_owner_pids "$CODEX_HOME/app-server-control/app-server-control.sock")
+  if [ "${#pids[@]}" -gt 0 ]; then
+    log "force killing unmanaged app-server socket owner pid(s): ${pids[*]}"
+    terminate_pids KILL "${pids[@]}"
+  fi
+
+  deadline="$(($(date +%s) + KILL_TIMEOUT_SECONDS))"
+  if ! wait_for_socket_to_clear "$deadline"; then
+    log "failed to clear unmanaged app-server socket after TERM and KILL"
+    return 1
+  fi
+
+  return 0
+}
+
 if [ ! -e "$MANAGED_CODEX" ]; then
   log "managed standalone binary is missing; skipping daemon runtime sync: $MANAGED_CODEX"
   exit 0
@@ -208,7 +334,9 @@ if can_fast_exit "$source_state" "$managed_state" "$pid"; then
 fi
 
 status="$(daemon_status)"
+backend="$(daemon_backend)"
 copied=0
+takeover=0
 
 if [ "$FORCE" -eq 1 ] || ! cmp -s "$SOURCE" "$MANAGED_CODEX"; then
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -229,14 +357,34 @@ if [ "$FORCE" -eq 1 ] || ! cmp -s "$SOURCE" "$MANAGED_CODEX"; then
   fi
 fi
 
+if [ "$status" = "running" ] && [ "$backend" != "pid" ]; then
+  hard_stop_unmanaged_app_server
+  takeover=1
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "would restart managed app-server daemon after hard-stopping unmanaged app-server"
+    exit 0
+  fi
+  status="$(daemon_status)"
+  backend="$(daemon_backend)"
+fi
+
 if [ "$status" != "running" ]; then
   if [ "$DRY_RUN" -eq 1 ]; then
-    log "would start managed app-server daemon"
+    if [ "$takeover" -eq 1 ]; then
+      log "would restart managed app-server daemon after hard-stopping unmanaged app-server"
+    else
+      log "would start managed app-server daemon"
+    fi
     exit 0
   fi
 
-  log "starting managed app-server daemon"
-  "$SOURCE" app-server daemon start >&2
+  if [ "$takeover" -eq 1 ]; then
+    log "restarting managed app-server daemon after hard-stopping unmanaged app-server"
+    "$SOURCE" app-server daemon restart >&2
+  else
+    log "starting managed app-server daemon"
+    "$SOURCE" app-server daemon start >&2
+  fi
   write_state "$source_state" "$(file_stamp "$MANAGED_CODEX")" "$(daemon_pid)"
   exit 0
 fi
