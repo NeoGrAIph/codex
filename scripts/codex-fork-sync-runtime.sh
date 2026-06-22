@@ -12,6 +12,8 @@ fi
 SOURCE="$REPO/codex-rs/target/release/codex"
 DRY_RUN=0
 FORCE=0
+TERM_TIMEOUT_SECONDS=10
+KILL_TIMEOUT_SECONDS=5
 
 usage() {
   cat <<EOF
@@ -22,8 +24,9 @@ Synchronize the managed app-server daemon runtime with the fork release binary.
 Defaults:
   --source     $SOURCE
 
-This only manages the local app-server daemon. It does not stop active TUI
-sessions, resume sessions, npm vendor binaries, or unrelated Codex processes.
+This updates the managed local app-server binary and stops already running
+app-server processes. It does not explicitly restart the daemon; the next client
+request should start it through the normal app-server path.
 EOF
 }
 
@@ -71,6 +74,8 @@ fi
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 MANAGED_CODEX="$CODEX_HOME/packages/standalone/current/codex"
 MANAGED_DIR="$(dirname -- "$MANAGED_CODEX")"
+NPM_CODEX="$HOME/.nvm/versions/node/v22.22.0/bin/codex"
+VENDOR_CODEX="$HOME/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"
 PID_FILE="$CODEX_HOME/app-server-daemon/app-server.pid"
 STATE_FILE="$CODEX_HOME/app-server-daemon/codex-fork-runtime-sync.env"
 BUILD_HASH_FILE="$REPO/scripts/.codex-build-hash"
@@ -81,6 +86,18 @@ log() {
 
 file_stamp() {
   stat -c '%s:%Y' "$1"
+}
+
+managed_stamp() {
+  if [ -f "$MANAGED_CODEX" ]; then
+    file_stamp "$MANAGED_CODEX"
+  else
+    printf 'missing\n'
+  fi
+}
+
+runtime_targets() {
+  printf '%s\n' "$MANAGED_CODEX" "$NPM_CODEX" "$VENDOR_CODEX"
 }
 
 source_stamp() {
@@ -100,6 +117,15 @@ daemon_status() {
     return 0
   fi
   python3 -c 'import json, sys; print(json.load(sys.stdin).get("status", "unknown"))' <<<"$output" 2>/dev/null || echo "unknown"
+}
+
+daemon_backend() {
+  local output
+  if ! output="$("$SOURCE" app-server daemon version 2>/dev/null)"; then
+    echo ""
+    return 0
+  fi
+  python3 -c 'import json, sys; print(json.load(sys.stdin).get("backend") or "")' <<<"$output" 2>/dev/null || echo ""
 }
 
 daemon_pid() {
@@ -162,6 +188,7 @@ can_fast_exit() {
   [ "$(state_value SOURCE_STAMP)" = "$source_state" ] || return 1
   [ "$(state_value MANAGED_STAMP)" = "$managed_state" ] || return 1
   [ "$(state_value DAEMON_PID)" = "$pid" ] || return 1
+  all_runtime_targets_current || return 1
   return 0
 }
 
@@ -189,18 +216,182 @@ running_daemon_needs_restart() {
   return 1
 }
 
-if [ ! -e "$MANAGED_CODEX" ]; then
-  log "managed standalone binary is missing; skipping daemon runtime sync: $MANAGED_CODEX"
-  exit 0
-fi
+socket_owner_pids() {
+  local socket_path="$1"
+  python3 - "$socket_path" <<'PY' 2>/dev/null || true
+import os
+import sys
 
-if [ ! -d "$MANAGED_DIR" ]; then
-  log "managed standalone directory is missing; skipping daemon runtime sync: $MANAGED_DIR"
-  exit 0
-fi
+socket_path = os.path.realpath(sys.argv[1])
+inodes = set()
+
+try:
+    with open("/proc/net/unix", encoding="utf-8", errors="replace") as proc_net_unix:
+        next(proc_net_unix, None)
+        for line in proc_net_unix:
+            parts = line.split()
+            if len(parts) < 8:
+                continue
+            path = parts[-1]
+            if path and os.path.realpath(path) == socket_path:
+                inodes.add(parts[6])
+except OSError:
+    pass
+
+if not inodes:
+    raise SystemExit
+
+pids = set()
+for proc_name in os.listdir("/proc"):
+    if not proc_name.isdigit():
+        continue
+    fd_dir = os.path.join("/proc", proc_name, "fd")
+    try:
+        fd_names = os.listdir(fd_dir)
+    except OSError:
+        continue
+    for fd_name in fd_names:
+        try:
+            target = os.readlink(os.path.join(fd_dir, fd_name))
+        except OSError:
+            continue
+        if target.startswith("socket:[") and target[8:-1] in inodes:
+            pids.add(int(proc_name))
+            break
+
+for pid in sorted(pids):
+    print(pid)
+PY
+}
+
+probe_app_server_socket() {
+  "$SOURCE" app-server daemon version >/dev/null 2>&1
+}
+
+wait_for_socket_to_clear() {
+  local deadline="$1"
+  local now
+
+  while probe_app_server_socket; do
+    now="$(date +%s)"
+    if [ "$now" -ge "$deadline" ]; then
+      return 1
+    fi
+    sleep 0.2
+  done
+
+  return 0
+}
+
+terminate_pids() {
+  local signal="$1"
+  shift
+  local pid
+
+  for pid in "$@"; do
+    if is_pid_running "$pid"; then
+      kill "-$signal" "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
+hard_stop_unmanaged_app_server() {
+  local pids deadline
+
+  mapfile -t pids < <(socket_owner_pids "$CODEX_HOME/app-server-control/app-server-control.sock")
+  if [ "${#pids[@]}" -eq 0 ]; then
+    log "unmanaged app-server socket is reachable but no socket owner pid was found"
+    return 1
+  fi
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "would terminate unmanaged app-server socket owner pid(s): ${pids[*]}"
+    return 0
+  fi
+
+  log "terminating unmanaged app-server socket owner pid(s): ${pids[*]}"
+  terminate_pids TERM "${pids[@]}"
+  deadline="$(($(date +%s) + TERM_TIMEOUT_SECONDS))"
+  if wait_for_socket_to_clear "$deadline"; then
+    return 0
+  fi
+
+  mapfile -t pids < <(socket_owner_pids "$CODEX_HOME/app-server-control/app-server-control.sock")
+  if [ "${#pids[@]}" -gt 0 ]; then
+    log "force killing unmanaged app-server socket owner pid(s): ${pids[*]}"
+    terminate_pids KILL "${pids[@]}"
+  fi
+
+  deadline="$(($(date +%s) + KILL_TIMEOUT_SECONDS))"
+  if ! wait_for_socket_to_clear "$deadline"; then
+    log "failed to clear unmanaged app-server socket after TERM and KILL"
+    return 1
+  fi
+
+  return 0
+}
+
+stop_current_app_server_processes() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "would stop current app-server processes with: pkill -f 'rg codex app-server|/codex app-server'"
+    return 0
+  fi
+
+  log "stopping current app-server processes"
+  pkill -f 'rg codex app-server|/codex app-server' 2>/dev/null || true
+}
+
+all_runtime_targets_current() {
+  local target
+
+  while IFS= read -r target; do
+    [ -n "$target" ] || continue
+    [ -f "$target" ] || return 1
+    cmp -s "$SOURCE" "$target" || return 1
+  done < <(runtime_targets)
+
+  return 0
+}
+
+update_runtime_target() {
+  local target="$1"
+  local target_dir tmp
+
+  target_dir="$(dirname -- "$target")"
+  if [ ! -d "$target_dir" ]; then
+    log "runtime target directory is missing; skipping: $target_dir"
+    return 0
+  fi
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    if [ "$FORCE" -eq 1 ] || ! [ -f "$target" ] || ! cmp -s "$SOURCE" "$target"; then
+      log "would update runtime binary: $target"
+    fi
+    return 0
+  fi
+
+  if [ "$FORCE" -eq 0 ] && [ -f "$target" ] && cmp -s "$SOURCE" "$target"; then
+    return 0
+  fi
+
+  tmp="$(mktemp "$target_dir/.codex-fork-runtime.XXXXXX")"
+  cp "$SOURCE" "$tmp"
+  chmod 0755 "$tmp"
+  mv -f "$tmp" "$target"
+  log "updated runtime binary: $target"
+}
+
+update_runtime_targets() {
+  local target
+
+  while IFS= read -r target; do
+    [ -n "$target" ] || continue
+    update_runtime_target "$target"
+  done < <(runtime_targets)
+}
 
 source_state="$(source_stamp)"
-managed_state="$(file_stamp "$MANAGED_CODEX")"
+managed_state="$(managed_stamp)"
 pid="$(daemon_pid)"
 
 if can_fast_exit "$source_state" "$managed_state" "$pid"; then
@@ -208,56 +399,60 @@ if can_fast_exit "$source_state" "$managed_state" "$pid"; then
 fi
 
 status="$(daemon_status)"
-copied=0
+backend="$(daemon_backend)"
+takeover=0
 
-if [ "$FORCE" -eq 1 ] || ! cmp -s "$SOURCE" "$MANAGED_CODEX"; then
+if [ "$status" = "running" ] && [ "$backend" != "pid" ]; then
+  hard_stop_unmanaged_app_server
+  takeover=1
   if [ "$DRY_RUN" -eq 1 ]; then
-    log "would update managed app-server binary: $MANAGED_CODEX"
-  else
-    tmp="$(mktemp "$MANAGED_DIR/.codex-fork-managed.XXXXXX")"
-    cleanup_tmp() {
-      rm -f "$tmp"
-    }
-    trap cleanup_tmp EXIT
-    cp "$SOURCE" "$tmp"
-    chmod 0755 "$tmp"
-    mv -f "$tmp" "$MANAGED_CODEX"
-    trap - EXIT
-    copied=1
-    managed_state="$(file_stamp "$MANAGED_CODEX")"
-    log "updated managed app-server binary: $MANAGED_CODEX"
+    log "would stop current app-server processes without restarting daemon"
+    update_runtime_targets
+    exit 0
   fi
+  status="$(daemon_status)"
+  backend="$(daemon_backend)"
 fi
 
 if [ "$status" != "running" ]; then
   if [ "$DRY_RUN" -eq 1 ]; then
-    log "would start managed app-server daemon"
+    if [ "$takeover" -eq 1 ]; then
+      log "would stop current app-server processes without restarting daemon"
+    else
+      log "would not start managed app-server daemon"
+    fi
+    update_runtime_targets
     exit 0
   fi
 
-  log "starting managed app-server daemon"
-  "$SOURCE" app-server daemon start >&2
-  write_state "$source_state" "$(file_stamp "$MANAGED_CODEX")" "$(daemon_pid)"
+  if [ "$takeover" -eq 1 ]; then
+    stop_current_app_server_processes
+  else
+    log "managed app-server daemon is not running; leaving it stopped"
+  fi
+  update_runtime_targets
+  write_state "$source_state" "$(managed_stamp)" "$(daemon_pid)"
   exit 0
 fi
 
 needs_restart=0
-if [ "$copied" -eq 1 ]; then
+if [ "$FORCE" -eq 1 ] || [ "$(state_value SOURCE_STAMP)" != "$source_state" ] || ! all_runtime_targets_current; then
   needs_restart=1
 elif running_daemon_needs_restart; then
   needs_restart=1
 fi
 
 if [ "$needs_restart" -eq 0 ]; then
-  write_state "$source_state" "$managed_state" "$(daemon_pid)"
+  write_state "$source_state" "$(managed_stamp)" "$(daemon_pid)"
   exit 0
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  log "would restart managed app-server daemon"
+  log "would stop current app-server processes without restarting daemon"
+  update_runtime_targets
   exit 0
 fi
 
-log "restarting managed app-server daemon"
-"$SOURCE" app-server daemon restart >&2
-write_state "$source_state" "$(file_stamp "$MANAGED_CODEX")" "$(daemon_pid)"
+stop_current_app_server_processes
+update_runtime_targets
+write_state "$source_state" "$(managed_stamp)" "$(daemon_pid)"
