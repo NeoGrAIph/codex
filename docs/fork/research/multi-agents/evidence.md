@@ -6,7 +6,7 @@
 
 - Upstream refs проверены командой: `git ls-remote --tags upstream 'refs/tags/rust-v*'`.
 - Локальные tags были обновлены командой: `git fetch upstream --tags --prune`, потому что upstream stable scope включал `rust-v0.137.0`, `rust-v0.138.0`, `rust-v0.139.0`, которых изначально не было локально.
-- Stable scope после обновления: `rust-v0.81.0`-`rust-v0.141.0`. Alpha tags не входят в основной timeline.
+- Stable scope после обновления: `rust-v0.81.0`-`rust-v0.142.0`. Alpha tags не входят в основной timeline.
 
 ## Базовые команды проверки entry
 
@@ -523,6 +523,18 @@ git merge-base --is-ancestor <sha> <previous-release-tag>^{}
 - Included `EVID-141-guardian-external-import`: `a18de1f3b6482cf162a473d173db7bf24206333e`, `fc1fb682a7b94b8146ee1ce6b96f278669374988`. Verified stable containment includes `rust-v0.141.0` and excludes `rust-v0.140.0`; diffs isolate Guardian review sessions from skill/plugin/memory injection and add external-agent import IDs plus type-level success/failure accounting.
 - Included `EVID-141-response-metadata`: `040dafa32d5312f7803786d208ed6a0a11dfdabb`. Verified stable containment includes `rust-v0.141.0` and excludes `rust-v0.140.0`; diffs add optional `ResponseItemMetadata`, preserve metadata through response/history/rollout paths and attach optional metadata to `InterAgentCommunication`.
 - Excluded near-misses: `a292faae5a4b1bc532d371e9cb0e1b343f3e4ba0` and `11faf9af94fa345ba090701f071c8d3107fbca45` change generic dynamic-tool namespace representation and app-server `thread/start.dynamicTools` wire shape; they are relevant to tool registry compatibility but do not directly change multi-agent/subagent behavior. `08901fc8e127f1f2ed08fbda1bcc9870046735eb` adds a generic interruptible sleep tool that wakes on user/mailbox input, but it is a separate feature-gated tool rather than MAv2 `wait_agent` or subagent lifecycle behavior.
+
+### `EVID-142-*`
+
+- Диапазон: `rust-v0.141.0^{}..rust-v0.142.0^{}`.
+- Release verification: `git show -s --format='%H%n%cI%n%s%n%B' rust-v0.142.0^{}`, `git rev-parse rust-v0.141.0^{} rust-v0.142.0^{}`, `git rev-list --count rust-v0.141.0^{}..rust-v0.142.0^{}`.
+- Triage commands: Spark background threads plus local keyword/path-filtered logs over `agent`, `subagent`, `multi_agent`, `MAv2`, `mailbox`, `Guardian`, rollout budget, external-agent import, app-server protocol and thread/turn multi-agent mode paths; local synthesis narrowed MCP/plugin noise out of this package.
+- Deep/local verification commands: `git show -s --format='%H%x09%cI%x09%s' <sha>`, `git show --stat --name-only --oneline <sha>`, selected-path `git show --no-color --patch <sha> -- <paths>`, `git merge-base --is-ancestor <sha> rust-v0.142.0^{}`, `git merge-base --is-ancestor <sha> rust-v0.141.0^{}`, `git describe --contains <sha>`.
+- Included `EVID-142-mav2-messages`: `5b22a8e5b13bd4bc3b331e7a1392569107b7bccf`, `45f603302c45269737db97443612bb4876365798`, `1b24ba912ac4c56ef936364deb1c3e294b0ef9fa`. Verified stable containment includes `rust-v0.142.0`; diffs cover typed MAv2 message envelopes, `ResponseItemMetadata` join keys and terminal child-agent errors surfaced to parent agents.
+- Included `EVID-142-multi-agent-mode`: `fc8c6b73841e279f95f53b08771a7969e953bdf4`, `7abfcf220bbb57029e2ff5d9914124aef7ef3d0f`, `c03742ca0a78a8e54cd881032a2327363678b5aa`. Verified stable containment includes `rust-v0.142.0`; diffs add per-turn and thread-level `MultiAgentMode`, app-server projections and simplified runtime/config controls.
+- Included `EVID-142-rollout-budget`: `ecc4c30e281a9dff77ab45e0365c73a2a526a520`, `32a696dbacaa1383745455ea2a77d5477891ed0b`, `dac588f41398e8b628d71838d5745dad430477f1`, `bd5bd953fb2a5d610a30d112eafe20b644924085`. Verified stable containment includes `rust-v0.142.0`; diffs add rollout-budget config/schema, runtime accounting, exhausted-budget aborts and reminder thresholds.
+- Included `EVID-142-guardian-import`: `15f448d8b06c25c9ad04b2abeb3e4e2f07e4c327`, `314fa3d25b1f8a2542ddefa72a8cdb706e9ee3c6`. Verified stable containment includes `rust-v0.142.0`; diffs start the Guardian child session with the parent session and add external-agent import progress/completion/type-level result accounting.
+- Excluded near-misses: `5b95745eae1b13be75d6c395a6baec8e7b7ad99b` renames response metadata passthrough and touches MAv2 tests, but the selected `EVID-142-mav2-messages` entries already cover the functional MAv2 message contract; `8f8de7844f9a95ba0f07b9ae584b5c08b3173dd6` restores `thread_source` in turn metadata and is better tracked in `thread/*` evidence as resume/client-metadata support; `6bfc58a688a73c287da51797d99c3345caecbae8` updates Plan-mode prompt text without changing multi-agent runtime; `21d36296f137c0954df24ea86abe9619318915e6` adds workspace messages app-server API outside subagent/MAv2 delivery semantics.
 
 ## Evidence gaps
 

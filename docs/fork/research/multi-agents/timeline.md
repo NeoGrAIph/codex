@@ -1,6 +1,6 @@
 # Эволюция multi-agent/collab/subagents
 
-Статус исследования: покрыты и зафиксированы stable-релизы `rust-v0.81.0`-`rust-v0.141.0`. Основной timeline строится только по stable tags. Alpha tags используются только как дополнительное evidence, если это потребуется отдельно.
+Статус исследования: покрыты и зафиксированы stable-релизы `rust-v0.81.0`-`rust-v0.142.0`. Основной timeline строится только по stable tags. Alpha tags используются только как дополнительное evidence, если это потребуется отдельно.
 
 ## Поколения
 
@@ -1968,3 +1968,45 @@
 - User info: no immediate end-user command changes, but inter-agent and rollout history items can carry optional turn metadata without breaking old metadata-free records.
 - Compatibility/risks: metadata is optional and missing fields remain valid. Fork consumers of agent-message history must preserve unknown/optional metadata and not assume it is always present or provider-visible.
 - Evidence: `EVID-141-response-metadata`.
+
+## `rust-v0.142.0`
+
+- Release commit: `3a76f3ac68c8949d1cac6ea769b6ec7b8953a415`
+- Дата: `2026-06-22T23:36:01+02:00`
+- Subject: release notes cover rollout token budgets across agent threads, app-server multi-agent delegation modes, terminal subagent error propagation, plugin/MCP loading fixes, time/reminder APIs and runtime/disconnect hardening. Direct multi-agent entries here are typed MAv2 envelopes, join keys, parent-visible child errors, multi-agent mode controls, rollout budget enforcement, Guardian child-session startup and external-agent import accounting.
+
+### Typed MAv2 message envelopes, join keys and parent-visible child errors (`#28368`, `#28561`, `#28375`)
+
+- Коммиты: `5b22a8e5b13bd4bc3b331e7a1392569107b7bccf` (`feat: render typed envelopes for multi-agent v2 messages (#28368)`), `45f603302c45269737db97443612bb4876365798` (`Add join key for MAv2 inter-agent messages (#28561)`), `1b24ba912ac4c56ef936364deb1c3e294b0ef9fa` (`core: surface terminal subagent errors to parent agents (#28375)`).
+- Developer info: adds typed inter-agent completion/message envelopes through context/protocol/session/rollout-trace paths, adds join-key metadata to correlate MAv2 inter-agent messages and changes terminal child-agent errors so the parent sees the failure instead of an empty successful completion.
+- Why: release notes explicitly call out terminal subagent error surfacing, while the diffs cover `core/src/context/inter_agent_completion_message.rs`, `protocol/src/models.rs`, `protocol/src/protocol.rs`, `core/src/tools/handlers/multi_agents_v2/{message_tool,spawn}.rs`, `core/src/session/*` and `rollout-trace/src/reducer/tool/agents.rs`.
+- User info: parent agents get structured and correlated child-agent message/error information, making failed subagent work visible to the orchestrating agent.
+- Compatibility/risks: join-key/message metadata are compatibility-sensitive history/protocol details. Fork consumers must preserve typed envelopes and optional metadata instead of flattening them to transcript text.
+- Evidence: `EVID-142-mav2-messages`.
+
+### Thread/turn multi-agent mode control (`#28685`, `#28792`, `#29324`)
+
+- Коммиты: `fc8c6b73841e279f95f53b08771a7969e953bdf4` (`Add per-turn multi-agent mode (#28685)`), `7abfcf220bbb57029e2ff5d9914124aef7ef3d0f` (`Expose thread-level multi-agent mode (#28792)`), `c03742ca0a78a8e54cd881032a2327363678b5aa` (`Simplify multi-agent mode controls (#29324)`).
+- Developer info: introduces per-turn `MultiAgentMode`, projects thread-level mode through app-server thread lifecycle/settings responses and then simplifies the control surface/config mapping around thread and turn mode selection.
+- Why: release notes state app-server clients can configure multi-agent delegation as disabled, explicit-request-only or proactive at thread and turn level. Diffs touch `app-server-protocol/src/protocol/v2/{thread,turn}.rs`, generated schemas, `core/src/session/multi_agents.rs`, `core/src/context/multi_agent_mode_instructions.rs`, `core/src/tools/handlers/multi_agents_spec.rs`, `core/src/thread_manager.rs` and app-server request processors.
+- User info: clients can control whether agents may proactively delegate, delegate only on explicit request or not delegate, with thread-level defaults and per-turn overrides.
+- Compatibility/risks: this is a protocol/config contract. Fork changes must update schemas, app-server README/projections, runtime config locking and model-visible mode instructions together.
+- Evidence: `EVID-142-multi-agent-mode`.
+
+### Rollout token budgets for agent threads (`#28746`, `#28494`, `#28707`, `#29423`)
+
+- Коммиты: `ecc4c30e281a9dff77ab45e0365c73a2a526a520` (`[codex] add rollout token budget configuration (varlength 1/N) (#28746)`), `32a696dbacaa1383745455ea2a77d5477891ed0b` (`[codex] rollout budget implementation (varlength 2/N) (#28494)`), `dac588f41398e8b628d71838d5745dad430477f1` (`[codex] abort turns when rollout budgets expire (token budget 3/3) (#28707)`), `bd5bd953fb2a5d610a30d112eafe20b644924085` (`[codex] configure rollout budget reminder thresholds (#29423)`).
+- Developer info: adds feature/config schema for rollout budgets, runtime accounting in `core/src/rollout_budget.rs` and `core/src/session/rollout_budget.rs`, integration with `ThreadManager`/agent control, abort behavior for compact/regular/review/user-shell tasks and reminder thresholds.
+- Why: release notes call out configurable rollout token budgets tracking usage across agent threads, remaining-budget reminders and exhausted-budget aborts.
+- User info: long-running parent/child agent work can be bounded by a shared token budget, with reminders before exhaustion and controlled turn abort once exhausted.
+- Compatibility/risks: budget state affects scheduling and task lifecycle; fork autonomy changes must respect native budget accounting instead of adding parallel counters.
+- Evidence: `EVID-142-rollout-budget`.
+
+### Guardian child session startup and external-agent import results (`#27982`, `#28396`)
+
+- Коммиты: `15f448d8b06c25c9ad04b2abeb3e4e2f07e4c327` (`[codex] Start the guardian child session when parent session is started (#27982)`), `314fa3d25b1f8a2542ddefa72a8cdb706e9ee3c6` (`[codex] Record external agent import results (#28396)`).
+- Developer info: starts the Guardian child session with the parent session through Guardian/session startup paths, and records external-agent import progress/completion/type-level failures through app-server protocol, state migrations and TUI/app-server event targets.
+- Why: diffs show Guardian child-session lifecycle moving into startup prewarm/session paths and external-agent import result accounting gaining durable IDs/notifications/state.
+- User info: Guardian review child sessions are ready with the parent lifecycle, and external-agent migration UIs can report import progress and partial failures more precisely.
+- Compatibility/risks: Guardian child startup remains separate from ordinary MAv2 spawn tools. External-agent import accounting changes app-server protocol/state payloads and must keep partial-success compatibility.
+- Evidence: `EVID-142-guardian-import`.

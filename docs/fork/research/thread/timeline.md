@@ -1,6 +1,6 @@
 # Эволюция app-server `thread/*` RPC
 
-Статус исследования: покрыты stable-релизы `rust-v0.86.0`-`rust-v0.141.0`. Scope намеренно начинается с `rust-v0.86.0`; более ранняя история app-server и первичный v2 `thread/*` bootstrap не восстанавливаются в этом timeline.
+Статус исследования: покрыты stable-релизы `rust-v0.86.0`-`rust-v0.142.0`. Scope намеренно начинается с `rust-v0.86.0`; более ранняя история app-server и первичный v2 `thread/*` bootstrap не восстанавливаются в этом timeline.
 
 ## Поколения
 
@@ -691,3 +691,49 @@
 - User info: clients can page direct spawned child threads, start threads with namespaced dynamic tools, and instruct realtime output speech explicitly.
 - Compatibility/risks: `parentThreadId` is experimental and direct-child only; dynamic tool namespace wire shape must stay aligned with tool registry semantics.
 - Evidence: `EVID-141-parent-dynamic-realtime`.
+
+## `rust-v0.142.0`
+
+- Release commit: `3a76f3ac68c8949d1cac6ea769b6ec7b8953a415`
+- Дата: `2026-06-22T23:36:01+02:00`
+- Subject: release notes include app-server multi-agent delegation controls, plugin recommendations, rollout budgets, reminders/time APIs, goal-first thread visibility and runtime disconnect fixes. Direct `thread/*` entries here are recency ordering migration, incremental history changes, resume/session continuity, goal-first list/search visibility, thread/turn multi-agent mode projections and realtime thread API deltas.
+
+### Recency ordering migration and compatibility
+
+- Included commits: `fac3158c2a`, `cb15c64760`, `7dc7096ae1`.
+- Developer info: introduces `recencyAt`/sort metadata for sidebar ordering, reverts the initial shape, then restores thread recency with compatible migration history across app-server protocol schemas, ThreadStore local/in-memory backends, rollout/state migrations and thread list/read/search tests.
+- User info: clients can order sidebar/thread lists by recent activity while older records remain readable through migration-compatible metadata.
+- Compatibility/risks: this is a migration story, not a single forward-only field addition. Fork clients should follow the final compatible `rust-v0.142.0` shape and keep old/missing recency metadata readable.
+- Evidence: `EVID-142-thread-recency`.
+
+### Incremental history and optional ThreadStore turn filters
+
+- Included commits: `1e6970542e`, `01a2df2947`.
+- Developer info: adds incremental thread history change structures for changed items/turns/removed turn ids and makes ThreadStore turn filtering optional in store/type backends.
+- User info: clients can consume narrower thread-history deltas and storage-backed thread reads can avoid forcing a turn filter when the caller needs broader thread content.
+- Compatibility/risks: incremental changes must remain bounded and reconstructable; callers should not infer that optional turn filters mean unbounded full-history loading is always cheap.
+- Evidence: `EVID-142-thread-history`.
+
+### Resume, goal-first visibility and session metadata continuity
+
+- Included commits: `e8dd1b45cb`, `6d15bb3d17`; supporting metadata evidence: `8f8de7844f`.
+- Developer info: fixes goal-first live threads missing from `thread/list`, persists session ids across thread resume/read/list flows and restores `thread_source` in turn metadata used by client-metadata tests.
+- User info: goal-first threads are discoverable again through list/search, resumed threads keep stable session identity and clients receive more faithful turn metadata.
+- Compatibility/risks: session-id persistence is durability-sensitive; resume should not mint unrelated session identity for existing stored threads. `thread_source` metadata remains supporting evidence rather than a new standalone `thread/*` method.
+- Evidence: `EVID-142-thread-resume-goal`.
+
+### Thread realtime controls and text append shape
+
+- Included commits: `683bd170dc`, `e922f46a0f`.
+- Developer info: adds app-server protocol/docs/tests for controlling automatic realtime handoff delivery and supports assistant realtime append text through app-server protocol/schema, realtime websocket methods and protocol event paths.
+- User info: clients have more explicit realtime handoff behavior and can append assistant-role text into realtime flows.
+- Compatibility/risks: realtime APIs remain under `thread/realtime/*`; ordinary thread history should not consume realtime control events unless the protocol explicitly projects them.
+- Evidence: `EVID-142-thread-realtime`.
+
+### Multi-agent mode projections into thread and turn APIs
+
+- Included commits: `fc8c6b7384`, `7abfcf220b`, `c03742ca0a` (shared with `docs/fork/research/multi-agents`, `EVID-142-multi-agent-mode`).
+- Developer info: adds per-turn and thread-level `MultiAgentMode`, projects it through thread start/fork/resume/settings notifications and then simplifies the control model.
+- User info: app-server clients can configure multi-agent delegation mode for a thread and override it for a specific turn.
+- Compatibility/risks: the detailed runtime semantics belong in the multi-agent research package; this thread timeline records only the `thread/*`/`turn/start` API projection.
+- Evidence: `EVID-142-thread-multi-agent-mode`.

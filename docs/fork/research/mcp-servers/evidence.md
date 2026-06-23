@@ -8,7 +8,7 @@
 - Scope out: `codex-rs/mcp-server` как Codex-as-MCP-server binary/API. Коммиты вроде `21cd953dbd` (`feat: introduce mcp-server crate (#792)`), `2b72d05c5e` (`feat: make Codex available as a tool when running it as an MCP server (#811)`) и `497c5396c0` (`feat: add mcp subcommand to CLI to run Codex as an MCP server (#934)`) намеренно не включены в основной timeline.
 - Начальный external-MCP commit: `147a940449839b116b220b7e7d016d2a2890c134`.
 - Первый stable tag, содержащий начальный commit: `rust-v0.2.0`.
-- Верхняя stable граница локального исследования: `rust-v0.141.0`.
+- Верхняя stable граница локального исследования: `rust-v0.142.0`.
 
 ## Базовые команды проверки
 
@@ -17,9 +17,9 @@ git show --quiet --format='%H%x09%cI%x09%s' <sha>
 git show --stat --name-only --oneline <sha>
 git show --no-color --patch <sha> -- <selected-paths>
 git tag --contains <sha> | rg '^rust-v0\.[0-9]+\.0$' | sort -V | head -1
-git log rust-v0.141.0 --reverse --date=short --format='%h %cd %s' --grep='MCP' --grep='mcp' --all-match
-git log rust-v0.141.0 --reverse --date=short --format='%h %cd %s' -- <mcp-paths>
-git log rust-v0.141.0..HEAD --reverse --date=short --format='%h %cd %s' --grep='MCP' --grep='mcp' --extended-regexp
+git log rust-v0.142.0 --reverse --date=short --format='%h %cd %s' --grep='MCP' --grep='mcp' --all-match
+git log rust-v0.142.0 --reverse --date=short --format='%h %cd %s' -- <mcp-paths>
+git log rust-v0.141.0^{}..rust-v0.142.0^{} --reverse --date=short --format='%h %cd %s' --grep='MCP|mcp|plugin|Plugin|connector|Apps|tool search|elicitation|OAuth|catalog' --extended-regexp
 ```
 
 Release range проверен командами:
@@ -32,7 +32,7 @@ git tag -l 'rust-v0.*.0' | rg '^rust-v0\.[0-9]+\.0$' | sort -V | tail -10
 Набор source paths для targeted history scan. Включены исторические пути ранней реализации, даже если они уже удалены или перенесены в current HEAD; current source-of-truth отдельно указан в `architecture.md`.
 
 ```bash
-git log rust-v0.141.0 --reverse --date=short --format='%h %cd %s' -- \
+git log rust-v0.142.0 --reverse --date=short --format='%h %cd %s' -- \
   codex-rs/codex-mcp \
   codex-rs/rmcp-client \
   codex-rs/core/src/mcp.rs \
@@ -106,6 +106,28 @@ git log rust-v0.141.0 --reverse --date=short --format='%h %cd %s' -- \
 - Included commits: `4a5a676499` (`rust-v0.140.0`), `693082f3c4` (`rust-v0.140.0`), `b3c423e475` (`rust-v0.141.0`), `c8c78b63a7` (`rust-v0.141.0`).
 - Commands: `git show --stat --name-only --oneline 4a5a676499 693082f3c4 b3c423e475 c8c78b63a7`, `rg -n "McpServerRegistration|McpServerContribution|selected plugin|executor plugin" codex-rs/codex-mcp/src codex-rs/ext codex-rs/app-server/src`.
 - Evidence notes: current source confirms catalog precedence, thread-scoped contribution APIs and selected executor plugin MCP activation in app-server/runtime paths.
+
+### `EVID-142-mcp-files-env`
+
+- Диапазон: `rust-v0.141.0^{}..rust-v0.142.0^{}`.
+- Included commits: `7baf7e467e9bd8a34772c14a1fd5edbe9039bea1`; supporting environment/cwd context: `f8850cab1d0f192a799122ff96cb27061b9366eb`.
+- Commands: `git show --stat --name-only --oneline 7baf7e467e f8850cab1d`, selected-path inspection under `codex-rs/core/src/mcp_openai_file.rs`, `codex-rs/codex-api/src/files.rs`, `codex-rs/app-server-protocol/src/protocol/v2/turn.rs` and generated turn/thread environment params.
+- Evidence notes: file upload routing moved through environment-owned filesystem paths, with target-native cwd preservation as adjacent app-server environment support.
+
+### `EVID-142-plugin-manifests`
+
+- Диапазон: `rust-v0.141.0^{}..rust-v0.142.0^{}`.
+- Included commits: `1883dedc0e3499c8f42e08835540319ad7131d77`, `e12dd73b7d5a2aa2b8d0933a2053e7eb5eba6fbb`, `a760b63f838db94369f91b829a366c76f4761107`, `772c5c51952a8bd279dbeeedfea69a6feb837a1d`.
+- Commands: `git show --stat --name-only --oneline 1883dedc0e e12dd73b7d a760b63f83 772c5c5195`, selected-path inspection under `codex-rs/core-plugins/src/{loader,manifest,marketplace,store}.rs`, `codex-rs/plugin/src/manifest.rs` and `codex-rs/ext/mcp/src/executor_plugin/provider*.rs`.
+- Evidence notes: diffs establish object-valued plugin MCP manifests, manifest path lists, root local marketplace plugins and marketplace manifest fallback as plugin declaration input shapes before MCP catalog registration.
+
+### `EVID-142-mcp-runtime-security`
+
+- Диапазон: `rust-v0.141.0^{}..rust-v0.142.0^{}`.
+- Included commits: `790213ded0588d824e99f830f41f04f3d98196df`, `21a599fa56472a7cea8132c5a47a4374d4d5aa17`, `765309d5a611ea02be842ead0ab1a2828196fae9`, `29eb434bc5fd81f29540446f6989219736b09a80`, `4e6bc4226658b7bc2ba4e207506b51f8d6d3626f`, `81b000421dc795062019f3737db6fac3fda16aa4`.
+- Commands: `git show --stat --name-only --oneline 790213ded0 21a599fa56 765309d5a6 29eb434bc5 4e6bc42266 81b000421d`, selected-path inspection under `codex-rs/codex-mcp`, `codex-rs/rmcp-client/src/auth_status.rs`, `codex-rs/core/src/mcp_tool_call.rs`, `codex-rs/core/src/tools/handlers/mcp_resource/*`, `codex-rs/app-server-protocol/src/protocol/v2/mcp.rs` and app-server MCP tests.
+- Evidence notes: diffs scope sandbox metadata to the MCP server environment, add extended `openai/form` elicitations, project trusted MCP App identity onto tool-call items, remove hardcoded app-id filters, add protected-resource OAuth discovery and expose config toggles for orchestrator skills/MCP resources.
+- Excluded near-misses: plugin analytics/cache/warmup/skills-only commits such as `7e735b59ce`, `a34da3b295`, `3959ab0ffc`, `2c7802e7cf`, `c73296a0f0`, `a52a3b5197`, `e83b7841b0`, `7e37354a58`, `38c96866f0`, `44dbae90eb`, `a72433d560`, `0318381762`, `0065c3a17d`, `64bdeed9f7`, `a57b268d61`, `c2fbf4247` and `38211a3ff8` were reviewed as adjacent plugin/skills/performance work but not selected because they do not directly change MCP registration, auth, tool/resource exposure, elicitation, sandbox or manifest parsing contracts.
 
 ## Current HEAD source inspection
 

@@ -1,6 +1,6 @@
 # Architecture: app-server `thread/*` RPC
 
-Документ фиксирует current HEAD source of truth для app-server `thread/*` namespace после исследования `rust-v0.86.0`-`rust-v0.141.0`. История релизов находится в `timeline.md`, команды и triage decisions - в `evidence.md`.
+Документ фиксирует current HEAD source of truth для app-server `thread/*` namespace после исследования `rust-v0.86.0`-`rust-v0.142.0`. История релизов находится в `timeline.md`, команды и triage decisions - в `evidence.md`.
 
 ## Scope
 
@@ -10,9 +10,9 @@
 ## Current Source Of Truth
 
 - Method and notification registry: `codex-rs/app-server-protocol/src/protocol/common.rs` maps request variants to method names such as `thread/start`, `thread/resume`, `thread/fork`, `thread/archive`, `thread/delete`, `thread/list`, `thread/read`, `thread/turns/list`, `thread/settings/update`, `thread/increment_elicitation`, `thread/decrement_elicitation`, `thread/approveGuardianDeniedAction`, `thread/realtime/*` and notification names such as `thread/started`, `thread/status/changed`, `thread/archived`, `thread/deleted`, `thread/name/updated`, `thread/goal/updated`, `thread/settings/updated`, `thread/tokenUsage/updated` and `thread/realtime/*`.
-- v2 type definitions: `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`, `thread_data.rs`, `turn.rs`, `item.rs`, `realtime.rs`, `permissions.rs` and `shared.rs` define request/response payloads, `Thread`, `ThreadStatus`, `ThreadSettings`, paged turn views, item variants and related projections.
+- v2 type definitions: `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`, `thread_data.rs`, `turn.rs`, `item.rs`, `realtime.rs`, `permissions.rs` and `shared.rs` define request/response payloads, `Thread`, `ThreadStatus`, `ThreadSettings`, `MultiAgentMode` settings projections, paged turn views, item variants and related projections.
 - Runtime request handling: `codex-rs/app-server/src/request_processors/thread_processor.rs` owns most thread request handlers; `thread_goal_processor.rs`, `thread_lifecycle.rs`, `thread_delete.rs`, `thread_summary.rs`, `thread_resume_redaction.rs` and `codex-rs/app-server/src/thread_state.rs` own specialized goal/lifecycle/delete/summary/redaction/live-state behavior.
-- Persistence backend: `codex-rs/thread-store/src/*` owns local/in-memory store APIs, search, read/list/archive/unarchive/delete/update metadata and live-thread writing. App-server should consume ThreadStore rather than reintroducing rollout-file-specific reads for thread RPCs.
+- Persistence backend: `codex-rs/thread-store/src/*` owns local/in-memory store APIs, search, read/list/archive/unarchive/delete/update metadata, recency ordering, optional turn filters, session-id persistence and live-thread writing. App-server should consume ThreadStore rather than reintroducing rollout-file-specific reads for thread RPCs.
 - Core bridge: `codex-rs/core/src/thread_manager.rs`, `codex-rs/core/src/session/*` and `codex-rs/rollout/src/*` are backend evidence for start/resume/fork/history/rollback behavior, but they are not the public app-server thread contract.
 - Public documentation: `codex-rs/app-server/README.md` is the human-readable app-server contract for method semantics, examples, experimental gating and current unsupported surfaces.
 - Generated artifacts: `codex-rs/app-server-protocol/src/export.rs` and generated schema/TypeScript fixtures must match any protocol shape change.
@@ -21,8 +21,8 @@
 ## Current RPC Surface
 
 - Lifecycle: `thread/start`, `thread/resume`, `thread/fork`, `thread/unsubscribe`, `thread/archive`, `thread/unarchive`, `thread/delete`, `thread/compact/start`, `thread/rollback`.
-- Read/list/search: `thread/list`, `thread/search`, `thread/loaded/list`, `thread/read`, `thread/turns/list`, `thread/turns/items/list`. Current docs state `thread/turns/items/list` has API shape but returns unsupported-method JSON-RPC error.
-- Metadata/settings: `thread/name/set`, `thread/metadata/update`, `thread/settings/update`, `thread/memoryMode/set`, `thread/goal/set`, `thread/goal/get`, `thread/goal/clear`, `thread/inject_items`.
+- Read/list/search: `thread/list`, `thread/search`, `thread/loaded/list`, `thread/read`, `thread/turns/list`, `thread/turns/items/list`. Current docs state `thread/turns/items/list` has API shape but returns unsupported-method JSON-RPC error. Thread list/search ordering can use recency metadata when present, with compatibility for older rollout/state records.
+- Metadata/settings: `thread/name/set`, `thread/metadata/update`, `thread/settings/update`, `thread/memoryMode/set`, `thread/goal/set`, `thread/goal/get`, `thread/goal/clear`, `thread/inject_items`. `ThreadSettings` includes thread-level multi-agent mode, while `turn/start` can carry a per-turn mode override through the turn namespace.
 - Elicitation/review helpers: `thread/increment_elicitation`, `thread/decrement_elicitation`, `thread/approveGuardianDeniedAction`.
 - Execution/realtime helpers: `thread/shellCommand`, `thread/backgroundTerminals/clean`, `thread/backgroundTerminals/list`, `thread/backgroundTerminals/terminate`, `thread/realtime/start`, `thread/realtime/appendAudio`, `thread/realtime/appendText`, `thread/realtime/appendSpeech`, `thread/realtime/stop`, `thread/realtime/listVoices`.
 - Notifications: lifecycle/status notifications include `thread/started`, `thread/status/changed`, `thread/archived`, `thread/deleted`, `thread/unarchived`, `thread/closed`, `thread/name/updated`, `thread/goal/updated`, `thread/goal/cleared`, `thread/settings/updated`, `thread/tokenUsage/updated`, `thread/compacted` and realtime notifications under `thread/realtime/*`.
@@ -30,13 +30,14 @@
 ## Key Invariants
 
 - `thread/start`, `thread/resume` and `thread/fork` are the materialization entrypoints. Response payload and `thread/started`/subscription behavior must stay ordered so clients can safely render initial state and subsequent updates.
-- `Thread` is the canonical app-server projection for user-facing thread metadata: id, session id, status, source/parent metadata, cwd/runtime roots, permissions/settings projections, name/git info, ephemeral state and bounded turns/history views.
+- `Thread` is the canonical app-server projection for user-facing thread metadata: id, session id, status, source/parent metadata, cwd/runtime roots, permissions/settings projections, name/git info, recency ordering metadata, ephemeral state and bounded turns/history views.
 - List/read APIs must work without resuming a thread. Any storage mutation for unloaded threads should route through ThreadStore-backed paths.
-- History payloads are bounded by default. Clients that need more history should use `thread/turns/list`, `initialTurnsPage` or explicit view/page controls instead of relying on full `thread.turns`.
+- History payloads are bounded by default. Clients that need more history should use `thread/turns/list`, `initialTurnsPage`, incremental thread-history changes or explicit view/page controls instead of relying on full `thread.turns`.
+- Session ids are durable thread metadata across resume/read/list flows. Resume implementations should preserve existing session identity and lineage rather than minting unrelated session ids for the same stored thread.
 - Experimental method/field gates live in protocol annotations and initialize capabilities, not ad hoc request-processor checks only.
 - Thread-scoped helper RPCs such as elicitation counters and Guardian approval must still route through protocol types, generated artifacts and app-server request processors; they should not become hidden side channels outside `thread/*`.
 - Destructive operations (`thread/delete`, archive cascade) must use persisted lineage/store state to affect only documented descendants and emit notifications for each affected thread.
-- Realtime and background terminal APIs are thread-scoped but should remain separate from ordinary `ThreadItem` history unless the protocol explicitly projects an item or notification.
+- Realtime and background terminal APIs are thread-scoped but should remain separate from ordinary `ThreadItem` history unless the protocol explicitly projects an item or notification. Realtime append/handoff controls live under `thread/realtime/*` and must stay aligned with app-server protocol capabilities and README examples.
 
 ## Verification Map
 

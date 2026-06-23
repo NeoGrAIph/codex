@@ -1,6 +1,6 @@
 # Эволюция внешних MCP servers
 
-Статус исследования: покрыты stable-релизы от первого внешнего MCP server commit `147a940449839b116b220b7e7d016d2a2890c134` до текущего локального `rust-v0.141.0`. Основной timeline строится по stable-contained commits; alpha/side-branch commits не включены в основной поток без отдельного указания.
+Статус исследования: покрыты stable-релизы от первого внешнего MCP server commit `147a940449839b116b220b7e7d016d2a2890c134` до текущего локального `rust-v0.142.0`. Основной timeline строится по stable-contained commits; alpha/side-branch commits не включены в основной поток без отдельного указания.
 
 ## Поколения
 
@@ -112,7 +112,35 @@
 - Compatibility/risks: selected plugin MCPs must not be registered globally; precedence and disabled registrations must be resolved in the catalog before connection startup.
 - Evidence: `EVID-140-141-catalog-selected-plugins`.
 
-## Current branch notes
+## `rust-v0.142.0`
 
-- Current branch checked during this research: `fork/141`.
-- `git log rust-v0.141.0..HEAD --grep='MCP|mcp'` produced no current-branch commits, so this package records no post-stable MCP branch notes.
+- Release commit: `3a76f3ac68c8949d1cac6ea769b6ec7b8953a415`
+- Дата: `2026-06-22T23:36:01+02:00`
+- Subject: release notes include plugin marketplace/recommendation work, MCP/plugin loading fixes, stdio MCP disconnect resilience, remote environment preservation and selected runtime polish. Direct external-MCP entries here are environment-filesystem file uploads, plugin MCP manifest/fallback handling and runtime security/auth/identity updates.
+
+### Environment file uploads for MCP (`#27923`, supporting `#28146`)
+
+- Коммиты: `7baf7e467e9bd8a34772c14a1fd5edbe9039bea1` (`[codex] Route MCP file uploads through environment filesystem (#27923)`), supporting context `f8850cab1d0f192a799122ff96cb27061b9366eb` (`app-server: preserve target-native environment cwd (#28146)`).
+- Developer info: routes MCP/OpenAI file uploads through environment filesystem handling and preserves target-native environment cwd in app-server thread/turn parameters so remote/executor paths stay native.
+- Why: diffs touch `codex-rs/core/src/mcp_openai_file.rs`, `codex-api/src/files.rs`, app-server protocol turn/thread environment params and openai-file MCP tests.
+- User info: MCP-related file upload flows use the selected environment filesystem instead of assuming host-local paths.
+- Compatibility/risks: file upload behavior is environment-sensitive; fork changes must not silently fall back to local cwd when a remote/executor environment owns the file.
+- Evidence: `EVID-142-mcp-files-env`.
+
+### Plugin MCP manifest formats and marketplace fallback (`#28580`, `#28790`, `#28771`, `#28789`)
+
+- Коммиты: `1883dedc0e3499c8f42e08835540319ad7131d77` (`[codex] Support object-valued plugin MCP manifests (#28580)`), `e12dd73b7d5a2aa2b8d0933a2053e7eb5eba6fbb` (`[codex] Support plugin manifest path lists (#28790)`), `a760b63f838db94369f91b829a366c76f4761107` (`fix(plugins): support root local marketplace plugins (#28771)`), `772c5c51952a8bd279dbeeedfea69a6feb837a1d` (`[codex] Support marketplace plugin manifest fallback (#28789)`).
+- Developer info: expands plugin manifest MCP declaration parsing to object-valued manifests and path lists, supports root local marketplace layouts and adds marketplace manifest fallback handling through `core-plugins` loader/marketplace/store plus executor-plugin MCP provider tests.
+- Why: release notes call out root marketplace layouts and manifest fallback; diffs touch `core-plugins/src/{loader,manifest,marketplace,store}.rs`, `plugin/src/manifest.rs` and `ext/mcp/src/executor_plugin/provider*.rs`.
+- User info: plugin-provided MCP declarations can be discovered from more marketplace/manifest layouts without manual restructuring.
+- Compatibility/risks: plugin manifest parsing is a source-of-truth contract before catalog registration; fork MCP changes must keep object-valued and path-list forms compatible.
+- Evidence: `EVID-142-plugin-manifests`.
+
+### MCP runtime security, elicitations, Apps identity and toggles (`#28914`, `#27500`, `#27132`, `#28947`, `#29022`, `#28942`)
+
+- Коммиты: `790213ded0588d824e99f830f41f04f3d98196df` (`Scope MCP sandbox metadata to server environment (#28914)`), `21a599fa56472a7cea8132c5a47a4374d4d5aa17` (``Support `openai/form` extended form elicitations (#27500)``), `765309d5a611ea02be842ead0ab1a2828196fae9` (`Emit Trusted MCP App Identity on Tool-Call Items (#27132)`), `29eb434bc5fd81f29540446f6989219736b09a80` (`[codex] Remove hardcoded app ID filters (#28947)`), `4e6bc4226658b7bc2ba4e207506b51f8d6d3626f` (`[codex] Support protected resource OAuth discovery (#29022)`), `81b000421dc795062019f3737db6fac3fda16aa4` (`Add config toggles for orchestrator skills and MCP (#28942)`).
+- Developer info: scopes MCP sandbox metadata to each server environment, extends typed MCP elicitations with `openai/form`, projects trusted MCP App identity on tool-call items, moves app-id filtering out of hardcoded lists, adds protected-resource OAuth discovery and config toggles around orchestrator skills/MCP resource tools.
+- Why: diffs touch `codex-mcp/src/{connection_manager,runtime,server,codex_apps,mcp/mod}.rs`, `rmcp-client/src/auth_status.rs`, app-server protocol MCP schemas/tests, `core/src/mcp_tool_call.rs`, `core/src/tools/handlers/mcp_resource/*` and config/schema paths.
+- User info: MCP runtime/auth/error surfaces become more explicit: app clients can render richer elicitations, Apps tool calls carry trusted identity context, protected-resource OAuth is discoverable and resource tools can be gated by config.
+- Compatibility/risks: these are security/auth/projection contracts. Do not implement fork MCP behavior through raw app id string filters, global sandbox metadata or untyped elicitation payloads.
+- Evidence: `EVID-142-mcp-runtime-security`.

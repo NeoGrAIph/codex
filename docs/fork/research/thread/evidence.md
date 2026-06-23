@@ -4,7 +4,7 @@
 
 ## Общий scope и refs
 
-- Scope исследования: stable releases `rust-v0.86.0`-`rust-v0.141.0`.
+- Scope исследования: stable releases `rust-v0.86.0`-`rust-v0.142.0`.
 - Start anchor: `rust-v0.86.0` -> `18057fdc30b10168ab18e8c1bb86c7a0a7772191`, `2026-01-15T16:46:06-08:00`.
 - Scope boundary: только app-server `thread/*` RPC/protocol/docs/tests and direct backend storage evidence for those RPCs.
 - Не включалось: раннее появление app-server и первичный v2 `thread/*` bootstrap до `rust-v0.86.0`.
@@ -387,3 +387,16 @@ git log --no-merges --reverse --pretty=format:'%h %H %cI %s' <prev>^{}..<tag>^{}
 - Included: `dfd03ea01bbec2613013b477fb82abc67534a7d7`, `11faf9af94fa345ba090701f071c8d3107fbca45`, `1d8ff89aa3808e364918bdec56d3cdfd74bf4d7b`.
 - Verification: first stable containment is `rust-v0.141.0`; direct subjects cover parent thread filtering, thread start dynamic tool namespaces and realtime speech append.
 - Excluded near-misses: selected executor plugin MCP activation and response-item metadata are relevant to thread-scoped runtime/tool context but do not directly change `thread/*` method contract.
+
+### `EVID-142-*`
+
+- Диапазон: `rust-v0.141.0^{}..rust-v0.142.0^{}`.
+- Release verification: `git show -s --format='%H%n%cI%n%s%n%B' rust-v0.142.0^{}`, `git rev-parse --verify --short rust-v0.141.0^{}`, `git rev-parse --verify --short rust-v0.142.0^{}`, `git rev-list --count rust-v0.141.0^{}..rust-v0.142.0^{}`.
+- Triage commands: Spark background thread plus local keyword/path-filtered scans over `codex-rs/app-server`, `codex-rs/app-server-protocol`, `codex-rs/thread-store`, `codex-rs/rollout`, `codex-rs/state`, `thread/list`, `thread/read`, `thread/resume`, `thread/fork`, `thread/search`, `thread/turns`, `thread/realtime`, `recencyAt`, `session id`, `goal-first` and `multi-agent`.
+- Deep/local verification commands: `git show -s --format='%H%x09%cI%x09%s' <sha>`, `git show --stat --name-only --oneline <sha>`, selected-path `git show --no-color --patch <sha> -- <paths>`, `git merge-base --is-ancestor <sha> rust-v0.142.0^{}`, `git merge-base --is-ancestor <sha> rust-v0.141.0^{}`, `git describe --contains <sha>`.
+- Included `EVID-142-thread-recency`: `fac3158c2a783095768076489815f361fa9b0db4`, `cb15c647608ea848713837e4b49975e5a1481051`, `7dc7096ae116df18c917d5d2f7c75243d98a0419`. Verified stable containment includes `rust-v0.142.0`; diffs introduce, revert and restore `recencyAt`/thread recency with compatible migration history across app-server protocol, ThreadStore, rollout/state and tests.
+- Included `EVID-142-thread-history`: `1e6970542e3362d751c4561782c15d4b532db376`, `01a2df29479e8e982a5b6a9097d21814ad24000f`. Verified stable containment includes `rust-v0.142.0`; diffs add incremental thread-history changes and optional ThreadStore turn filters.
+- Included `EVID-142-thread-resume-goal`: `e8dd1b45cbfe241abf85c6696f7ab07e85a0c5d5`, `6d15bb3d17f2b2a7d2a11ddd0689dc9244bf744c`; supporting metadata evidence: `8f8de7844f9a95ba0f07b9ae584b5c08b3173dd6`. Verified stable containment includes `rust-v0.142.0`; diffs fix goal-first live thread list/search visibility, persist session ids across resume and restore `thread_source` in turn metadata.
+- Included `EVID-142-thread-realtime`: `683bd170dc36812f73867aa6f421a4a8cf4bd133`, `e922f46a0f863a9630ddf7dc60dcbadb36a6c28a`. Verified stable containment includes `rust-v0.142.0`; diffs cover app-server realtime handoff delivery controls, realtime append-text protocol/docs/tests and realtime websocket methods.
+- Included `EVID-142-thread-multi-agent-mode`: `fc8c6b73841e279f95f53b08771a7969e953bdf4`, `7abfcf220bbb57029e2ff5d9914124aef7ef3d0f`, `c03742ca0a78a8e54cd881032a2327363678b5aa`. Verified stable containment includes `rust-v0.142.0`; diffs project `MultiAgentMode` through `thread/start`, `thread/fork`, `thread/resume`, `thread/settings/updated` and `turn/start`. Detailed runtime analysis is recorded in `docs/fork/research/multi-agents` as `EVID-142-multi-agent-mode`.
+- Excluded near-misses: `21d36296f137c0954df24ea86abe9619318915e6` adds workspace messages app-server API outside `thread/*`; `d667082322` allows resume/settings slash commands during tasks/MCP startup but is a TUI command path rather than app-server thread protocol; `765309d5a611ea02be842ead0ab1a2828196fae9` is MCP app identity on tool-call items and belongs in MCP research; selected plugin/cache/skills warmup commits are outside direct `thread/*` method semantics.
