@@ -1,7 +1,10 @@
 use crate::SkillsService;
 use crate::agent::AgentControl;
+use crate::agent::role::ResumeRoleOverridePolicy;
+use crate::agent::role::reapply_role_to_resumed_agent_config;
 use crate::attestation::AttestationProvider;
 use crate::codex_thread::CodexThread;
+use crate::codex_thread::InitialTaskPublication;
 use crate::config::Config;
 use crate::config::ThreadStoreConfig;
 use crate::current_time::TimeProvider;
@@ -13,6 +16,7 @@ use crate::session::Codex;
 use crate::session::CodexSpawnArgs;
 use crate::session::CodexSpawnOk;
 use crate::session::INITIAL_SUBMIT_ID;
+use crate::session::SubmissionLoopActivation;
 use crate::session::resolve_multi_agent_version;
 use crate::tasks::InterruptedTurnHistoryMarker;
 use crate::tasks::interrupted_turn_history_marker;
@@ -374,6 +378,20 @@ impl ThreadManager {
         self
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_persistence_for_tests(
+        mut self,
+        thread_store: Arc<dyn ThreadStore>,
+        agent_graph_store: Arc<dyn AgentGraphStore>,
+    ) -> Self {
+        let Some(state) = Arc::get_mut(&mut self.state) else {
+            unreachable!("new thread manager state should not be shared");
+        };
+        state.thread_store = thread_store;
+        state.agent_graph_store = Some(agent_graph_store);
+        self
+    }
+
     /// Construct with a dummy AuthManager containing the provided CodexAuth.
     /// Used for integration tests: should not be used by ordinary business logic.
     pub(crate) fn with_models_provider_for_tests(
@@ -558,7 +576,7 @@ impl ThreadManager {
     }
 
     pub async fn list_thread_ids(&self) -> Vec<ThreadId> {
-        self.state.list_thread_ids().await
+        self.state.list_thread_ids_for_external_access().await
     }
 
     pub fn subscribe_thread_created(&self) -> broadcast::Receiver<ThreadId> {
@@ -566,7 +584,22 @@ impl ThreadManager {
     }
 
     pub async fn get_thread(&self, thread_id: ThreadId) -> CodexResult<Arc<CodexThread>> {
-        self.state.get_thread(thread_id).await
+        self.state.get_thread_for_external_access(thread_id).await
+    }
+
+    pub async fn loaded_thread_is_available_for_external_access(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<bool> {
+        if !self.state.threads.read().await.contains_key(&thread_id) {
+            return None;
+        }
+        Some(
+            self.state
+                .get_thread_for_external_access(thread_id)
+                .await
+                .is_ok(),
+        )
     }
 
     /// Updates metadata for loaded and cold threads through one entrypoint.
@@ -716,6 +749,7 @@ impl ThreadManager {
             options.thread_extension_init,
             options.supports_openai_form_elicitation,
             /*user_shell_override*/ None,
+            /*submission_loop_activation*/ None,
         ))
         .await
     }
@@ -813,6 +847,7 @@ impl ThreadManager {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             supports_openai_form_elicitation,
             /*user_shell_override*/ None,
+            /*submission_loop_activation*/ None,
         ))
         .await
     }
@@ -884,6 +919,7 @@ impl ThreadManager {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             supports_openai_form_elicitation,
             /*user_shell_override*/ Some(user_shell_override),
+            /*submission_loop_activation*/ None,
         ))
         .await
     }
@@ -1092,15 +1128,44 @@ impl ThreadManagerState {
         self.agent_graph_store.clone()
     }
 
-    pub(crate) async fn list_thread_ids(&self) -> Vec<ThreadId> {
-        self.threads
-            .read()
-            .await
-            .iter()
-            .filter_map(|(thread_id, thread)| {
-                (!thread.session_source.is_internal()).then_some(*thread_id)
-            })
-            .collect()
+    async fn list_thread_ids_for_external_access(&self) -> Vec<ThreadId> {
+        let threads = {
+            self.threads
+                .read()
+                .await
+                .iter()
+                .filter_map(|(thread_id, thread)| {
+                    (!thread.session_source.is_internal())
+                        .then_some((*thread_id, Arc::clone(thread)))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut thread_ids = Vec::with_capacity(threads.len());
+        for (thread_id, thread) in threads {
+            let is_thread_spawn = matches!(
+                &thread.session_source,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+            );
+            if is_thread_spawn && !thread.is_initial_task_published() {
+                continue;
+            }
+            if is_thread_spawn
+                && !thread.config_snapshot().await.ephemeral
+                && self.agent_graph_store.is_some()
+                && self
+                    .ensure_thread_spawn_resumable(
+                        thread_id,
+                        &thread.session_source,
+                        thread.multi_agent_version(),
+                    )
+                    .await
+                    .is_err()
+            {
+                continue;
+            }
+            thread_ids.push(thread_id);
+        }
+        thread_ids
     }
 
     /// List parent-child edges for currently loaded thread-spawn agents.
@@ -1130,6 +1195,94 @@ impl ThreadManagerState {
         match threads.get(&thread_id) {
             Some(thread) if !thread.session_source.is_internal() => Ok(thread.clone()),
             Some(_) | None => Err(CodexErr::ThreadNotFound(thread_id)),
+        }
+    }
+
+    async fn get_thread_for_external_access(
+        &self,
+        thread_id: ThreadId,
+    ) -> CodexResult<Arc<CodexThread>> {
+        let thread = self.get_thread(thread_id).await?;
+        if matches!(
+            &thread.session_source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        ) {
+            if !thread.is_initial_task_published() {
+                return Err(CodexErr::ThreadNotFound(thread_id));
+            }
+            if !thread.config_snapshot().await.ephemeral && self.agent_graph_store.is_some() {
+                self.ensure_thread_spawn_resumable(
+                    thread_id,
+                    &thread.session_source,
+                    thread.multi_agent_version(),
+                )
+                .await
+                .map_err(|_| CodexErr::ThreadNotFound(thread_id))?;
+            }
+        }
+        Ok(thread)
+    }
+
+    async fn ensure_thread_spawn_resumable(
+        &self,
+        thread_id: ThreadId,
+        session_source: &SessionSource,
+        multi_agent_version: Option<MultiAgentVersion>,
+    ) -> CodexResult<()> {
+        let is_thread_spawn = matches!(
+            session_source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        );
+        let requires_authoritative_edge =
+            is_thread_spawn && multi_agent_version == Some(MultiAgentVersion::V2);
+        let Some(agent_graph_store) = self.agent_graph_store() else {
+            return if requires_authoritative_edge {
+                Err(CodexErr::Fatal(
+                    "authoritative agent graph is unavailable; refusing V2 agent resume"
+                        .to_string(),
+                ))
+            } else {
+                Ok(())
+            };
+        };
+        let persisted_edge = match agent_graph_store.get_thread_spawn_edge(thread_id).await {
+            Ok(edge) => edge,
+            Err(err) if !requires_authoritative_edge => {
+                warn!(
+                    %err,
+                    %thread_id,
+                    "ignoring agent graph read failure for a thread without authoritative V2 lineage"
+                );
+                return Ok(());
+            }
+            Err(err) => {
+                warn!(
+                    %err,
+                    %thread_id,
+                    "failed to inspect resumed agent activation state"
+                );
+                return Err(CodexErr::Fatal(
+                    "failed to inspect resumed agent activation state".to_string(),
+                ));
+            }
+        };
+        match persisted_edge {
+            Some(codex_agent_graph_store::ThreadSpawnEdge {
+                status: codex_agent_graph_store::ThreadSpawnEdgeStatus::PendingActivation,
+                ..
+            }) => Err(CodexErr::InvalidRequest(
+                "cannot resume an agent whose initial task was not durably activated".to_string(),
+            )),
+            Some(codex_agent_graph_store::ThreadSpawnEdge {
+                status:
+                    codex_agent_graph_store::ThreadSpawnEdgeStatus::Open
+                    | codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed,
+                ..
+            }) => Ok(()),
+            None if requires_authoritative_edge => Err(CodexErr::InvalidRequest(
+                "cannot resume a V2 agent without authoritative lifecycle state".to_string(),
+            )),
+            None => Ok(()),
         }
     }
 
@@ -1172,6 +1325,23 @@ impl ThreadManagerState {
     /// Remove a thread from the manager by ID, returning it when present.
     pub(crate) async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
         self.threads.write().await.remove(thread_id)
+    }
+
+    pub(crate) async fn remove_thread_if_same_or_missing(
+        &self,
+        thread_id: &ThreadId,
+        expected_thread: &Arc<CodexThread>,
+    ) -> bool {
+        match self.threads.write().await.entry(*thread_id) {
+            std::collections::hash_map::Entry::Vacant(_) => true,
+            std::collections::hash_map::Entry::Occupied(entry)
+                if Arc::ptr_eq(entry.get(), expected_thread) =>
+            {
+                entry.remove();
+                true
+            }
+            std::collections::hash_map::Entry::Occupied(_) => false,
+        }
     }
 
     pub(crate) async fn effective_multi_agent_version_for_spawn(
@@ -1345,6 +1515,7 @@ impl ThreadManagerState {
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            /*submission_loop_activation*/ None,
         ))
         .await
     }
@@ -1362,6 +1533,9 @@ impl ThreadManagerState {
         inherited_environments: Option<TurnEnvironmentSnapshot>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
+        submission_loop_activation: Option<
+            tokio::sync::oneshot::Receiver<SubmissionLoopActivation>,
+        >,
     ) -> CodexResult<NewThread> {
         let environments = environments.unwrap_or_else(|| {
             default_thread_environment_selections(self.environment_manager.as_ref(), &config.cwd)
@@ -1386,6 +1560,7 @@ impl ThreadManagerState {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
+            submission_loop_activation,
         ))
         .await
     }
@@ -1426,6 +1601,7 @@ impl ThreadManagerState {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
+            /*submission_loop_activation*/ None,
         ))
         .await
     }
@@ -1444,6 +1620,9 @@ impl ThreadManagerState {
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
         thread_extension_init: ExtensionDataInit,
+        submission_loop_activation: Option<
+            tokio::sync::oneshot::Receiver<SubmissionLoopActivation>,
+        >,
     ) -> CodexResult<NewThread> {
         let environments = environments.unwrap_or_else(|| {
             default_thread_environment_selections(self.environment_manager.as_ref(), &config.cwd)
@@ -1468,6 +1647,7 @@ impl ThreadManagerState {
             thread_extension_init,
             /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
+            submission_loop_activation,
         ))
         .await
     }
@@ -1511,6 +1691,7 @@ impl ThreadManagerState {
             thread_extension_init,
             supports_openai_form_elicitation,
             user_shell_override,
+            /*submission_loop_activation*/ None,
         ))
         .await
     }
@@ -1518,7 +1699,7 @@ impl ThreadManagerState {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn_thread_with_source(
         &self,
-        config: Config,
+        mut config: Config,
         initial_history: InitialHistory,
         history_mode: Option<ThreadHistoryMode>,
         allow_provider_model_fallback: bool,
@@ -1537,8 +1718,27 @@ impl ThreadManagerState {
         thread_extension_init: ExtensionDataInit,
         supports_openai_form_elicitation: bool,
         user_shell_override: Option<crate::shell::Shell>,
+        submission_loop_activation: Option<
+            tokio::sync::oneshot::Receiver<SubmissionLoopActivation>,
+        >,
     ) -> CodexResult<NewThread> {
         let is_resumed_thread = matches!(&initial_history, InitialHistory::Resumed(_));
+        let multi_agent_version = self
+            .initial_multi_agent_version_for_spawn(
+                &initial_history,
+                Some(&session_source),
+                parent_thread_id,
+                forked_from_thread_id,
+            )
+            .await;
+        if let InitialHistory::Resumed(resumed) = &initial_history {
+            self.ensure_thread_spawn_resumable(
+                resumed.conversation_id,
+                &session_source,
+                multi_agent_version,
+            )
+            .await?;
+        }
         if let InitialHistory::Resumed(resumed) = &initial_history {
             let mut threads = self.threads.write().await;
             if let Some(thread) = threads.get(&resumed.conversation_id).cloned() {
@@ -1560,6 +1760,18 @@ impl ThreadManagerState {
                 threads.remove(&resumed.conversation_id);
             }
         }
+        if is_resumed_thread && multi_agent_version == Some(MultiAgentVersion::V2) {
+            let override_policy = if parent_thread_id.is_some() {
+                ResumeRoleOverridePolicy::RoleWins
+            } else {
+                ResumeRoleOverridePolicy::ExplicitSessionFlagsWin
+            };
+            reapply_role_to_resumed_agent_config(&mut config, &session_source, override_policy)
+                .await
+                .map_err(|err| {
+                    CodexErr::InvalidRequest(format!("failed to restore resumed agent role: {err}"))
+                })?;
+        }
         let user_instructions = self
             .user_instructions_for_spawn(&session_source, parent_thread_id, forked_from_thread_id)
             .await;
@@ -1567,14 +1779,6 @@ impl ThreadManagerState {
             .parent_rollout_thread_trace_for_source(&session_source, &initial_history)
             .await;
         let tracked_session_source = session_source.clone();
-        let multi_agent_version = self
-            .initial_multi_agent_version_for_spawn(
-                &initial_history,
-                Some(&session_source),
-                parent_thread_id,
-                forked_from_thread_id,
-            )
-            .await;
         let originator = self
             .effective_originator(
                 &initial_history,
@@ -1585,7 +1789,9 @@ impl ThreadManagerState {
             )
             .await;
         let CodexSpawnOk {
-            codex, thread_id, ..
+            codex,
+            thread_id,
+            initial_task_publication,
         } = Box::pin(Codex::spawn(CodexSpawnArgs {
             config,
             allow_provider_model_fallback,
@@ -1622,10 +1828,16 @@ impl ThreadManagerState {
             attestation_provider: self.attestation_provider.clone(),
             external_time_provider: self.external_time_provider.clone(),
             inherited_multi_agent_version: multi_agent_version,
+            submission_loop_activation,
         }))
         .await?;
         let new_thread = self
-            .finalize_thread_spawn(codex, thread_id, tracked_session_source)
+            .finalize_thread_spawn(
+                codex,
+                thread_id,
+                tracked_session_source,
+                initial_task_publication,
+            )
             .await?;
         if is_resumed_thread {
             new_thread.thread.emit_thread_resume_lifecycle().await;
@@ -1638,6 +1850,7 @@ impl ThreadManagerState {
         codex: Codex,
         thread_id: ThreadId,
         session_source: SessionSource,
+        initial_task_publication: InitialTaskPublication,
     ) -> CodexResult<NewThread> {
         let event = codex.next_event().await?;
         let session_configured = match event {
@@ -1658,6 +1871,7 @@ impl ThreadManagerState {
                     session_configured.clone(),
                     session_configured.rollout_path.clone(),
                     session_source,
+                    initial_task_publication,
                 ));
                 e.insert(thread.clone());
                 return Ok(NewThread {
@@ -1712,9 +1926,12 @@ impl ThreadManagerState {
 }
 
 fn stored_thread_to_initial_history(
-    stored_thread: StoredThread,
+    mut stored_thread: StoredThread,
     rollout_path: Option<PathBuf>,
 ) -> CodexResult<InitialHistory> {
+    stored_thread
+        .project_identity_into_history()
+        .map_err(|err| CodexErr::InvalidRequest(format!("invalid stored agent identity: {err}")))?;
     let thread_id = stored_thread.thread_id;
     let history = stored_thread.history.ok_or_else(|| {
         CodexErr::Fatal(format!(

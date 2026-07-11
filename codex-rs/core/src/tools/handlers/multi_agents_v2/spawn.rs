@@ -91,12 +91,17 @@ async fn handle_spawn_agent(
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+    let persisted_role = if matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory)) {
+        turn.session_source.get_agent_role()
+    } else {
+        Some(role_name.unwrap_or(DEFAULT_ROLE_NAME).to_string())
+    };
 
     let spawn_source = thread_spawn_source(
         session.thread_id,
         &turn.session_source,
         child_depth,
-        role_name,
+        persisted_role.as_deref(),
         Some(args.task_name.clone()),
     )?;
     let new_agent_path = spawn_source.get_agent_path().ok_or_else(|| {
@@ -150,7 +155,7 @@ async fn handle_spawn_agent(
         },
     )
     .await;
-    let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
+    let role_tag = persisted_role.as_deref().unwrap_or(DEFAULT_ROLE_NAME);
     turn.session_telemetry.counter(
         "codex.multi_agent.spawn",
         /*inc*/ 1,

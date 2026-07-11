@@ -8,6 +8,7 @@ use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::apply_role_to_config;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
 
 #[derive(Default)]
@@ -64,7 +65,9 @@ async fn handle_spawn_agent(
     let session_source = turn.session_source.clone();
     let child_depth = next_thread_spawn_depth(&session_source);
     let max_depth = turn.config.agent_max_depth;
-    if exceeds_thread_spawn_depth_limit(child_depth, max_depth) {
+    if turn.multi_agent_version != MultiAgentVersion::V2
+        && exceeds_thread_spawn_depth_limit(child_depth, max_depth)
+    {
         return Err(FunctionCallError::RespondToModel(
             "Agent depth limit reached. Solve the task yourself.".to_string(),
         ));
@@ -118,6 +121,13 @@ async fn handle_spawn_agent(
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+    let task_name =
+        (turn.multi_agent_version == MultiAgentVersion::V2).then(generated_v1_agent_task_name);
+    let persisted_role = if args.fork_context {
+        turn.session_source.get_agent_role()
+    } else {
+        Some(role_name.unwrap_or(DEFAULT_ROLE_NAME).to_string())
+    };
 
     let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
         config,
@@ -126,8 +136,8 @@ async fn handle_spawn_agent(
             session.thread_id,
             &turn.session_source,
             child_depth,
-            role_name,
-            /*task_name*/ None,
+            persisted_role.as_deref(),
+            task_name,
         )?),
         SpawnAgentOptions {
             fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
@@ -209,7 +219,7 @@ async fn handle_spawn_agent(
         )
         .await;
     let new_thread_id = result?.thread_id;
-    let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
+    let role_tag = persisted_role.as_deref().unwrap_or(DEFAULT_ROLE_NAME);
     turn.session_telemetry.counter(
         "codex.multi_agent.spawn",
         /*inc*/ 1,

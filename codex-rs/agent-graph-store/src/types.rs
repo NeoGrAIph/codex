@@ -5,6 +5,8 @@ use serde::Serialize;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThreadSpawnEdgeStatus {
+    /// The child runtime exists, but its initial task is not yet durably activated.
+    PendingActivation,
     /// The child thread is still live or resumable as an open spawned agent.
     Open,
     /// The child thread has been closed from the parent/child graph's perspective.
@@ -19,6 +21,11 @@ mod tests {
     #[test]
     fn thread_spawn_edge_status_serializes_as_snake_case() {
         assert_eq!(
+            serde_json::to_string(&ThreadSpawnEdgeStatus::PendingActivation)
+                .expect("pending activation status should serialize"),
+            "\"pending_activation\""
+        );
+        assert_eq!(
             serde_json::to_string(&ThreadSpawnEdgeStatus::Open)
                 .expect("open status should serialize"),
             "\"open\""
@@ -27,6 +34,11 @@ mod tests {
             serde_json::to_string(&ThreadSpawnEdgeStatus::Closed)
                 .expect("closed status should serialize"),
             "\"closed\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ThreadSpawnEdgeStatus>("\"pending_activation\"")
+                .expect("pending activation status should deserialize"),
+            ThreadSpawnEdgeStatus::PendingActivation
         );
         assert_eq!(
             serde_json::from_str::<ThreadSpawnEdgeStatus>("\"open\"")
@@ -39,4 +51,13 @@ mod tests {
             ThreadSpawnEdgeStatus::Closed
         );
     }
+}
+
+/// Persisted incoming edge for a spawned thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ThreadSpawnEdge {
+    /// Immediate parent thread recorded by the incoming edge.
+    pub parent_thread_id: codex_protocol::ThreadId,
+    /// Durable activation/lifecycle state of the edge.
+    pub status: ThreadSpawnEdgeStatus,
 }

@@ -4,6 +4,7 @@ use std::pin::Pin;
 use codex_protocol::ThreadId;
 
 use crate::AgentGraphStoreResult;
+use crate::ThreadSpawnEdge;
 use crate::ThreadSpawnEdgeStatus;
 
 /// Future returned by [`AgentGraphStore`] operations.
@@ -26,9 +27,24 @@ pub trait AgentGraphStore: Send + Sync {
         status: ThreadSpawnEdgeStatus,
     ) -> AgentGraphStoreFuture<'_, ()>;
 
+    /// Return the immediate parent from a spawned thread's incoming edge.
+    fn get_thread_spawn_parent(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> AgentGraphStoreFuture<'_, Option<ThreadId>>;
+
+    /// Return the immediate incoming edge and its lifecycle status atomically.
+    fn get_thread_spawn_edge(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> AgentGraphStoreFuture<'_, Option<ThreadSpawnEdge>>;
+
+    /// Remove a spawned thread's incoming edge during lifecycle rollback.
+    fn remove_thread_spawn_edge(&self, child_thread_id: ThreadId) -> AgentGraphStoreFuture<'_, ()>;
+
     /// Update the persisted lifecycle status of a spawned thread's incoming edge.
     ///
-    /// Implementations should treat missing children as a successful no-op.
+    /// Implementations must return an error when the child has no persisted incoming edge.
     fn set_thread_spawn_edge_status(
         &self,
         child_thread_id: ThreadId,

@@ -1,8 +1,11 @@
 use super::*;
+use crate::DirectionalThreadSpawnEdgeStatus;
 use crate::SortDirection;
 use codex_protocol::protocol::SessionSource;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
+
+const MAX_THREAD_SPAWN_GRAPH_DEPTH: i64 = 256;
 
 impl StateRuntime {
     pub async fn get_thread(&self, id: ThreadId) -> anyhow::Result<Option<crate::ThreadMetadata>> {
@@ -104,17 +107,135 @@ ON CONFLICT(child_thread_id) DO UPDATE SET
         Ok(())
     }
 
+    /// Reserve a fresh child edge without overwriting an existing parent or lifecycle status.
+    pub async fn reserve_pending_thread_spawn_edge(
+        &self,
+        parent_thread_id: ThreadId,
+        child_thread_id: ThreadId,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"
+INSERT INTO thread_spawn_edges (
+    parent_thread_id,
+    child_thread_id,
+    status
+) VALUES (?, ?, ?)
+ON CONFLICT(child_thread_id) DO NOTHING
+            "#,
+        )
+        .bind(parent_thread_id.to_string())
+        .bind(child_thread_id.to_string())
+        .bind(crate::DirectionalThreadSpawnEdgeStatus::PendingActivation.as_ref())
+        .execute(&mut *tx)
+        .await?;
+        let row = sqlx::query(
+            "SELECT parent_thread_id, status FROM thread_spawn_edges WHERE child_thread_id = ?",
+        )
+        .bind(child_thread_id.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            anyhow::bail!(
+                "pending lifecycle reservation was not persisted for child {child_thread_id}"
+            );
+        };
+        let stored_parent_thread_id =
+            ThreadId::try_from(row.try_get::<String, _>("parent_thread_id")?)?;
+        let stored_status = row
+            .try_get::<String, _>("status")?
+            .parse::<crate::DirectionalThreadSpawnEdgeStatus>()?;
+        if stored_parent_thread_id != parent_thread_id
+            || stored_status != crate::DirectionalThreadSpawnEdgeStatus::PendingActivation
+        {
+            anyhow::bail!(
+                "conflicting lifecycle edge for child {child_thread_id}: expected parent {parent_thread_id} with pending_activation, found parent {stored_parent_thread_id} with {stored_status}"
+            );
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Return the immediate persisted parent of a spawned thread.
+    pub async fn get_thread_spawn_parent(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> anyhow::Result<Option<ThreadId>> {
+        Ok(self
+            .get_thread_spawn_edge(child_thread_id)
+            .await?
+            .map(|(parent_thread_id, _)| parent_thread_id))
+    }
+
+    /// Return the immediate persisted parent and lifecycle status of a spawned thread.
+    pub async fn get_thread_spawn_edge(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> anyhow::Result<Option<(ThreadId, crate::DirectionalThreadSpawnEdgeStatus)>> {
+        let row = sqlx::query(
+            "SELECT parent_thread_id, status FROM thread_spawn_edges WHERE child_thread_id = ?",
+        )
+        .bind(child_thread_id.to_string())
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        row.map(|row| {
+            let parent_thread_id =
+                ThreadId::try_from(row.try_get::<String, _>("parent_thread_id")?)?;
+            let status = row
+                .try_get::<String, _>("status")?
+                .parse::<crate::DirectionalThreadSpawnEdgeStatus>()?;
+            Ok((parent_thread_id, status))
+        })
+        .transpose()
+    }
+
+    /// Remove a spawned thread's incoming edge during a failed lifecycle transaction.
+    pub async fn remove_thread_spawn_edge(&self, child_thread_id: ThreadId) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM thread_spawn_edges WHERE child_thread_id = ?")
+            .bind(child_thread_id.to_string())
+            .execute(self.pool.as_ref())
+            .await?;
+        Ok(())
+    }
+
+    /// Remove only a provisional edge that has not acquired a persisted thread metadata row.
+    pub async fn remove_unmaterialized_pending_thread_spawn_edge(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            r#"
+DELETE FROM thread_spawn_edges
+WHERE child_thread_id = ?
+  AND status = ?
+  AND NOT EXISTS (
+      SELECT 1 FROM threads WHERE id = ?
+  )
+            "#,
+        )
+        .bind(child_thread_id.to_string())
+        .bind(crate::DirectionalThreadSpawnEdgeStatus::PendingActivation.as_ref())
+        .bind(child_thread_id.to_string())
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Update the persisted lifecycle status of a spawned thread's incoming edge.
     pub async fn set_thread_spawn_edge_status(
         &self,
         child_thread_id: ThreadId,
         status: crate::DirectionalThreadSpawnEdgeStatus,
     ) -> anyhow::Result<()> {
-        sqlx::query("UPDATE thread_spawn_edges SET status = ? WHERE child_thread_id = ?")
-            .bind(status.as_ref())
-            .bind(child_thread_id.to_string())
-            .execute(self.pool.as_ref())
-            .await?;
+        let result =
+            sqlx::query("UPDATE thread_spawn_edges SET status = ? WHERE child_thread_id = ?")
+                .bind(status.as_ref())
+                .bind(child_thread_id.to_string())
+                .execute(self.pool.as_ref())
+                .await?;
+        if result.rows_affected() == 0 {
+            anyhow::bail!("thread-spawn edge not found for child {child_thread_id}");
+        }
         Ok(())
     }
 
@@ -190,13 +311,15 @@ LIMIT 2
         root_thread_id: ThreadId,
         agent_path: &str,
     ) -> anyhow::Result<Option<ThreadId>> {
+        // Validate the graph before the lookup so corrupted cycles/depth overflow fail closed.
+        self.list_thread_spawn_descendants(root_thread_id).await?;
         let rows = sqlx::query(
             r#"
 WITH RECURSIVE subtree(child_thread_id) AS (
     SELECT child_thread_id
     FROM thread_spawn_edges
     WHERE parent_thread_id = ?
-    UNION ALL
+    UNION
     SELECT edge.child_thread_id
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
@@ -245,8 +368,19 @@ LIMIT 2
     ) -> anyhow::Result<Vec<ThreadId>> {
         let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
-WITH RECURSIVE subtree(child_thread_id, depth) AS (
-    SELECT child_thread_id, 1
+WITH RECURSIVE subtree(child_thread_id, depth, visited, cycle, depth_exceeded) AS (
+    SELECT
+        child_thread_id,
+        1,
+        ',' ||
+            "#,
+        );
+        builder.push_bind(root_thread_id.to_string());
+        builder.push(
+            r#"
+            || ',' || child_thread_id || ',',
+        0,
+        0
     FROM thread_spawn_edges
     WHERE parent_thread_id =
             "#,
@@ -258,10 +392,29 @@ WITH RECURSIVE subtree(child_thread_id, depth) AS (
             builder.push(
                 r#"
     UNION ALL
-    SELECT edge.child_thread_id, subtree.depth + 1
+    SELECT
+        edge.child_thread_id,
+        subtree.depth + 1,
+        subtree.visited || edge.child_thread_id || ',',
+        CASE
+            WHEN instr(subtree.visited, ',' || edge.child_thread_id || ',') > 0 THEN 1
+            ELSE 0
+        END,
+        CASE
+            WHEN subtree.depth >=
+                "#,
+            );
+            builder.push_bind(MAX_THREAD_SPAWN_GRAPH_DEPTH);
+            builder.push(
+                r#"
+            THEN 1
+            ELSE 0
+        END
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
-    WHERE status =
+    WHERE subtree.cycle = 0
+      AND subtree.depth_exceeded = 0
+      AND edge.status =
                 "#,
             );
             builder.push_bind(status);
@@ -269,33 +422,65 @@ WITH RECURSIVE subtree(child_thread_id, depth) AS (
             builder.push(
                 r#"
     UNION ALL
-    SELECT edge.child_thread_id, subtree.depth + 1
+    SELECT
+        edge.child_thread_id,
+        subtree.depth + 1,
+        subtree.visited || edge.child_thread_id || ',',
+        CASE
+            WHEN instr(subtree.visited, ',' || edge.child_thread_id || ',') > 0 THEN 1
+            ELSE 0
+        END,
+        CASE
+            WHEN subtree.depth >=
+                "#,
+            );
+            builder.push_bind(MAX_THREAD_SPAWN_GRAPH_DEPTH);
+            builder.push(
+                r#"
+            THEN 1
+            ELSE 0
+        END
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
+    WHERE subtree.cycle = 0
+      AND subtree.depth_exceeded = 0
                 "#,
             );
         }
         builder.push(
             r#"
 )
-SELECT child_thread_id
+SELECT child_thread_id, depth, cycle, depth_exceeded
 FROM subtree
 ORDER BY depth ASC, child_thread_id ASC
             "#,
         );
 
         let rows = builder.build().fetch_all(self.pool.as_ref()).await?;
-        rows.into_iter()
-            .map(|row| {
-                ThreadId::try_from(row.try_get::<String, _>("child_thread_id")?).map_err(Into::into)
-            })
-            .collect()
+        let mut descendants = Vec::with_capacity(rows.len());
+        for row in rows {
+            let depth = row.try_get::<i64, _>("depth")?;
+            if row.try_get::<i64, _>("cycle")? != 0 {
+                anyhow::bail!("thread-spawn graph contains a cycle below root {root_thread_id}");
+            }
+            if row.try_get::<i64, _>("depth_exceeded")? != 0 || depth > MAX_THREAD_SPAWN_GRAPH_DEPTH
+            {
+                anyhow::bail!(
+                    "thread-spawn graph below root {root_thread_id} exceeds the depth limit of {MAX_THREAD_SPAWN_GRAPH_DEPTH}"
+                );
+            }
+            descendants.push(ThreadId::try_from(
+                row.try_get::<String, _>("child_thread_id")?,
+            )?);
+        }
+        Ok(descendants)
     }
 
     async fn insert_thread_spawn_edge_if_absent(
         &self,
         parent_thread_id: ThreadId,
         child_thread_id: ThreadId,
+        status: crate::DirectionalThreadSpawnEdgeStatus,
     ) -> anyhow::Result<()> {
         sqlx::query(
             r#"
@@ -309,7 +494,7 @@ ON CONFLICT(child_thread_id) DO NOTHING
         )
         .bind(parent_thread_id.to_string())
         .bind(child_thread_id.to_string())
-        .bind(crate::DirectionalThreadSpawnEdgeStatus::Open.as_ref())
+        .bind(status.as_ref())
         .execute(self.pool.as_ref())
         .await?;
         Ok(())
@@ -319,11 +504,12 @@ ON CONFLICT(child_thread_id) DO NOTHING
         &self,
         child_thread_id: ThreadId,
         source: &str,
+        status: crate::DirectionalThreadSpawnEdgeStatus,
     ) -> anyhow::Result<()> {
         let Some(parent_thread_id) = thread_spawn_parent_thread_id_from_source_str(source) else {
             return Ok(());
         };
-        self.insert_thread_spawn_edge_if_absent(parent_thread_id, child_thread_id)
+        self.insert_thread_spawn_edge_if_absent(parent_thread_id, child_thread_id, status)
             .await
     }
 
@@ -533,6 +719,7 @@ ON CONFLICT(child_thread_id) DO NOTHING
         let updated_at = self.allocate_thread_updated_at(metadata.updated_at)?;
         let recency_at = self.allocate_thread_recency_at(metadata.recency_at)?;
         let preview = metadata_preview(metadata);
+        let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
             r#"
 INSERT INTO threads (
@@ -612,10 +799,28 @@ ON CONFLICT(id) DO NOTHING
         .bind(metadata.git_branch.as_deref())
         .bind(metadata.git_origin_url.as_deref())
         .bind("enabled")
-        .execute(self.pool.as_ref())
+        .execute(&mut *tx)
         .await?;
-        self.insert_thread_spawn_edge_from_source_if_absent(metadata.id, metadata.source.as_str())
+        if let Some(parent_thread_id) =
+            thread_spawn_parent_thread_id_from_source_str(metadata.source.as_str())
+        {
+            sqlx::query(
+                r#"
+INSERT INTO thread_spawn_edges (
+    parent_thread_id,
+    child_thread_id,
+    status
+) VALUES (?, ?, ?)
+ON CONFLICT(child_thread_id) DO NOTHING
+                "#,
+            )
+            .bind(parent_thread_id.to_string())
+            .bind(metadata.id.to_string())
+            .bind(crate::DirectionalThreadSpawnEdgeStatus::PendingActivation.as_ref())
+            .execute(&mut *tx)
             .await?;
+        }
+        tx.commit().await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -897,8 +1102,12 @@ ON CONFLICT(id) DO UPDATE SET
         .bind(creation_memory_mode.unwrap_or("enabled"))
         .execute(self.pool.as_ref())
         .await?;
-        self.insert_thread_spawn_edge_from_source_if_absent(metadata.id, metadata.source.as_str())
-            .await?;
+        self.insert_thread_spawn_edge_from_source_if_absent(
+            metadata.id,
+            metadata.source.as_str(),
+            crate::DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await?;
         Ok(())
     }
 
@@ -1146,15 +1355,24 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
 "#,
         );
         builder.push_bind(ancestor_thread_id.to_string());
+        builder.push(" AND status IN (");
+        builder.push_bind(DirectionalThreadSpawnEdgeStatus::Open.as_ref());
+        builder.push(", ");
+        builder.push_bind(DirectionalThreadSpawnEdgeStatus::Closed.as_ref());
+        builder.push(")");
         builder.push(
             r#"
     UNION
     SELECT edge.child_thread_id, edge.parent_thread_id
     FROM thread_spawn_edges AS edge
     JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id
-)
+    WHERE edge.status IN (
 "#,
         );
+        builder.push_bind(DirectionalThreadSpawnEdgeStatus::Open.as_ref());
+        builder.push(", ");
+        builder.push_bind(DirectionalThreadSpawnEdgeStatus::Closed.as_ref());
+        builder.push(")\n)\n");
     }
     push_thread_select_columns(builder);
     // SQLite may otherwise reorder these joins and scan the global timestamp index before
@@ -1175,6 +1393,11 @@ WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS (
         Some(crate::ThreadRelationFilter::DirectChildrenOf(parent_thread_id)) => {
             builder.push(" AND listed_edge.parent_thread_id = ");
             builder.push_bind(parent_thread_id.to_string());
+            builder.push(" AND listed_edge.status IN (");
+            builder.push_bind(DirectionalThreadSpawnEdgeStatus::Open.as_ref());
+            builder.push(", ");
+            builder.push_bind(DirectionalThreadSpawnEdgeStatus::Closed.as_ref());
+            builder.push(")");
         }
         Some(crate::ThreadRelationFilter::DescendantsOf(ancestor_thread_id)) => {
             builder.push(" AND subtree.child_thread_id != ");
@@ -1289,6 +1512,13 @@ pub(super) fn push_thread_filters<'a>(
         builder.push(" AND threads.archived = 0");
     }
     builder.push(" AND threads.preview <> ''");
+    builder.push(
+        " AND NOT EXISTS (SELECT 1 FROM thread_spawn_edges AS unpublished_edge WHERE unpublished_edge.child_thread_id = threads.id AND unpublished_edge.status NOT IN (",
+    );
+    builder.push_bind(DirectionalThreadSpawnEdgeStatus::Open.as_ref());
+    builder.push(", ");
+    builder.push_bind(DirectionalThreadSpawnEdgeStatus::Closed.as_ref());
+    builder.push("))");
     if !allowed_sources.is_empty() {
         builder.push(" AND threads.source IN (");
         let mut separated = builder.separated(", ");
@@ -1426,6 +1656,7 @@ mod tests {
     use codex_protocol::protocol::SessionMeta;
     use codex_protocol::protocol::SessionMetaLine;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentSource;
     use codex_protocol::protocol::ThreadHistoryMode;
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -1959,12 +2190,16 @@ mod tests {
         let second_child_id =
             ThreadId::from_string("00000000-0000-0000-0000-000000000002").expect("valid thread id");
         let grandchild_id = ThreadId::new();
+        let pending_child_id = ThreadId::new();
+        let pending_grandchild_id = ThreadId::new();
 
         for (thread_id, created_at) in [
             (parent_id, 1_700_000_000),
             (first_child_id, 1_700_000_200),
             (second_child_id, 1_700_000_200),
             (grandchild_id, 1_700_000_300),
+            (pending_child_id, 1_700_000_400),
+            (pending_grandchild_id, 1_700_000_500),
         ] {
             let mut metadata = test_thread_metadata(&codex_home, thread_id, codex_home.clone());
             metadata.created_at =
@@ -1989,6 +2224,16 @@ mod tests {
             (
                 first_child_id,
                 grandchild_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            ),
+            (
+                parent_id,
+                pending_child_id,
+                DirectionalThreadSpawnEdgeStatus::PendingActivation,
+            ),
+            (
+                pending_child_id,
+                pending_grandchild_id,
                 DirectionalThreadSpawnEdgeStatus::Open,
             ),
         ] {
@@ -2114,6 +2359,25 @@ mod tests {
                 None,
             )
         );
+        let all_threads = runtime
+            .list_threads(/*page_size*/ 10, filters(None))
+            .await
+            .expect("global thread listing should succeed");
+        assert!(
+            !all_threads
+                .items
+                .iter()
+                .any(|thread| thread.id == pending_child_id)
+        );
+        for published_thread_id in [first_child_id, second_child_id, pending_grandchild_id] {
+            assert!(
+                all_threads
+                    .items
+                    .iter()
+                    .any(|thread| thread.id == published_thread_id),
+                "published thread {published_thread_id} should remain listable"
+            );
+        }
 
         runtime
             .upsert_thread_spawn_edge(
@@ -2927,7 +3191,7 @@ mod tests {
     #[tokio::test]
     async fn thread_spawn_edges_track_directional_status() {
         let codex_home = unique_temp_dir();
-        let runtime = StateRuntime::init(codex_home, "test-provider".to_string())
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
             .await
             .expect("state db should initialize");
         let parent_thread_id =
@@ -2971,6 +3235,45 @@ mod tests {
             .await
             .expect("open descendants should load");
         assert_eq!(descendants, vec![child_thread_id, grandchild_thread_id]);
+
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(child_thread_id)
+                .await
+                .expect("incoming edge should load"),
+            Some((parent_thread_id, DirectionalThreadSpawnEdgeStatus::Open))
+        );
+        runtime
+            .set_thread_spawn_edge_status(
+                child_thread_id,
+                DirectionalThreadSpawnEdgeStatus::PendingActivation,
+            )
+            .await
+            .expect("edge pending activation update should succeed");
+        assert_eq!(
+            runtime
+                .list_thread_spawn_children_with_status(
+                    parent_thread_id,
+                    DirectionalThreadSpawnEdgeStatus::PendingActivation,
+                )
+                .await
+                .expect("pending activation child list should load"),
+            vec![child_thread_id]
+        );
+        drop(runtime);
+        let runtime = StateRuntime::init(codex_home, "test-provider".to_string())
+            .await
+            .expect("state db should reopen");
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(child_thread_id)
+                .await
+                .expect("pending edge should survive reopen"),
+            Some((
+                parent_thread_id,
+                DirectionalThreadSpawnEdgeStatus::PendingActivation
+            ))
+        );
 
         runtime
             .set_thread_spawn_edge_status(child_thread_id, DirectionalThreadSpawnEdgeStatus::Closed)
@@ -3018,6 +3321,383 @@ mod tests {
             .await
             .expect("all descendants should load");
         assert_eq!(all_descendants, vec![child_thread_id, grandchild_thread_id]);
+    }
+
+    #[tokio::test]
+    async fn pending_reservation_precedes_metadata_and_survives_compatibility_upsert() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let parent_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000903").expect("valid parent");
+        let child_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000904").expect("valid child");
+
+        runtime
+            .reserve_pending_thread_spawn_edge(parent_thread_id, child_thread_id)
+            .await
+            .expect("pending reservation should succeed");
+        assert_eq!(
+            runtime
+                .get_thread(child_thread_id)
+                .await
+                .expect("thread lookup should succeed"),
+            None
+        );
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(child_thread_id)
+                .await
+                .expect("pending edge should load"),
+            Some((
+                parent_thread_id,
+                DirectionalThreadSpawnEdgeStatus::PendingActivation,
+            ))
+        );
+
+        let mut metadata = test_thread_metadata(&codex_home, child_thread_id, codex_home.clone());
+        metadata.source =
+            crate::extract::enum_to_string(&SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }));
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("compatibility metadata upsert should succeed");
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(child_thread_id)
+                .await
+                .expect("reserved edge should reload"),
+            Some((
+                parent_thread_id,
+                DirectionalThreadSpawnEdgeStatus::PendingActivation,
+            )),
+            "historical reconciliation must not promote a live pending reservation"
+        );
+        assert!(
+            !runtime
+                .remove_unmaterialized_pending_thread_spawn_edge(child_thread_id)
+                .await
+                .expect("conditional cleanup should succeed"),
+            "a persisted metadata row must retain its pending lifecycle edge"
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_reservation_rejects_conflicts_and_cleans_up_only_without_metadata() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home, "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let parent_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000905").expect("valid parent");
+        let other_parent_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000906").expect("valid parent");
+        let child_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000907").expect("valid child");
+
+        runtime
+            .reserve_pending_thread_spawn_edge(parent_thread_id, child_thread_id)
+            .await
+            .expect("initial reservation should succeed");
+        let conflict = runtime
+            .reserve_pending_thread_spawn_edge(other_parent_thread_id, child_thread_id)
+            .await
+            .expect_err("conflicting parent must be rejected");
+        assert!(conflict.to_string().contains("conflicting lifecycle edge"));
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(child_thread_id)
+                .await
+                .expect("original edge should load"),
+            Some((
+                parent_thread_id,
+                DirectionalThreadSpawnEdgeStatus::PendingActivation,
+            ))
+        );
+        assert!(
+            runtime
+                .remove_unmaterialized_pending_thread_spawn_edge(child_thread_id)
+                .await
+                .expect("conditional cleanup should succeed")
+        );
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(child_thread_id)
+                .await
+                .expect("cleaned edge lookup should succeed"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn live_insert_uses_pending_activation_while_backfill_uses_open() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let parent_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000910").expect("valid parent");
+        let pending_child_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000911").expect("valid child");
+        let backfilled_child_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000912").expect("valid child");
+        let source =
+            crate::extract::enum_to_string(&SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }));
+        let mut pending_metadata =
+            test_thread_metadata(&codex_home, pending_child_id, codex_home.clone());
+        pending_metadata.source = source.clone();
+        assert!(
+            runtime
+                .insert_thread_if_absent(&pending_metadata)
+                .await
+                .expect("live thread insert should succeed")
+        );
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(pending_child_id)
+                .await
+                .expect("pending edge should load"),
+            Some((
+                parent_thread_id,
+                DirectionalThreadSpawnEdgeStatus::PendingActivation,
+            ))
+        );
+        runtime
+            .set_thread_spawn_edge_status(pending_child_id, DirectionalThreadSpawnEdgeStatus::Open)
+            .await
+            .expect("live edge promotion should succeed");
+        assert!(
+            !runtime
+                .insert_thread_if_absent(&pending_metadata)
+                .await
+                .expect("repeated live metadata insert should succeed")
+        );
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(pending_child_id)
+                .await
+                .expect("promoted edge should reload"),
+            Some((parent_thread_id, DirectionalThreadSpawnEdgeStatus::Open,)),
+            "metadata projection must not downgrade an activated edge"
+        );
+        runtime
+            .remove_thread_spawn_edge(pending_child_id)
+            .await
+            .expect("test should remove the live edge");
+        assert!(
+            !runtime
+                .insert_thread_if_absent(&pending_metadata)
+                .await
+                .expect("retry should restore missing lifecycle state")
+        );
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(pending_child_id)
+                .await
+                .expect("restored edge should load"),
+            Some((
+                parent_thread_id,
+                DirectionalThreadSpawnEdgeStatus::PendingActivation,
+            )),
+            "metadata retry must restore a missing edge fail-closed"
+        );
+
+        let mut backfilled_metadata =
+            test_thread_metadata(&codex_home, backfilled_child_id, codex_home.clone());
+        backfilled_metadata.source = source;
+        runtime
+            .upsert_thread(&backfilled_metadata)
+            .await
+            .expect("backfill upsert should succeed");
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(backfilled_child_id)
+                .await
+                .expect("backfilled edge should load"),
+            Some((parent_thread_id, DirectionalThreadSpawnEdgeStatus::Open,))
+        );
+    }
+
+    #[tokio::test]
+    async fn live_insert_rolls_back_thread_row_when_pending_edge_insert_fails() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id =
+            ThreadId::from_string("00000000-0000-0000-0000-000000000913").expect("valid child");
+        let mut metadata = test_thread_metadata(&codex_home, child_thread_id, codex_home.clone());
+        metadata.source =
+            crate::extract::enum_to_string(&SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }));
+        sqlx::query(
+            r#"
+CREATE TRIGGER reject_test_pending_edge
+BEFORE INSERT ON thread_spawn_edges
+WHEN NEW.child_thread_id = '00000000-0000-0000-0000-000000000913'
+BEGIN
+    SELECT RAISE(ABORT, 'injected pending edge failure');
+END
+            "#,
+        )
+        .execute(runtime.pool.as_ref())
+        .await
+        .expect("failure trigger should install");
+
+        let error = runtime
+            .insert_thread_if_absent(&metadata)
+            .await
+            .expect_err("pending edge failure should reject the live insert");
+        assert!(error.to_string().contains("injected pending edge failure"));
+        assert_eq!(
+            runtime
+                .get_thread(child_thread_id)
+                .await
+                .expect("thread lookup should succeed"),
+            None,
+            "thread row and pending edge must commit atomically"
+        );
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(child_thread_id)
+                .await
+                .expect("edge lookup should succeed"),
+            None,
+            "failed transaction must not leave a pending edge"
+        );
+
+        sqlx::query("DROP TRIGGER reject_test_pending_edge")
+            .execute(runtime.pool.as_ref())
+            .await
+            .expect("failure trigger should be removed");
+        assert!(
+            runtime
+                .insert_thread_if_absent(&metadata)
+                .await
+                .expect("retry after rollback should succeed")
+        );
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(child_thread_id)
+                .await
+                .expect("retry edge should load"),
+            Some((
+                parent_thread_id,
+                DirectionalThreadSpawnEdgeStatus::PendingActivation,
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_spawn_descendant_traversal_rejects_cycles() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home, "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let root_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+
+        runtime
+            .upsert_thread_spawn_edge(
+                root_thread_id,
+                child_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("child edge insert should succeed");
+        runtime
+            .upsert_thread_spawn_edge(
+                child_thread_id,
+                root_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("cycle edge insert should succeed");
+
+        let all_error = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            runtime.list_thread_spawn_descendants(root_thread_id),
+        )
+        .await
+        .expect("cycle traversal should not hang")
+        .expect_err("cycle traversal should fail closed");
+        assert!(all_error.to_string().contains("contains a cycle"));
+
+        let open_error = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            runtime.list_thread_spawn_descendants_with_status(
+                root_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            ),
+        )
+        .await
+        .expect("filtered cycle traversal should not hang")
+        .expect_err("filtered cycle traversal should fail closed");
+        assert!(open_error.to_string().contains("contains a cycle"));
+    }
+
+    #[tokio::test]
+    async fn thread_spawn_descendant_traversal_rejects_depth_overflow() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home, "test-provider".to_string())
+            .await
+            .expect("state db should initialize");
+        let root_thread_id = ThreadId::new();
+        let mut parent_thread_id = root_thread_id;
+
+        for _ in 0..MAX_THREAD_SPAWN_GRAPH_DEPTH {
+            let child_thread_id = ThreadId::new();
+            runtime
+                .upsert_thread_spawn_edge(
+                    parent_thread_id,
+                    child_thread_id,
+                    DirectionalThreadSpawnEdgeStatus::Open,
+                )
+                .await
+                .expect("chain edge insert should succeed");
+            parent_thread_id = child_thread_id;
+        }
+
+        let descendants = runtime
+            .list_thread_spawn_descendants(root_thread_id)
+            .await
+            .expect("depth limit itself should remain valid");
+        assert_eq!(descendants.len(), MAX_THREAD_SPAWN_GRAPH_DEPTH as usize);
+
+        let overflow_thread_id = ThreadId::new();
+        runtime
+            .upsert_thread_spawn_edge(
+                parent_thread_id,
+                overflow_thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("overflow edge insert should succeed");
+
+        let error = runtime
+            .list_thread_spawn_descendants(root_thread_id)
+            .await
+            .expect_err("over-deep traversal should fail closed");
+        assert!(error.to_string().contains("exceeds the depth limit"));
     }
 
     #[tokio::test]

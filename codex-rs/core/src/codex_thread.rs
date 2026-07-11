@@ -2,6 +2,7 @@ use crate::agent::AgentStatus;
 use crate::config::ConstraintResult;
 use crate::elicitation::ElicitationRegistration;
 use crate::session::Codex;
+use crate::session::SessionLoopTermination;
 use crate::session::SessionSettingsUpdate;
 use crate::session::SteerInputError;
 use codex_features::Feature;
@@ -51,6 +52,8 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 
@@ -163,7 +166,14 @@ pub struct CodexThread {
     pub(crate) session_source: SessionSource,
     session_configured: SessionConfiguredEvent,
     rollout_path: Option<PathBuf>,
+    initial_task_published: AtomicBool,
     out_of_band_elicitations: Mutex<OutOfBandElicitations>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum InitialTaskPublication {
+    Published,
+    Pending,
 }
 
 #[derive(Default)]
@@ -188,14 +198,27 @@ impl CodexThread {
         session_configured: SessionConfiguredEvent,
         rollout_path: Option<PathBuf>,
         session_source: SessionSource,
+        initial_task_publication: InitialTaskPublication,
     ) -> Self {
         Self {
             codex,
             session_source,
             session_configured,
             rollout_path,
+            initial_task_published: AtomicBool::new(matches!(
+                initial_task_publication,
+                InitialTaskPublication::Published
+            )),
             out_of_band_elicitations: Mutex::new(OutOfBandElicitations::default()),
         }
+    }
+
+    pub(crate) fn publish_initial_task(&self) {
+        self.initial_task_published.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_initial_task_published(&self) -> bool {
+        self.initial_task_published.load(Ordering::Acquire)
     }
 
     pub async fn submit(&self, op: Op) -> CodexResult<String> {
@@ -213,7 +236,11 @@ impl CodexThread {
 
     /// Wait until the underlying session loop has terminated.
     pub async fn wait_until_terminated(&self) {
-        self.codex.session_loop_termination.clone().await;
+        self.session_loop_termination().await;
+    }
+
+    pub(crate) fn session_loop_termination(&self) -> SessionLoopTermination {
+        self.codex.session_loop_termination.clone()
     }
 
     pub(crate) async fn emit_thread_resume_lifecycle(&self) {

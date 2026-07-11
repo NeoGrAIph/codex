@@ -1,4 +1,5 @@
 use super::AgentRoleConfig;
+use super::deserialize_config_toml_with_base;
 use codex_config::ConfigLayerStack;
 use codex_config::ConfigLayerStackOrdering;
 use codex_config::config_toml::AgentRoleToml;
@@ -8,6 +9,7 @@ use codex_exec_server::ExecutorFileSystem;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
 use codex_utils_path_uri::PathUri;
+use futures::StreamExt;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -16,12 +18,41 @@ use std::path::Path;
 use std::path::PathBuf;
 use toml::Value as TomlValue;
 
+const MAX_AGENT_ROLE_DEVELOPER_INSTRUCTIONS_BYTES: usize = 8 * 1_024;
+const MAX_AGENT_ROLE_FILE_BYTES: u64 = 64 * 1_024;
+const MAX_DISCOVERED_AGENT_ROLE_FILES: usize = 256;
+
+#[derive(Debug, Clone, PartialEq)]
+#[doc(hidden)]
+pub struct MaterializedAgentRoleLayer {
+    pub(crate) config: TomlValue,
+    pub(crate) base_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct LoadedAgentRoles {
+    pub(crate) declarations: BTreeMap<String, AgentRoleConfig>,
+    pub(crate) layers: BTreeMap<String, MaterializedAgentRoleLayer>,
+}
+
+#[derive(Debug, Clone)]
+struct LoadedAgentRole {
+    declaration: AgentRoleConfig,
+    layer: Option<MaterializedAgentRoleLayer>,
+}
+
+#[derive(Debug)]
+struct MaterializedAgentRoleFile {
+    resolved: ResolvedAgentRoleFile,
+    layer: MaterializedAgentRoleLayer,
+}
+
 pub(crate) async fn load_agent_roles(
     fs: &dyn ExecutorFileSystem,
     cfg: &ConfigToml,
     config_layer_stack: &ConfigLayerStack,
     startup_warnings: &mut Vec<String>,
-) -> std::io::Result<BTreeMap<String, AgentRoleConfig>> {
+) -> std::io::Result<LoadedAgentRoles> {
     let layers = config_layer_stack.get_layers(
         ConfigLayerStackOrdering::LowestPrecedenceFirst,
         /*include_disabled*/ false,
@@ -30,9 +61,9 @@ pub(crate) async fn load_agent_roles(
         return load_agent_roles_without_layers(fs, cfg).await;
     }
 
-    let mut roles: BTreeMap<String, AgentRoleConfig> = BTreeMap::new();
+    let mut roles: BTreeMap<String, LoadedAgentRole> = BTreeMap::new();
     for layer in layers {
-        let mut layer_roles: BTreeMap<String, AgentRoleConfig> = BTreeMap::new();
+        let mut layer_roles: BTreeMap<String, LoadedAgentRole> = BTreeMap::new();
         let mut declared_role_files = BTreeSet::new();
         let config_folder = layer.config_folder();
         let agents_toml = match agents_toml_from_layer(&layer.config, config_folder.as_deref()) {
@@ -52,7 +83,7 @@ pub(crate) async fn load_agent_roles(
                             continue;
                         }
                     };
-                if let Some(config_file) = role.config_file.clone() {
+                if let Some(config_file) = role.declaration.config_file.clone() {
                     declared_role_files.insert(config_file);
                 }
                 if layer_roles.contains_key(&role_name) {
@@ -99,11 +130,14 @@ pub(crate) async fn load_agent_roles(
         for (role_name, role) in layer_roles {
             let mut merged_role = role;
             if let Some(existing_role) = roles.get(&role_name) {
-                merge_missing_role_fields(&mut merged_role, existing_role);
+                merge_missing_role_fields(&mut merged_role.declaration, &existing_role.declaration);
+                if merged_role.layer.is_none() {
+                    merged_role.layer.clone_from(&existing_role.layer);
+                }
             }
             if let Err(err) = validate_required_agent_role_description(
                 &role_name,
-                merged_role.description.as_deref(),
+                merged_role.declaration.description.as_deref(),
             ) {
                 push_agent_role_warning(startup_warnings, err);
                 continue;
@@ -112,7 +146,7 @@ pub(crate) async fn load_agent_roles(
         }
     }
 
-    Ok(roles)
+    Ok(finish_loaded_agent_roles(roles))
 }
 
 fn push_agent_role_warning(startup_warnings: &mut Vec<String>, err: std::io::Error) {
@@ -124,12 +158,15 @@ fn push_agent_role_warning(startup_warnings: &mut Vec<String>, err: std::io::Err
 async fn load_agent_roles_without_layers(
     fs: &dyn ExecutorFileSystem,
     cfg: &ConfigToml,
-) -> std::io::Result<BTreeMap<String, AgentRoleConfig>> {
+) -> std::io::Result<LoadedAgentRoles> {
     let mut roles = BTreeMap::new();
     if let Some(agents_toml) = cfg.agents.as_ref() {
         for (declared_role_name, role_toml) in &agents_toml.roles {
             let (role_name, role) = read_declared_role(fs, declared_role_name, role_toml).await?;
-            validate_required_agent_role_description(&role_name, role.description.as_deref())?;
+            validate_required_agent_role_description(
+                &role_name,
+                role.declaration.description.as_deref(),
+            )?;
 
             if roles.insert(role_name.clone(), role).is_some() {
                 return Err(std::io::Error::new(
@@ -140,26 +177,58 @@ async fn load_agent_roles_without_layers(
         }
     }
 
-    Ok(roles)
+    Ok(finish_loaded_agent_roles(roles))
+}
+
+fn finish_loaded_agent_roles(roles: BTreeMap<String, LoadedAgentRole>) -> LoadedAgentRoles {
+    let mut loaded = LoadedAgentRoles::default();
+    for (role_name, mut role) in roles {
+        if let (Some(description), Some(layer)) =
+            (role.declaration.description.as_mut(), role.layer.as_ref())
+        {
+            let note = agent_role_locked_settings_note(&layer.config);
+            if !description.ends_with(&note) {
+                description.push_str(&note);
+            }
+        }
+        loaded
+            .declarations
+            .insert(role_name.clone(), role.declaration);
+        if let Some(layer) = role.layer {
+            loaded.layers.insert(role_name, layer);
+        }
+    }
+    loaded
 }
 
 async fn read_declared_role(
     fs: &dyn ExecutorFileSystem,
     declared_role_name: &str,
     role_toml: &AgentRoleToml,
-) -> std::io::Result<(String, AgentRoleConfig)> {
+) -> std::io::Result<(String, LoadedAgentRole)> {
     let mut role = agent_role_config_from_toml(fs, declared_role_name, role_toml).await?;
     let mut role_name = declared_role_name.to_string();
+    let mut layer = None;
     if let Some(config_file) = role.config_file.as_deref() {
         let config_file = AbsolutePathBuf::from_absolute_path(config_file)?;
-        let parsed_file =
-            read_resolved_agent_role_file(fs, &config_file, Some(declared_role_name)).await?;
-        role_name = parsed_file.role_name;
-        role.description = parsed_file.description.or(role.description);
-        role.nickname_candidates = parsed_file.nickname_candidates.or(role.nickname_candidates);
+        let materialized =
+            read_materialized_agent_role_file(fs, &config_file, Some(declared_role_name)).await?;
+        role_name = materialized.resolved.role_name;
+        role.description = materialized.resolved.description.or(role.description);
+        role.nickname_candidates = materialized
+            .resolved
+            .nickname_candidates
+            .or(role.nickname_candidates);
+        layer = Some(materialized.layer);
     }
 
-    Ok((role_name, role))
+    Ok((
+        role_name,
+        LoadedAgentRole {
+            declaration: role,
+            layer,
+        },
+    ))
 }
 
 fn merge_missing_role_fields(role: &mut AgentRoleConfig, fallback: &AgentRoleConfig) {
@@ -315,20 +384,119 @@ pub(crate) fn parse_agent_role_file_contents(
     })
 }
 
-async fn read_resolved_agent_role_file(
+pub(crate) fn agent_role_locked_settings_note(config: &TomlValue) -> String {
+    let model = config.get("model").and_then(TomlValue::as_str);
+    let reasoning_effort = config
+        .get("model_reasoning_effort")
+        .and_then(TomlValue::as_str);
+    let service_tier = config.get("service_tier").and_then(TomlValue::as_str);
+    let model_and_reasoning_note = match (model, reasoning_effort) {
+        (Some(model), Some(reasoning_effort)) => format!(
+            "\n- This role's model is set to `{model}` and its reasoning effort is set to `{reasoning_effort}`. These settings cannot be changed."
+        ),
+        (Some(model), None) => {
+            format!("\n- This role's model is set to `{model}` and cannot be changed.")
+        }
+        (None, Some(reasoning_effort)) => format!(
+            "\n- This role's reasoning effort is set to `{reasoning_effort}` and cannot be changed."
+        ),
+        (None, None) => String::new(),
+    };
+    let service_tier_note = service_tier
+        .map(|service_tier| {
+            format!(
+                "\n- This role's service tier is set to `{service_tier}`. If it is supported by the resolved model, it takes precedence over a valid spawn request service tier."
+            )
+        })
+        .unwrap_or_default();
+    format!("{model_and_reasoning_note}{service_tier_note}")
+}
+
+async fn read_materialized_agent_role_file(
     fs: &dyn ExecutorFileSystem,
     path: &AbsolutePathBuf,
     role_name_hint: Option<&str>,
-) -> std::io::Result<ResolvedAgentRoleFile> {
+) -> std::io::Result<MaterializedAgentRoleFile> {
     let path_uri = PathUri::from_abs_path(path);
-    let contents = fs.read_file_text(&path_uri, /*sandbox*/ None).await?;
+    let metadata = fs.get_metadata(&path_uri, /*sandbox*/ None).await?;
+    if !metadata.is_file || metadata.size > MAX_AGENT_ROLE_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "agent role file at {} must be a file no larger than {MAX_AGENT_ROLE_FILE_BYTES} bytes",
+                path.as_path().display()
+            ),
+        ));
+    }
+    let contents = read_bounded_agent_role_file(fs, &path_uri, path.as_path()).await?;
     let config_base_dir = path.parent().unwrap_or_else(|| path.clone());
-    parse_agent_role_file_contents(
+    let resolved = parse_agent_role_file_contents(
         &contents,
         path.as_path(),
         config_base_dir.as_path(),
         role_name_hint,
+    )?;
+    deserialize_config_toml_with_base(resolved.config.clone(), config_base_dir.as_path())
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    Ok(MaterializedAgentRoleFile {
+        layer: MaterializedAgentRoleLayer {
+            config: resolved.config.clone(),
+            base_dir: config_base_dir.into_path_buf(),
+        },
+        resolved,
+    })
+}
+
+async fn read_bounded_agent_role_file(
+    fs: &dyn ExecutorFileSystem,
+    path_uri: &PathUri,
+    path_label: &Path,
+) -> std::io::Result<String> {
+    let mut stream = fs.read_file_stream(path_uri, /*sandbox*/ None).await?;
+    let mut contents = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if chunk.len() > MAX_AGENT_ROLE_FILE_BYTES as usize - contents.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "agent role file at {} must be a file no larger than {MAX_AGENT_ROLE_FILE_BYTES} bytes",
+                    path_label.display()
+                ),
+            ));
+        }
+        contents.extend_from_slice(&chunk);
+    }
+    String::from_utf8(contents)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
+}
+
+#[cfg(test)]
+pub(crate) async fn materialize_agent_role_for_test(
+    config: &mut super::Config,
+    role_name: &str,
+) -> std::io::Result<()> {
+    let config_file = config
+        .agent_roles
+        .get(role_name)
+        .and_then(|role| role.config_file.as_deref())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("test agent role `{role_name}` has no config file"),
+            )
+        })?;
+    let config_file = AbsolutePathBuf::from_absolute_path(config_file)?;
+    let materialized = read_materialized_agent_role_file(
+        codex_exec_server::LOCAL_FS.as_ref(),
+        &config_file,
+        Some(role_name),
     )
+    .await?;
+    config
+        .materialized_agent_role_layers
+        .insert(role_name.to_string(), materialized.layer);
+    Ok(())
 }
 
 fn normalize_agent_role_description(
@@ -372,6 +540,17 @@ fn validate_agent_role_file_developer_instructions(
                 role_file_label.display()
             ),
         )),
+        Some(developer_instructions)
+            if developer_instructions.len() > MAX_AGENT_ROLE_DEVELOPER_INSTRUCTIONS_BYTES =>
+        {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "agent role file at {}.developer_instructions must be at most {MAX_AGENT_ROLE_DEVELOPER_INSTRUCTIONS_BYTES} bytes",
+                    role_file_label.display()
+                ),
+            ))
+        }
         Some(_) => Ok(()),
         None if require_present => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -406,13 +585,13 @@ async fn validate_agent_role_config_file(
                 ),
             )
         })?;
-    if metadata.is_file {
+    if metadata.is_file && metadata.size <= MAX_AGENT_ROLE_FILE_BYTES {
         Ok(())
     } else {
         Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!(
-                "agents.{role_name}.config_file must point to a file: {}",
+                "agents.{role_name}.config_file must point to a file no larger than {MAX_AGENT_ROLE_FILE_BYTES} bytes: {}",
                 config_file.as_path().display()
             ),
         ))
@@ -476,22 +655,23 @@ async fn discover_agent_roles_in_dir(
     agents_dir: &AbsolutePathBuf,
     declared_role_files: &BTreeSet<PathBuf>,
     startup_warnings: &mut Vec<String>,
-) -> std::io::Result<BTreeMap<String, AgentRoleConfig>> {
+) -> std::io::Result<BTreeMap<String, LoadedAgentRole>> {
     let mut roles = BTreeMap::new();
 
     for agent_file in collect_agent_role_files(fs, agents_dir).await? {
         if declared_role_files.contains(agent_file.as_path()) {
             continue;
         }
-        let parsed_file =
-            match read_resolved_agent_role_file(fs, &agent_file, /*role_name_hint*/ None).await {
-                Ok(parsed_file) => parsed_file,
+        let materialized =
+            match read_materialized_agent_role_file(fs, &agent_file, /*role_name_hint*/ None).await
+            {
+                Ok(materialized) => materialized,
                 Err(err) => {
                     push_agent_role_warning(startup_warnings, err);
                     continue;
                 }
             };
-        let role_name = parsed_file.role_name;
+        let role_name = materialized.resolved.role_name.clone();
         if roles.contains_key(&role_name) {
             push_agent_role_warning(
                 startup_warnings,
@@ -507,10 +687,13 @@ async fn discover_agent_roles_in_dir(
         }
         roles.insert(
             role_name,
-            AgentRoleConfig {
-                description: parsed_file.description,
-                config_file: Some(agent_file.to_path_buf()),
-                nickname_candidates: parsed_file.nickname_candidates,
+            LoadedAgentRole {
+                declaration: AgentRoleConfig {
+                    description: materialized.resolved.description,
+                    config_file: Some(agent_file.to_path_buf()),
+                    nickname_candidates: materialized.resolved.nickname_candidates,
+                },
+                layer: Some(materialized.layer),
             },
         );
     }
@@ -545,6 +728,15 @@ async fn collect_agent_role_files(
                     .is_some_and(|extension| extension == "toml")
             {
                 files.push(path);
+                if files.len() > MAX_DISCOVERED_AGENT_ROLE_FILES {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "agent role discovery exceeds the limit of {MAX_DISCOVERED_AGENT_ROLE_FILES} files under {}",
+                            dir.as_path().display()
+                        ),
+                    ));
+                }
             }
         }
     }

@@ -11,6 +11,7 @@ use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceSpec;
 use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
+use codex_protocol::error::CodexErr;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
@@ -120,7 +121,7 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
     )
     .await;
 
-    let namespace = "resume_tools";
+    let namespace = "agents";
     let namespace_description = "Tools available after resume.";
     let tool_name = "resume_lookup";
     let tool_description = "Look up a value after resume.";
@@ -182,6 +183,15 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
             .features
             .enable(Feature::Sqlite)
             .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        config.multi_agent_v2.tool_namespace = Some("agents".to_string());
     });
     let resumed = resume_builder
         .resume(&server, base_test.home.clone(), rollout_path)
@@ -219,6 +229,202 @@ async fn resume_restores_dynamic_tools_from_rollout_with_sqlite_enabled() -> Res
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_rejects_restored_dynamic_namespace_matching_active_runtime_namespaces() -> Result<()>
+{
+    for namespace in ["multi_agent_v1", "agents"] {
+        assert_resume_rejects_restored_dynamic_namespace(namespace).await?;
+    }
+    Ok(())
+}
+
+async fn assert_resume_rejects_restored_dynamic_namespace(namespace: &str) -> Result<()> {
+    let server = start_mock_server().await;
+    mount_sse_once(
+        &server,
+        responses::sse(vec![
+            ev_response_created("resp-reserved-namespace"),
+            ev_completed("resp-reserved-namespace"),
+        ]),
+    )
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Sqlite)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+    });
+    let base_test = builder.build(&server).await?;
+    let started = base_test
+        .thread_manager
+        .start_thread_with_tools(base_test.config.clone(), Vec::new())
+        .await?;
+    let rollout_path = started
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("rollout path");
+    started
+        .thread
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "persist this thread".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&started.thread, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    started.thread.submit(Op::Shutdown).await?;
+    wait_for_event(&started.thread, |event| {
+        matches!(event, EventMsg::ShutdownComplete)
+    })
+    .await;
+
+    let mut rollout_lines = fs::read_to_string(&rollout_path)?
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<serde_json::Result<Vec<_>>>()?;
+    rollout_lines.first_mut().expect("session metadata line")["payload"]["dynamic_tools"] = json!([{
+        "type": "namespace",
+        "name": namespace,
+        "description": "Historical conflicting namespace",
+        "tools": [{
+            "type": "function",
+            "name": "legacy_lookup",
+            "description": "Historical dynamic tool",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            }
+        }]
+    }]);
+    let rollout = rollout_lines
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<serde_json::Result<Vec<_>>>()?
+        .join("\n");
+    fs::write(&rollout_path, format!("{rollout}\n"))?;
+
+    let mut resume_builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Sqlite)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        config.multi_agent_v2.tool_namespace = Some("agents".to_string());
+    });
+    let err = resume_builder
+        .resume(&server, base_test.home.clone(), rollout_path)
+        .await
+        .err()
+        .expect("reserved persisted namespace should reject resume");
+    assert!(
+        err.to_string().contains(&format!(
+            "dynamic tool namespace collides with an active runtime namespace: {namespace}"
+        )),
+        "unexpected resume error: {err:#}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn thread_start_rejects_dynamic_namespace_matching_configured_v2_namespace() -> Result<()> {
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        config.multi_agent_v2.tool_namespace = Some("agents".to_string());
+    });
+    let test = builder.build(&server).await?;
+    let dynamic_tool = DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
+        name: "agents".to_string(),
+        description: "Conflicting namespace".to_string(),
+        tools: vec![DynamicToolNamespaceTool::Function(
+            DynamicToolFunctionSpec {
+                name: "lookup".to_string(),
+                description: "Lookup".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+                defer_loading: false,
+            },
+        )],
+    });
+
+    let err = test
+        .thread_manager
+        .start_thread_with_tools(test.config.clone(), vec![dynamic_tool])
+        .await
+        .err()
+        .expect("configured V2 namespace collision should reject thread start");
+
+    assert!(matches!(
+        err,
+        CodexErr::InvalidRequest(message)
+            if message
+                == "dynamic tool namespace collides with an active runtime namespace: agents"
+    ));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn thread_start_rejects_configured_v2_namespace_matching_projected_v1() -> Result<()> {
+    let server = start_mock_server().await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::MultiAgentV2)
+            .expect("test config should allow feature update");
+        config.multi_agent_v2.tool_namespace = Some("multi_agent_v1".to_string());
+    });
+    let err = builder
+        .build(&server)
+        .await
+        .err()
+        .expect("projected V1 namespace collision should reject thread start");
+
+    assert_eq!(
+        err.to_string(),
+        "features.multi_agent_v2.tool_namespace collides with the active projected namespace: multi_agent_v1"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resume_restores_legacy_dynamic_tools_from_rollout_with_sqlite_enabled() -> Result<()> {
     let server = start_mock_server().await;
     let mock = mount_sse_sequence(
@@ -244,6 +450,11 @@ async fn resume_restores_legacy_dynamic_tools_from_rollout_with_sqlite_enabled()
             .features
             .enable(Feature::Sqlite)
             .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow V1 collaboration");
+        config.multi_agent_v2.tool_namespace = Some(namespace.to_string());
     });
     let base_test = builder.build(&server).await?;
     let started = base_test
@@ -302,6 +513,11 @@ async fn resume_restores_legacy_dynamic_tools_from_rollout_with_sqlite_enabled()
             .features
             .enable(Feature::Sqlite)
             .expect("test config should allow feature update");
+        config
+            .features
+            .enable(Feature::Collab)
+            .expect("test config should allow V1 collaboration");
+        config.multi_agent_v2.tool_namespace = Some(namespace.to_string());
     });
     let resumed = resume_builder
         .resume(&server, base_test.home.clone(), rollout_path)

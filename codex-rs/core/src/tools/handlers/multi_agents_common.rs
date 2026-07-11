@@ -20,6 +20,7 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::user_input::UserInput;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use uuid::Uuid;
 
 /// Minimum wait timeout to prevent tight polling loops from burning CPU.
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
@@ -68,16 +69,32 @@ where
 }
 
 pub(crate) fn collab_spawn_error(err: CodexErr) -> FunctionCallError {
+    tracing::warn!(
+        error_kind = collab_error_kind(&err),
+        "collab spawn operation failed"
+    );
     match err {
+        CodexErr::AgentLimitReached { .. } => FunctionCallError::RespondToModel(
+            "collab spawn failed: agent thread limit reached".to_string(),
+        ),
+        CodexErr::ThreadNotFound(_) => {
+            FunctionCallError::RespondToModel("collab parent agent not found".to_string())
+        }
         CodexErr::UnsupportedOperation(message) if message == "thread manager dropped" => {
             FunctionCallError::RespondToModel("collab manager unavailable".to_string())
         }
-        CodexErr::UnsupportedOperation(message) => FunctionCallError::RespondToModel(message),
-        err => FunctionCallError::RespondToModel(format!("collab spawn failed: {err}")),
+        CodexErr::InvalidRequest(_) => {
+            FunctionCallError::RespondToModel("collab spawn request is invalid".to_string())
+        }
+        CodexErr::UnsupportedOperation(_) => {
+            FunctionCallError::RespondToModel("collab spawn operation is unavailable".to_string())
+        }
+        _ => FunctionCallError::RespondToModel("collab spawn failed".to_string()),
     }
 }
 
 pub(crate) fn collab_agent_error(agent_id: ThreadId, err: CodexErr) -> FunctionCallError {
+    tracing::warn!(error_kind = collab_error_kind(&err), %agent_id, "collab agent operation failed");
     match err {
         CodexErr::ThreadNotFound(id) => {
             FunctionCallError::RespondToModel(format!("agent with id {id} not found"))
@@ -88,7 +105,54 @@ pub(crate) fn collab_agent_error(agent_id: ThreadId, err: CodexErr) -> FunctionC
         CodexErr::UnsupportedOperation(_) => {
             FunctionCallError::RespondToModel("collab manager unavailable".to_string())
         }
-        err => FunctionCallError::RespondToModel(format!("collab tool failed: {err}")),
+        CodexErr::InvalidRequest(_) => {
+            FunctionCallError::RespondToModel("collab agent request is invalid".to_string())
+        }
+        _ => FunctionCallError::RespondToModel("collab tool failed".to_string()),
+    }
+}
+
+fn collab_error_kind(err: &CodexErr) -> &'static str {
+    match err {
+        CodexErr::TurnAborted => "turn_aborted",
+        CodexErr::SessionBudgetExceeded => "session_budget_exceeded",
+        CodexErr::Stream(..) => "stream",
+        CodexErr::ContextWindowExceeded => "context_window_exceeded",
+        CodexErr::ThreadNotFound(_) => "thread_not_found",
+        CodexErr::AgentLimitReached { .. } => "agent_limit_reached",
+        CodexErr::SessionConfiguredNotFirstEvent => "session_configured_not_first_event",
+        CodexErr::Timeout => "timeout",
+        CodexErr::RequestTimeout => "request_timeout",
+        CodexErr::Spawn => "spawn",
+        CodexErr::Interrupted => "interrupted",
+        CodexErr::UnexpectedStatus(_) => "unexpected_status",
+        CodexErr::InvalidRequest(_) => "invalid_request",
+        CodexErr::InvalidImageRequest() => "invalid_image_request",
+        CodexErr::UsageLimitReached(_) => "usage_limit_reached",
+        CodexErr::ServerOverloaded => "server_overloaded",
+        CodexErr::CyberPolicy { .. } => "cyber_policy",
+        CodexErr::ResponseStreamFailed(_) => "response_stream_failed",
+        CodexErr::ConnectionFailed(_) => "connection_failed",
+        CodexErr::QuotaExceeded => "quota_exceeded",
+        CodexErr::UsageNotIncluded => "usage_not_included",
+        CodexErr::InternalServerError => "internal_server_error",
+        CodexErr::RetryLimit(_) => "retry_limit",
+        CodexErr::InternalAgentDied => "internal_agent_died",
+        CodexErr::Sandbox(_) => "sandbox",
+        CodexErr::LandlockSandboxExecutableNotProvided => {
+            "landlock_sandbox_executable_not_provided"
+        }
+        CodexErr::UnsupportedOperation(_) => "unsupported_operation",
+        CodexErr::RefreshTokenFailed(_) => "refresh_token_failed",
+        CodexErr::Fatal(_) => "fatal",
+        CodexErr::Io(_) => "io",
+        CodexErr::Json(_) => "json",
+        #[cfg(target_os = "linux")]
+        CodexErr::LandlockRuleset(_) => "landlock_ruleset",
+        #[cfg(target_os = "linux")]
+        CodexErr::LandlockPathFd(_) => "landlock_path_fd",
+        CodexErr::TokioJoin(_) => "tokio_join",
+        CodexErr::EnvVar(_) => "env_var",
     }
 }
 
@@ -116,6 +180,10 @@ pub(crate) fn thread_spawn_source(
         agent_nickname: None,
         agent_role: agent_role.map(str::to_string),
     }))
+}
+
+pub(crate) fn generated_v1_agent_task_name() -> String {
+    format!("agent_{}", Uuid::new_v4().simple())
 }
 
 pub(crate) fn parse_collab_input(
@@ -206,28 +274,30 @@ pub(crate) fn reject_full_fork_spawn_overrides(
 /// Copies runtime-only turn state onto a child config before it is handed to `AgentControl`.
 ///
 /// These values are chosen by the live turn rather than persisted config, so leaving them stale
-/// can make a child agent disagree with its parent about approval policy, cwd, or sandboxing.
+/// can make a child agent disagree with its parent about approval policy, workspace roots,
+/// network/shell restrictions, cwd, or sandboxing.
 pub(crate) fn apply_spawn_agent_runtime_overrides(
     config: &mut Config,
     turn: &TurnContext,
 ) -> Result<(), FunctionCallError> {
-    config
-        .permissions
-        .approval_policy
-        .set(turn.approval_policy.value())
-        .map_err(|err| {
-            FunctionCallError::RespondToModel(format!("approval_policy is invalid: {err}"))
-        })?;
+    config.permissions = turn.config.permissions.clone();
+    config.permissions.approval_policy = turn.approval_policy.clone();
+    if config.permissions.permission_profile() != &turn.permission_profile() {
+        config
+            .permissions
+            .set_permission_profile(turn.permission_profile())
+            .map_err(|err| {
+                FunctionCallError::RespondToModel(format!("permission_profile is invalid: {err}"))
+            })?;
+    }
+    config.explicit_permission_profile_mode = turn.config.explicit_permission_profile_mode;
+    config.custom_permission_profiles = turn.config.custom_permission_profiles.clone();
     config.approvals_reviewer = turn.config.approvals_reviewer;
     #[allow(deprecated)]
     let turn_cwd = turn.cwd.clone();
     config.cwd = turn_cwd;
-    config
-        .permissions
-        .set_permission_profile(turn.permission_profile())
-        .map_err(|err| {
-            FunctionCallError::RespondToModel(format!("permission_profile is invalid: {err}"))
-        })?;
+    config.workspace_roots = turn.config.workspace_roots.clone();
+    config.workspace_roots_explicit = turn.config.workspace_roots_explicit;
     Ok(())
 }
 

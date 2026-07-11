@@ -331,6 +331,67 @@ async fn thread_start_rejects_invalid_dynamic_tool_inputs() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn thread_start_rejects_dynamic_namespace_matching_configured_multi_agent_namespace()
+-> Result<()> {
+    let server = MockServer::start().await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+    let config_path = codex_home.path().join("config.toml");
+    let config = std::fs::read_to_string(&config_path)?;
+    std::fs::write(
+        config_path,
+        format!(
+            "{config}\n[features.multi_agent_v2]\nenabled = true\ntool_namespace = \"agents\"\n"
+        ),
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_auto_env()
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    for namespace in ["agents", "multi_agent_v1"] {
+        let request_id = mcp
+            .send_raw_request(
+                "thread/start",
+                Some(json!({
+                    "dynamicTools": [{
+                        "type": "namespace",
+                        "name": namespace,
+                        "description": "Conflicts with an active multi-agent namespace",
+                        "tools": [{
+                            "type": "function",
+                            "name": "lookup",
+                            "description": "Lookup",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {}
+                            }
+                        }]
+                    }]
+                })),
+            )
+            .await?;
+        let error = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+        )
+        .await??;
+
+        assert_eq!(error.error.code, -32600);
+        assert_eq!(
+            error.error.message,
+            format!(
+                "dynamic tool namespace collides with an active runtime namespace: {namespace}"
+            )
+        );
+    }
+    Ok(())
+}
+
 /// Exercises the full dynamic tool call path (server request, client response, model output).
 #[tokio::test]
 async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Result<()> {

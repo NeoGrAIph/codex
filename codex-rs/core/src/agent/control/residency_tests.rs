@@ -1,22 +1,162 @@
 use crate::ThreadManager;
 use crate::agent::AgentControl;
+use crate::agent::AgentStatus;
+use crate::agent::control::AuthorizedAgentTarget;
+use crate::agent::control::PersistedAgentLineage;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::config::test_config;
+use crate::init_state_db;
 use crate::thread_manager::ThreadManagerState;
 use codex_features::Feature;
 use codex_login::CodexAuth;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::user_input::UserInput;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
+
+#[tokio::test]
+async fn explicit_v2_resume_registers_residency_and_is_evictable() {
+    let mut config = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    config.multi_agent_v2.max_concurrent_threads_per_session = 2;
+    let temp_home = tempfile::tempdir().expect("create temp home");
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    let state_db = init_state_db(&config).await;
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        state_db,
+    );
+    let root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("start root thread");
+    root.thread
+        .codex
+        .session
+        .set_multi_agent_version_if_unset(MultiAgentVersion::V2);
+    let control = manager.agent_control();
+    let child_path = AgentPath::root()
+        .join("resumed_resident")
+        .expect("resumed resident path");
+    let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(child_path),
+        agent_nickname: None,
+        agent_role: None,
+    });
+    let child_thread_id = control
+        .spawn_agent(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "persist resident child".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(child_source.clone()),
+        )
+        .await
+        .expect("resident child should spawn");
+    let child_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("resident child should exist");
+    child_thread.ensure_rollout_materialized().await;
+    child_thread
+        .flush_rollout()
+        .await
+        .expect("resident child rollout should flush");
+    control
+        .shutdown_live_agent(child_thread_id)
+        .await
+        .expect("resident child should unload before explicit resume");
+
+    control
+        .resume_agent_from_rollout(config.clone(), child_thread_id, child_source.clone())
+        .await
+        .expect("explicit V2 resume should succeed");
+    let resumed_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("resumed child should be loaded");
+    mark_thread_completed(resumed_thread.as_ref()).await;
+
+    let state = control.upgrade().expect("thread manager should be live");
+    let pending_slot = control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+        .expect("next residency reservation should evict the resumed child");
+    match manager.get_thread(child_thread_id).await {
+        Err(CodexErr::ThreadNotFound(thread_id)) => assert_eq!(thread_id, child_thread_id),
+        Err(err) => panic!("expected evicted resumed child to be missing, got {err:?}"),
+        Ok(_) => panic!("expected explicit-resume child to participate in residency eviction"),
+    }
+    assert_eq!(
+        control.get_status(child_thread_id).await,
+        AgentStatus::Completed(Some("done".to_string()))
+    );
+    assert_eq!(
+        control
+            .subscribe_status(child_thread_id)
+            .await
+            .expect("evicted terminal status should remain waitable")
+            .borrow()
+            .clone(),
+        AgentStatus::Completed(Some("done".to_string()))
+    );
+    assert!(
+        control
+            .list_agents(&SessionSource::default(), /*path_prefix*/ None)
+            .await
+            .expect("agent listing should include evicted terminal residents")
+            .into_iter()
+            .any(|agent| {
+                agent.agent_name == "/root/resumed_resident"
+                    && agent.agent_status == AgentStatus::Completed(Some("done".to_string()))
+            })
+    );
+    assert_eq!(
+        control
+            .ensure_agent_known_or_persisted_descendant(child_thread_id)
+            .await
+            .expect("unloaded resident should authorize through its persisted edge"),
+        AuthorizedAgentTarget::Persisted(PersistedAgentLineage {
+            parent_thread_id: root.thread_id,
+            depth: 1,
+        })
+    );
+    drop(pending_slot);
+
+    control
+        .resume_agent_from_persisted_graph_edge(config, child_thread_id, child_source)
+        .await
+        .expect("evicted registered child should reactivate without reserving its path again");
+    assert!(
+        manager.get_thread(child_thread_id).await.is_ok(),
+        "reactivated child should be loaded"
+    );
+    assert_eq!(
+        control
+            .get_agent_metadata(child_thread_id)
+            .expect("reactivated child should retain its registry metadata")
+            .last_status,
+        None
+    );
+}
 
 #[tokio::test]
 async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
@@ -65,7 +205,7 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
 }
 
 #[tokio::test]
-async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
+async fn interrupted_v2_agent_is_not_residency_evictable() {
     let mut config = test_config().await;
     let _ = config.features.enable(Feature::MultiAgentV2);
     config.multi_agent_v2.max_concurrent_threads_per_session = 2;
@@ -94,36 +234,16 @@ async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
     first_slot.commit(first.thread_id);
     mark_thread_interrupted(first.thread.as_ref()).await;
 
-    let second_slot = control
+    let Err(error) = control
         .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
         .await
-        .expect("second resident slot should evict the first interrupted idle agent");
-    match manager.get_thread(first.thread_id).await {
-        Err(CodexErr::ThreadNotFound(thread_id)) => assert_eq!(thread_id, first.thread_id),
-        Err(err) => panic!("expected evicted thread to be missing, got {err:?}"),
-        Ok(_) => panic!("expected evicted thread to be missing"),
-    }
-    let second =
-        spawn_v2_subagent(&control, &state, config.clone(), root.thread_id, "worker-2").await;
-    second_slot.commit(second.thread_id);
-    mark_thread_completed(second.thread.as_ref()).await;
-
-    let err = control
-        .ensure_v2_agent_loaded(config, first.thread_id)
-        .await
-        .expect_err("evicted interrupted agent should stay lost");
-    match err {
-        CodexErr::ThreadNotFound(thread_id) => assert_eq!(thread_id, first.thread_id),
-        err => panic!("expected ThreadNotFound, got {err:?}"),
-    }
+    else {
+        panic!("interrupted resident must not be evicted as terminal");
+    };
+    assert!(matches!(error, CodexErr::AgentLimitReached { .. }));
 
     assert!(manager.get_thread(root.thread_id).await.is_ok());
-    assert!(manager.get_thread(second.thread_id).await.is_ok());
-    match manager.get_thread(first.thread_id).await {
-        Err(CodexErr::ThreadNotFound(thread_id)) => assert_eq!(thread_id, first.thread_id),
-        Err(err) => panic!("expected evicted thread to be missing, got {err:?}"),
-        Ok(_) => panic!("expected evicted thread to be missing"),
-    }
+    assert!(manager.get_thread(first.thread_id).await.is_ok());
 }
 
 async fn spawn_v2_subagent(
@@ -145,6 +265,7 @@ async fn spawn_v2_subagent(
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            /*submission_loop_activation*/ None,
         )
         .await
         .expect("spawn v2 subagent")

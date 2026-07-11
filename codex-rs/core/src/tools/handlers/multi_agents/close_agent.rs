@@ -39,9 +39,13 @@ async fn handle_close_agent(
     let arguments = function_arguments(payload)?;
     let args: CloseAgentArgs = parse_arguments(&arguments)?;
     let agent_id = parse_agent_id_target(&args.target)?;
-    let receiver_agent = session.services.agent_control.get_agent_metadata(agent_id);
-    let known_agent = receiver_agent.is_some();
-    let receiver_agent = receiver_agent.unwrap_or_default();
+    authorize_live_v1_agent_target(&session, &turn, agent_id)?;
+    let receiver_agent = session
+        .services
+        .agent_control
+        .get_agent_metadata(agent_id)
+        .unwrap_or_default();
+    let known_agent = receiver_agent.agent_id.is_some();
     session
         .emit_turn_item_started(
             &turn,
@@ -95,10 +99,19 @@ async fn handle_close_agent(
             return Err(collab_agent_error(agent_id, err));
         }
     };
-    let result = Box::pin(session.services.agent_control.close_agent(agent_id))
+    let result = if turn.multi_agent_version == MultiAgentVersion::V2 {
+        Box::pin(
+            session
+                .services
+                .agent_control
+                .close_agent_transactional(agent_id),
+        )
         .await
-        .map_err(|err| collab_agent_error(agent_id, err))
-        .map(|_| ());
+    } else {
+        Box::pin(session.services.agent_control.close_agent(agent_id)).await
+    }
+    .map_err(|err| collab_agent_error(agent_id, err))
+    .map(|_| ());
     session
         .emit_turn_item_completed(
             &turn,

@@ -398,7 +398,7 @@ mod thread_processor_behavior_tests {
 
     #[test]
     fn validate_dynamic_tools_rejects_name_longer_than_responses_limit() {
-        let long_name = "a".repeat(129);
+        let long_name = "a".repeat(4_096);
         let tools = vec![dynamic_tool(
             /*namespace*/ None,
             long_name.clone(),
@@ -411,12 +411,13 @@ mod thread_processor_behavior_tests {
         )];
         let err = validate_dynamic_tools(&tools).expect_err("name too long");
         assert!(err.contains("at most 128"), "unexpected error: {err}");
-        assert!(err.contains(&long_name), "unexpected error: {err}");
+        assert!(!err.contains(&long_name), "unexpected error: {err}");
+        assert!(err.len() < 256, "diagnostic must remain bounded: {err}");
     }
 
     #[test]
     fn validate_dynamic_tools_rejects_namespace_fields_over_limits() {
-        let long_namespace = "a".repeat(65);
+        let long_namespace = "a".repeat(4_096);
         let mut tools = vec![dynamic_tool(
             Some(&long_namespace),
             "lookup_ticket",
@@ -429,7 +430,8 @@ mod thread_processor_behavior_tests {
         )];
         let err = validate_dynamic_tools(&tools).expect_err("namespace too long");
         assert!(err.contains("at most 64"), "unexpected error: {err}");
-        assert!(err.contains(&long_namespace), "unexpected error: {err}");
+        assert!(!err.contains(&long_namespace), "unexpected error: {err}");
+        assert!(err.len() < 256, "diagnostic must remain bounded: {err}");
 
         let DynamicToolSpec::Namespace(namespace) = &mut tools[0] else {
             unreachable!("expected namespace")
@@ -455,6 +457,19 @@ mod thread_processor_behavior_tests {
         let err = validate_dynamic_tools(&tools).expect_err("reserved Responses namespace");
         assert!(err.contains("functions"), "unexpected error: {err}");
         assert!(err.contains("Responses API"), "unexpected error: {err}");
+
+        let tools = vec![dynamic_tool(
+            Some("multi_agent_v1"),
+            "lookup_ticket",
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+            /*defer_loading*/ true,
+        )];
+        validate_dynamic_tools(&tools)
+            .expect("runtime-dependent namespace should pass shape validation");
     }
 
     #[test]
@@ -828,13 +843,13 @@ mod thread_processor_behavior_tests {
     #[test]
     fn merge_persisted_resume_metadata_prefers_persisted_model_and_reasoning_effort() -> Result<()>
     {
-        let mut request_overrides = None;
+        let request_overrides = None;
         let mut typesafe_overrides = ConfigOverrides::default();
         let persisted_metadata =
             test_thread_metadata(Some("gpt-5.1-codex-max"), Some(ReasoningEffort::High))?;
 
-        merge_persisted_resume_metadata(
-            &mut request_overrides,
+        let persisted_reasoning_effort = merge_persisted_resume_metadata(
+            request_overrides.as_ref(),
             &mut typesafe_overrides,
             &persisted_metadata,
         );
@@ -847,19 +862,14 @@ mod thread_processor_behavior_tests {
             typesafe_overrides.model_provider,
             Some("mock_provider".to_string())
         );
-        assert_eq!(
-            request_overrides,
-            Some(HashMap::from([(
-                "model_reasoning_effort".to_string(),
-                serde_json::Value::String("high".to_string()),
-            )]))
-        );
+        assert_eq!(persisted_reasoning_effort, Some(ReasoningEffort::High));
+        assert_eq!(request_overrides, None);
         Ok(())
     }
 
     #[test]
     fn merge_persisted_resume_metadata_preserves_explicit_overrides() -> Result<()> {
-        let mut request_overrides = Some(HashMap::from([(
+        let request_overrides = Some(HashMap::from([(
             "model_reasoning_effort".to_string(),
             serde_json::Value::String("low".to_string()),
         )]));
@@ -870,14 +880,15 @@ mod thread_processor_behavior_tests {
         let persisted_metadata =
             test_thread_metadata(Some("gpt-5.1-codex-max"), Some(ReasoningEffort::High))?;
 
-        merge_persisted_resume_metadata(
-            &mut request_overrides,
+        let persisted_reasoning_effort = merge_persisted_resume_metadata(
+            request_overrides.as_ref(),
             &mut typesafe_overrides,
             &persisted_metadata,
         );
 
         assert_eq!(typesafe_overrides.model, Some("gpt-5.2-codex".to_string()));
         assert_eq!(typesafe_overrides.model_provider, None);
+        assert_eq!(persisted_reasoning_effort, None);
         assert_eq!(
             request_overrides,
             Some(HashMap::from([(
@@ -889,9 +900,66 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
+    fn top_level_resume_overrides_are_projected_into_the_session_flags_layer() {
+        let mut request_overrides = Some(HashMap::from([
+            (
+                "model".to_string(),
+                serde_json::Value::String("config-model".to_string()),
+            ),
+            (
+                "model_reasoning_effort".to_string(),
+                serde_json::Value::String("low".to_string()),
+            ),
+        ]));
+        let typesafe_overrides = ConfigOverrides {
+            model: Some("top-level-model".to_string()),
+            model_provider: Some("top-level-provider".to_string()),
+            service_tier: Some(None),
+            developer_instructions: Some("top-level instructions".to_string()),
+            personality: Some(Personality::Friendly),
+            ..Default::default()
+        };
+
+        project_top_level_resume_overrides_into_request_layer(
+            &mut request_overrides,
+            &typesafe_overrides,
+        );
+
+        assert_eq!(
+            request_overrides,
+            Some(HashMap::from([
+                (
+                    "model".to_string(),
+                    serde_json::Value::String("top-level-model".to_string()),
+                ),
+                (
+                    "model_provider".to_string(),
+                    serde_json::Value::String("top-level-provider".to_string()),
+                ),
+                (
+                    "service_tier".to_string(),
+                    serde_json::Value::String(SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string(),),
+                ),
+                (
+                    "developer_instructions".to_string(),
+                    serde_json::Value::String("top-level instructions".to_string()),
+                ),
+                (
+                    "personality".to_string(),
+                    serde_json::Value::String("friendly".to_string()),
+                ),
+                (
+                    "model_reasoning_effort".to_string(),
+                    serde_json::Value::String("low".to_string()),
+                ),
+            ]))
+        );
+    }
+
+    #[test]
     fn merge_persisted_resume_metadata_skips_persisted_values_when_model_overridden() -> Result<()>
     {
-        let mut request_overrides = Some(HashMap::from([(
+        let request_overrides = Some(HashMap::from([(
             "model".to_string(),
             serde_json::Value::String("gpt-5.2-codex".to_string()),
         )]));
@@ -899,14 +967,15 @@ mod thread_processor_behavior_tests {
         let persisted_metadata =
             test_thread_metadata(Some("gpt-5.1-codex-max"), Some(ReasoningEffort::High))?;
 
-        merge_persisted_resume_metadata(
-            &mut request_overrides,
+        let persisted_reasoning_effort = merge_persisted_resume_metadata(
+            request_overrides.as_ref(),
             &mut typesafe_overrides,
             &persisted_metadata,
         );
 
         assert_eq!(typesafe_overrides.model, None);
         assert_eq!(typesafe_overrides.model_provider, None);
+        assert_eq!(persisted_reasoning_effort, None);
         assert_eq!(
             request_overrides,
             Some(HashMap::from([(
@@ -920,7 +989,7 @@ mod thread_processor_behavior_tests {
     #[test]
     fn merge_persisted_resume_metadata_skips_persisted_values_when_provider_overridden()
     -> Result<()> {
-        let mut request_overrides = None;
+        let request_overrides = None;
         let mut typesafe_overrides = ConfigOverrides {
             model_provider: Some("oss".to_string()),
             ..Default::default()
@@ -928,22 +997,52 @@ mod thread_processor_behavior_tests {
         let persisted_metadata =
             test_thread_metadata(Some("gpt-5.1-codex-max"), Some(ReasoningEffort::High))?;
 
-        merge_persisted_resume_metadata(
-            &mut request_overrides,
+        let persisted_reasoning_effort = merge_persisted_resume_metadata(
+            request_overrides.as_ref(),
             &mut typesafe_overrides,
             &persisted_metadata,
         );
 
         assert_eq!(typesafe_overrides.model, None);
         assert_eq!(typesafe_overrides.model_provider, Some("oss".to_string()));
+        assert_eq!(persisted_reasoning_effort, None);
         assert_eq!(request_overrides, None);
+        Ok(())
+    }
+
+    #[test]
+    fn merge_persisted_resume_metadata_preserves_config_map_provider_override() -> Result<()> {
+        let request_overrides = Some(HashMap::from([(
+            "model_provider".to_string(),
+            serde_json::Value::String("oss".to_string()),
+        )]));
+        let mut typesafe_overrides = ConfigOverrides::default();
+        let persisted_metadata =
+            test_thread_metadata(Some("gpt-5.1-codex-max"), Some(ReasoningEffort::High))?;
+
+        let persisted_reasoning_effort = merge_persisted_resume_metadata(
+            request_overrides.as_ref(),
+            &mut typesafe_overrides,
+            &persisted_metadata,
+        );
+
+        assert_eq!(typesafe_overrides.model, None);
+        assert_eq!(typesafe_overrides.model_provider, None);
+        assert_eq!(persisted_reasoning_effort, None);
+        assert_eq!(
+            request_overrides,
+            Some(HashMap::from([(
+                "model_provider".to_string(),
+                serde_json::Value::String("oss".to_string()),
+            )]))
+        );
         Ok(())
     }
 
     #[test]
     fn merge_persisted_resume_metadata_skips_persisted_values_when_reasoning_effort_overridden()
     -> Result<()> {
-        let mut request_overrides = Some(HashMap::from([(
+        let request_overrides = Some(HashMap::from([(
             "model_reasoning_effort".to_string(),
             serde_json::Value::String("low".to_string()),
         )]));
@@ -951,14 +1050,15 @@ mod thread_processor_behavior_tests {
         let persisted_metadata =
             test_thread_metadata(Some("gpt-5.1-codex-max"), Some(ReasoningEffort::High))?;
 
-        merge_persisted_resume_metadata(
-            &mut request_overrides,
+        let persisted_reasoning_effort = merge_persisted_resume_metadata(
+            request_overrides.as_ref(),
             &mut typesafe_overrides,
             &persisted_metadata,
         );
 
         assert_eq!(typesafe_overrides.model, None);
         assert_eq!(typesafe_overrides.model_provider, None);
+        assert_eq!(persisted_reasoning_effort, None);
         assert_eq!(
             request_overrides,
             Some(HashMap::from([(
@@ -971,13 +1071,13 @@ mod thread_processor_behavior_tests {
 
     #[test]
     fn merge_persisted_resume_metadata_skips_missing_values() -> Result<()> {
-        let mut request_overrides = None;
+        let request_overrides = None;
         let mut typesafe_overrides = ConfigOverrides::default();
         let persisted_metadata =
             test_thread_metadata(/*model*/ None, /*reasoning_effort*/ None)?;
 
-        merge_persisted_resume_metadata(
-            &mut request_overrides,
+        let persisted_reasoning_effort = merge_persisted_resume_metadata(
+            request_overrides.as_ref(),
             &mut typesafe_overrides,
             &persisted_metadata,
         );
@@ -987,6 +1087,7 @@ mod thread_processor_behavior_tests {
             typesafe_overrides.model_provider,
             Some("mock_provider".to_string())
         );
+        assert_eq!(persisted_reasoning_effort, None);
         assert_eq!(request_overrides, None);
         Ok(())
     }

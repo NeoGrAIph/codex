@@ -52,6 +52,30 @@ impl codex_agent_graph_store::AgentGraphStore for FakeAgentGraphStore {
         Box::pin(async { panic!("unexpected graph upsert") })
     }
 
+    fn get_thread_spawn_parent(
+        &self,
+        _child_thread_id: ThreadId,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, Option<ThreadId>> {
+        Box::pin(async { panic!("unexpected graph parent lookup") })
+    }
+
+    fn get_thread_spawn_edge(
+        &self,
+        _child_thread_id: ThreadId,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<
+        '_,
+        Option<codex_agent_graph_store::ThreadSpawnEdge>,
+    > {
+        Box::pin(async { panic!("unexpected graph edge lookup") })
+    }
+
+    fn remove_thread_spawn_edge(
+        &self,
+        _child_thread_id: ThreadId,
+    ) -> codex_agent_graph_store::AgentGraphStoreFuture<'_, ()> {
+        Box::pin(async { panic!("unexpected graph removal") })
+    }
+
     fn set_thread_spawn_edge_status(
         &self,
         _child_thread_id: ThreadId,

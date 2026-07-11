@@ -45,6 +45,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
         ],
         agent_type_description: "role help".to_string(),
         hide_agent_type_model_reasoning: false,
+        model_catalog_display: SpawnAgentModelCatalogDisplay::ListAvailable,
         usage_hint_text: None,
     });
 
@@ -120,6 +121,7 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
         available_models: Vec::new(),
         agent_type_description: "role help".to_string(),
         hide_agent_type_model_reasoning: false,
+        model_catalog_display: SpawnAgentModelCatalogDisplay::ListAvailable,
         usage_hint_text: None,
     });
 
@@ -176,6 +178,7 @@ fn spawn_agent_tool_caps_visible_model_summaries() {
         ],
         agent_type_description: "role help".to_string(),
         hide_agent_type_model_reasoning: false,
+        model_catalog_display: SpawnAgentModelCatalogDisplay::ListAvailable,
         usage_hint_text: None,
     });
 
@@ -219,6 +222,7 @@ fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
         available_models: vec![model_preset("visible", /*show_in_picker*/ true)],
         agent_type_description: "role help".to_string(),
         hide_agent_type_model_reasoning: true,
+        model_catalog_display: SpawnAgentModelCatalogDisplay::ListAvailable,
         usage_hint_text: None,
     });
 
@@ -363,6 +367,36 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
     assert_eq!(
         output_schema.expect("wait output schema")["properties"]["message"]["description"],
         json!("Brief wait summary without the agent's final content.")
+    );
+}
+
+#[test]
+fn projected_wait_agent_v1_documents_only_its_bounded_target_policy() {
+    let options = WaitAgentTimeoutOptions::default();
+    let target_description = |tool| {
+        let ToolSpec::Namespace(namespace) = tool else {
+            panic!("wait_agent v1 should be a namespace tool");
+        };
+        let Some(ResponsesApiNamespaceTool::Function(ResponsesApiTool { parameters, .. })) =
+            namespace.tools.first()
+        else {
+            panic!("wait_agent should be a namespace function tool");
+        };
+        parameters
+            .properties
+            .as_ref()
+            .and_then(|properties| properties.get("targets"))
+            .and_then(|schema| schema.description.clone())
+            .expect("wait_agent targets should have a description")
+    };
+
+    assert_eq!(
+        target_description(create_wait_agent_tool_v1(options)),
+        "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first."
+    );
+    assert_eq!(
+        target_description(create_projected_wait_agent_tool_v1(options)),
+        "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first. At most 64 targets are accepted; duplicates are ignored."
     );
 }
 

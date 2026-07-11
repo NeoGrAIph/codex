@@ -1,8 +1,35 @@
 use crate::FeatureConfig;
 use schemars::JsonSchema;
+use schemars::r#gen::SchemaGenerator;
+use schemars::schema::InstanceType;
+use schemars::schema::Schema;
+use schemars::schema::SchemaObject;
+use schemars::schema::StringValidation;
+use schemars::schema::SubschemaValidation;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
+
+const RESERVED_RESPONSES_TOOL_NAMESPACES: &[&str] = &[
+    "api_tool",
+    "browser",
+    "computer",
+    "container",
+    "file_search",
+    "functions",
+    "image_gen",
+    "multi_tool_use",
+    "python",
+    "python_user_visible",
+    "submodel_delegator",
+    "terminal",
+    "tool_search",
+    "web",
+];
+
+pub fn is_reserved_responses_tool_namespace(namespace: &str) -> bool {
+    RESERVED_RESPONSES_TOOL_NAMESPACES.contains(&namespace)
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -57,13 +84,42 @@ pub struct MultiAgentV2ConfigToml {
     pub subagent_usage_hint_text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub multi_agent_mode_hint_text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(length(min = 1, max = 64), regex(pattern = r"^[a-zA-Z0-9_-]+$"))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "multi_agent_v2_tool_namespace_schema")]
     pub tool_namespace: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hide_spawn_agent_metadata: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub non_code_mode_only: Option<bool>,
+}
+
+fn multi_agent_v2_tool_namespace_schema(_generator: &mut SchemaGenerator) -> Schema {
+    let reserved_namespace_pattern = format!(
+        "^(?:mcp(?:__.*)?|{})$",
+        RESERVED_RESPONSES_TOOL_NAMESPACES.join("|")
+    );
+    let disallowed_namespace_schema = Schema::Object(SchemaObject {
+        instance_type: Some(InstanceType::String.into()),
+        string: Some(Box::new(StringValidation {
+            pattern: Some(reserved_namespace_pattern),
+            ..Default::default()
+        })),
+        ..Default::default()
+    });
+
+    Schema::Object(SchemaObject {
+        instance_type: Some(InstanceType::String.into()),
+        string: Some(Box::new(StringValidation {
+            max_length: Some(64),
+            min_length: Some(1),
+            pattern: Some(r"^[a-zA-Z0-9_-]+$".to_string()),
+        })),
+        subschemas: Some(Box::new(SubschemaValidation {
+            not: Some(Box::new(disallowed_namespace_schema)),
+            ..Default::default()
+        })),
+        ..Default::default()
+    })
 }
 
 impl FeatureConfig for MultiAgentV2ConfigToml {

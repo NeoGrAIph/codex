@@ -5,6 +5,7 @@
 //! any other backing store.
 
 mod error;
+mod identity_projection;
 mod in_memory;
 mod live_thread;
 mod local;

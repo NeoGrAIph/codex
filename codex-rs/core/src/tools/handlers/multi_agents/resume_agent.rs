@@ -1,8 +1,12 @@
 use super::*;
+use crate::agent::control::PersistedAgentLineage;
 use crate::agent::next_thread_spawn_depth;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::multi_agents_spec::create_resume_agent_tool;
+use codex_protocol::AgentPath;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_tools::ToolSpec;
 use std::sync::Arc;
 
@@ -44,6 +48,8 @@ async fn handle_resume_agent(
     let receiver_thread_id = ThreadId::from_string(&args.id).map_err(|err| {
         FunctionCallError::RespondToModel(format!("invalid agent id {}: {err:?}", args.id))
     })?;
+    let persisted_lineage =
+        authorize_resumable_v1_agent_target(&session, &turn, receiver_thread_id).await?;
     let receiver_agent = session
         .services
         .agent_control
@@ -51,7 +57,9 @@ async fn handle_resume_agent(
         .unwrap_or_default();
     let child_depth = next_thread_spawn_depth(&turn.session_source);
     let max_depth = turn.config.agent_max_depth;
-    if exceeds_thread_spawn_depth_limit(child_depth, max_depth) {
+    if turn.multi_agent_version != MultiAgentVersion::V2
+        && exceeds_thread_spawn_depth_limit(child_depth, max_depth)
+    {
         return Err(FunctionCallError::RespondToModel(
             "Agent depth limit reached. Solve the task yourself.".to_string(),
         ));
@@ -84,42 +92,44 @@ async fn handle_resume_agent(
         .agent_control
         .get_status(receiver_thread_id)
         .await;
-    let (receiver_agent, error) = if matches!(status, AgentStatus::NotFound) {
-        match Box::pin(try_resume_closed_agent(
-            &session,
-            &turn,
-            receiver_thread_id,
-            child_depth,
-        ))
-        .await
-        {
-            Ok(()) => {
-                status = session
-                    .services
-                    .agent_control
-                    .get_status(receiver_thread_id)
-                    .await;
-                (
-                    session
+    let (receiver_agent, error) =
+        if persisted_lineage.is_some() || matches!(status, AgentStatus::NotFound) {
+            match Box::pin(try_resume_closed_agent(
+                &session,
+                &turn,
+                receiver_thread_id,
+                child_depth,
+                persisted_lineage,
+            ))
+            .await
+            {
+                Ok(()) => {
+                    status = session
                         .services
                         .agent_control
-                        .get_agent_metadata(receiver_thread_id)
-                        .unwrap_or(receiver_agent),
-                    None,
-                )
+                        .get_status(receiver_thread_id)
+                        .await;
+                    (
+                        session
+                            .services
+                            .agent_control
+                            .get_agent_metadata(receiver_thread_id)
+                            .unwrap_or(receiver_agent),
+                        None,
+                    )
+                }
+                Err(err) => {
+                    status = session
+                        .services
+                        .agent_control
+                        .get_status(receiver_thread_id)
+                        .await;
+                    (receiver_agent, Some(err))
+                }
             }
-            Err(err) => {
-                status = session
-                    .services
-                    .agent_control
-                    .get_status(receiver_thread_id)
-                    .await;
-                (receiver_agent, Some(err))
-            }
-        }
-    } else {
-        (receiver_agent, None)
-    };
+        } else {
+            (receiver_agent, None)
+        };
     session
         .emit_turn_item_completed(
             &turn,
@@ -190,20 +200,66 @@ async fn try_resume_closed_agent(
     turn: &Arc<TurnContext>,
     receiver_thread_id: ThreadId,
     child_depth: i32,
+    persisted_lineage: Option<PersistedAgentLineage>,
 ) -> Result<(), FunctionCallError> {
     let config = build_agent_resume_config(turn.as_ref())?;
-    Box::pin(session.services.agent_control.resume_agent_from_rollout(
-        config,
-        receiver_thread_id,
-        thread_spawn_source(
-            session.thread_id(),
-            &turn.session_source,
-            child_depth,
-            /*agent_role*/ None,
-            /*task_name*/ None,
-        )?,
-    ))
-    .await
-    .map(|_| ())
-    .map_err(|err| collab_agent_error(receiver_thread_id, err))
+    let result = if turn.multi_agent_version == MultiAgentVersion::V2 {
+        let lineage = match persisted_lineage {
+            Some(lineage) => lineage,
+            None => match session
+                .services
+                .agent_control
+                .ensure_agent_known_or_persisted_descendant(receiver_thread_id)
+                .await
+                .map_err(|err| collab_agent_error(receiver_thread_id, err))?
+            {
+                crate::agent::control::AuthorizedAgentTarget::Persisted(lineage) => lineage,
+                crate::agent::control::AuthorizedAgentTarget::Live => {
+                    return Err(FunctionCallError::RespondToModel(
+                        "agent state changed while preparing resume; retry the operation"
+                            .to_string(),
+                    ));
+                }
+            },
+        };
+        let task_name = generated_v1_agent_task_name();
+        let task_path = AgentPath::root().join(&task_name).map_err(|err| {
+            FunctionCallError::RespondToModel(format!(
+                "failed to create a canonical agent task segment: {err}"
+            ))
+        })?;
+        Box::pin(
+            session
+                .services
+                .agent_control
+                .resume_agent_from_persisted_graph_edge(
+                    config,
+                    receiver_thread_id,
+                    SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                        parent_thread_id: lineage.parent_thread_id,
+                        depth: lineage.depth,
+                        agent_path: Some(task_path),
+                        agent_nickname: None,
+                        agent_role: None,
+                    }),
+                ),
+        )
+        .await
+    } else {
+        Box::pin(session.services.agent_control.resume_agent_from_rollout(
+            config,
+            receiver_thread_id,
+            thread_spawn_source(
+                session.thread_id(),
+                &turn.session_source,
+                child_depth,
+                /*agent_role*/ None,
+                /*task_name*/ None,
+            )?,
+        ))
+        .await
+    };
+    result
+        .map(|_| ())
+        .map_err(|err| collab_agent_error(receiver_thread_id, err))
 }

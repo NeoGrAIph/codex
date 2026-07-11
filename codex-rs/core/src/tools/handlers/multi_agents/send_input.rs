@@ -43,28 +43,13 @@ impl Handler {
         let receiver_thread_id = parse_agent_id_target(&args.target)?;
         let input_items = parse_collab_input(args.message, args.items)?;
         let prompt = render_input_preview(&input_items);
+        authorize_live_v1_agent_target(&session, &turn, receiver_thread_id)?;
         let receiver_agent = session
             .services
             .agent_control
-            .get_agent_metadata(receiver_thread_id);
-        if receiver_agent.is_some() {
-            let resume_config = build_agent_resume_config(turn.as_ref())?;
-            session
-                .services
-                .agent_control
-                .ensure_v2_agent_loaded(resume_config, receiver_thread_id)
-                .await
-                .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
-        }
-        let receiver_agent = receiver_agent.unwrap_or_default();
-        if args.interrupt {
-            session
-                .services
-                .agent_control
-                .interrupt_agent(receiver_thread_id)
-                .await
-                .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
-        }
+            .get_agent_metadata(receiver_thread_id)
+            .unwrap_or_default();
+        let uses_transactional_lifecycle = turn.multi_agent_version == MultiAgentVersion::V2;
         session
             .emit_turn_item_started(
                 &turn,
@@ -83,22 +68,60 @@ impl Handler {
             )
             .await;
         let agent_control = session.services.agent_control.clone();
-        let result = agent_control
-            .send_input(receiver_thread_id, input_items)
-            .await
-            .map_err(|err| collab_agent_error(receiver_thread_id, err));
+        let result = async {
+            if uses_transactional_lifecycle && receiver_agent.agent_id.is_some() {
+                let resume_config = build_agent_resume_config(turn.as_ref())?;
+                agent_control
+                    .ensure_v2_agent_loaded(resume_config, receiver_thread_id)
+                    .await
+                    .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+            }
+            if args.interrupt {
+                if uses_transactional_lifecycle {
+                    agent_control
+                        .interrupt_agent_transactional(receiver_thread_id)
+                        .await
+                        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+                } else {
+                    agent_control
+                        .interrupt_agent(receiver_thread_id)
+                        .await
+                        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+                }
+            }
+            // V1 accepts rich UserInput items (images, local images, skills, and mentions) that
+            // InterAgentCommunication cannot represent losslessly. Keep the legacy raw-input
+            // transport under V2 instead of silently flattening those payloads to text.
+            if uses_transactional_lifecycle {
+                agent_control
+                    .send_input_transactional(receiver_thread_id, input_items)
+                    .await
+                    .map_err(|err| collab_agent_error(receiver_thread_id, err))
+            } else {
+                agent_control
+                    .send_input(receiver_thread_id, input_items)
+                    .await
+                    .map_err(|err| collab_agent_error(receiver_thread_id, err))
+            }
+        }
+        .await;
         let status = session
             .services
             .agent_control
             .get_status(receiver_thread_id)
             .await;
+        let tool_call_status = if result.is_err() {
+            CollabAgentToolCallStatus::Failed
+        } else {
+            collab_tool_call_status(&status, Some(receiver_thread_id))
+        };
         session
             .emit_turn_item_completed(
                 &turn,
                 TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                     id: call_id,
                     tool: CollabAgentTool::SendInput,
-                    status: collab_tool_call_status(&status, Some(receiver_thread_id)),
+                    status: tool_call_status,
                     sender_thread_id: session.thread_id,
                     receiver_thread_ids: vec![receiver_thread_id],
                     receiver_agents: vec![CollabAgentRef {

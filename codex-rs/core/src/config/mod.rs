@@ -69,6 +69,7 @@ use codex_features::FeaturesToml;
 use codex_features::MultiAgentV2ConfigToml;
 use codex_features::NetworkProxyConfigToml;
 use codex_features::TokenBudgetConfigToml;
+use codex_features::is_reserved_responses_tool_namespace;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
@@ -145,6 +146,8 @@ use toml::Value as TomlValue;
 use toml_edit::DocumentMut;
 
 pub(crate) mod agent_roles;
+#[doc(hidden)]
+pub use agent_roles::MaterializedAgentRoleLayer;
 mod auth_keyring;
 pub mod edit;
 mod managed_features;
@@ -871,6 +874,10 @@ pub struct Config {
 
     /// User-defined role declarations keyed by role name.
     pub agent_roles: BTreeMap<String, AgentRoleConfig>,
+
+    /// Immutable, validated role layers captured with `agent_roles` during config loading.
+    #[doc(hidden)]
+    pub materialized_agent_role_layers: BTreeMap<String, MaterializedAgentRoleLayer>,
 
     /// Memories subsystem settings.
     pub memories: MemoriesConfig,
@@ -2859,22 +2866,6 @@ fn validate_multi_agent_v2_wait_timeout(label: &str, value: i64) -> std::io::Res
 fn validate_multi_agent_v2_tool_namespace(namespace: Option<&str>) -> std::io::Result<()> {
     const LABEL: &str = "features.multi_agent_v2.tool_namespace";
     const MAX_LEN: usize = 64;
-    const RESERVED_RESPONSES_NAMESPACES: &[&str] = &[
-        "api_tool",
-        "browser",
-        "computer",
-        "container",
-        "file_search",
-        "functions",
-        "image_gen",
-        "multi_tool_use",
-        "python",
-        "python_user_visible",
-        "submodel_delegator",
-        "terminal",
-        "tool_search",
-        "web",
-    ];
 
     let Some(namespace) = namespace else {
         return Ok(());
@@ -2908,7 +2899,7 @@ fn validate_multi_agent_v2_tool_namespace(namespace: Option<&str>) -> std::io::R
     }
     if namespace == "mcp"
         || namespace.starts_with("mcp__")
-        || RESERVED_RESPONSES_NAMESPACES.contains(&namespace)
+        || is_reserved_responses_tool_namespace(namespace)
     {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -3418,7 +3409,7 @@ impl Config {
         let current_time_reminder = resolve_current_time_reminder_config(&cfg, &features)?;
         let terminal_resize_reflow = resolve_terminal_resize_reflow_config(&cfg);
 
-        let agent_roles =
+        let loaded_agent_roles =
             agent_roles::load_agent_roles(fs, &cfg, &config_layer_stack, &mut startup_warnings)
                 .await?;
 
@@ -3858,7 +3849,8 @@ impl Config {
             tool_output_token_limit: cfg.tool_output_token_limit,
             agent_max_threads,
             agent_max_depth,
-            agent_roles,
+            agent_roles: loaded_agent_roles.declarations,
+            materialized_agent_role_layers: loaded_agent_roles.layers,
             memories: memories_config,
             agent_job_max_runtime_seconds,
             agent_interrupt_message_enabled,

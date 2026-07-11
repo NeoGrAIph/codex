@@ -180,13 +180,31 @@ pub(super) async fn discard_thread(
     store: &LocalThreadStore,
     thread_id: ThreadId,
 ) -> ThreadStoreResult<()> {
-    store
+    let recorder = store
         .live_recorders
         .lock()
         .await
         .remove(&thread_id)
-        .map(|_| ())
-        .ok_or(ThreadStoreError::ThreadNotFound { thread_id })
+        .map(|entry| entry.recorder)
+        .ok_or(ThreadStoreError::ThreadNotFound { thread_id })?;
+    let rollout_path = recorder.rollout_path().to_path_buf();
+    recorder.shutdown().await.map_err(thread_store_io_error)?;
+    drop(recorder);
+    if codex_rollout::existing_rollout_path(rollout_path.as_path())
+        .await
+        .is_none()
+        && let Some(state_db) = store.state_db().await
+    {
+        state_db
+            .remove_unmaterialized_pending_thread_spawn_edge(thread_id)
+            .await
+            .map_err(|err| ThreadStoreError::Internal {
+                message: format!(
+                    "failed to remove unmaterialized pending lifecycle state for {thread_id}: {err}"
+                ),
+            })?;
+    }
+    Ok(())
 }
 
 pub(super) async fn rollout_path(

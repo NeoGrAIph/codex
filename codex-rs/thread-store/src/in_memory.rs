@@ -56,8 +56,10 @@ mod tests {
     use crate::StoredTurnItemsView;
     use crate::ThreadPersistenceMetadata;
     use crate::ThreadSortKey;
+    use codex_protocol::AgentPath;
     use codex_protocol::models::BaseInstructions;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentSource;
 
     #[tokio::test]
     async fn default_turn_pagination_methods_return_unsupported() {
@@ -99,6 +101,129 @@ mod tests {
                 operation: "list_items"
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn identity_projection_merges_metadata_overrides_into_thread_spawn_source() {
+        let store = InMemoryThreadStore::default();
+        let thread_id = ThreadId::new();
+        let parent_thread_id = ThreadId::new();
+        let agent_path = AgentPath::try_from("/root/worker").expect("valid agent path");
+        store
+            .create_thread(CreateThreadParams {
+                session_id: thread_id.into(),
+                thread_id,
+                extra_config: None,
+                forked_from_id: None,
+                parent_thread_id: Some(parent_thread_id),
+                source: SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_path: Some(agent_path.clone()),
+                    agent_nickname: Some("Original".to_string()),
+                    agent_role: Some("original".to_string()),
+                }),
+                thread_source: None,
+                originator: "test_originator".to_string(),
+                base_instructions: BaseInstructions::default(),
+                dynamic_tools: Vec::new(),
+                selected_capability_roots: Vec::new(),
+                multi_agent_version: None,
+                history_mode: ThreadHistoryMode::Legacy,
+                initial_window_id: uuid::Uuid::now_v7().to_string(),
+                metadata: ThreadPersistenceMetadata {
+                    cwd: None,
+                    model_provider: "test-provider".to_string(),
+                    memory_mode: ThreadMemoryMode::Enabled,
+                },
+            })
+            .await
+            .expect("create thread");
+        store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    agent_nickname: Some(Some("Updated".to_string())),
+                    agent_role: Some(Some("updated".to_string())),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("update identity metadata");
+
+        let mut stored_thread = store
+            .read_thread(ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: true,
+            })
+            .await
+            .expect("read thread with history");
+        let base_stored_thread = stored_thread.clone();
+        let mut stored_thread_without_session_meta = stored_thread.clone();
+        stored_thread_without_session_meta
+            .history
+            .as_mut()
+            .expect("stored history")
+            .items
+            .retain(|item| !matches!(item, RolloutItem::SessionMeta(_)));
+        let missing_meta_err = stored_thread_without_session_meta
+            .project_identity_into_history()
+            .expect_err("agent identity without matching session metadata must fail closed");
+        assert!(missing_meta_err.contains("has no matching session metadata"));
+
+        let mut mismatched_parent_thread = base_stored_thread.clone();
+        mismatched_parent_thread.parent_thread_id = Some(ThreadId::new());
+        let parent_err = mismatched_parent_thread
+            .project_identity_into_history()
+            .expect_err("metadata-source parent mismatch must fail closed");
+        assert!(parent_err.contains("parent metadata disagrees with source"));
+
+        let mut mismatched_path_thread = base_stored_thread;
+        mismatched_path_thread.agent_path = Some("/root/reviewer".to_string());
+        let path_err = mismatched_path_thread
+            .project_identity_into_history()
+            .expect_err("metadata-source path mismatch must fail closed");
+        assert!(path_err.contains("path metadata disagrees with source"));
+
+        stored_thread
+            .project_identity_into_history()
+            .expect("project canonical identity");
+        let session_meta = stored_thread
+            .history
+            .as_ref()
+            .and_then(|history| {
+                history.items.iter().find_map(|item| match item {
+                    RolloutItem::SessionMeta(meta) => Some(&meta.meta),
+                    _ => None,
+                })
+            })
+            .expect("session metadata");
+        assert_eq!(stored_thread.source, session_meta.source);
+
+        assert_eq!(
+            (
+                session_meta.parent_thread_id,
+                session_meta.agent_path.as_deref(),
+                session_meta.agent_nickname.as_deref(),
+                session_meta.agent_role.as_deref(),
+                session_meta.source.clone(),
+            ),
+            (
+                Some(parent_thread_id),
+                Some(agent_path.as_str()),
+                Some("Updated"),
+                Some("updated"),
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_path: Some(agent_path.clone()),
+                    agent_nickname: Some("Updated".to_string()),
+                    agent_role: Some("updated".to_string()),
+                }),
+            )
+        );
     }
 
     #[tokio::test]

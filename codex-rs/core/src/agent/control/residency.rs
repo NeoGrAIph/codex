@@ -1,4 +1,5 @@
 use super::AgentControl;
+use super::TerminatedThreadCleanup;
 use crate::agent::AgentStatus;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
@@ -55,7 +56,7 @@ impl AgentControl {
             .effective_agent_max_threads(MultiAgentVersion::V2)
             .unwrap_or(usize::MAX);
         Arc::clone(&self.v2_residency)
-            .reserve_slot(state, capacity, protected_thread_id)
+            .reserve_slot(self, state, capacity, protected_thread_id)
             .await
     }
 
@@ -79,6 +80,7 @@ impl AgentControl {
 impl V2Residency {
     async fn reserve_slot(
         self: Arc<Self>,
+        control: &AgentControl,
         manager: &Arc<ThreadManagerState>,
         capacity: usize,
         protected_thread_id: Option<ThreadId>,
@@ -91,7 +93,7 @@ impl V2Residency {
                 });
             }
             if !self
-                .try_unload_one_resident(manager, protected_thread_id)
+                .try_unload_one_resident(control, manager, protected_thread_id)
                 .await
             {
                 return Err(CodexErr::AgentLimitReached {
@@ -115,6 +117,7 @@ impl V2Residency {
 
     async fn try_unload_one_resident(
         &self,
+        control: &AgentControl,
         manager: &Arc<ThreadManagerState>,
         protected_thread_id: Option<ThreadId>,
     ) -> bool {
@@ -131,19 +134,35 @@ impl V2Residency {
             else {
                 continue;
             };
-            if !is_unloadable(candidate_thread.as_ref()).await {
+            let Some(terminal_status) = unloadable_status(candidate_thread.as_ref()).await else {
                 self.touch(candidate_thread_id);
                 continue;
-            }
+            };
+            control
+                .state
+                .set_last_status(candidate_thread_id, terminal_status);
             candidate_thread.ensure_rollout_materialized().await;
-            if let Err(err) = candidate_thread.shutdown_and_wait().await {
+            if let Err(err) = control
+                .shutdown_thread_for_lifecycle(
+                    manager,
+                    Arc::clone(&candidate_thread),
+                    TerminatedThreadCleanup::UnloadResident,
+                )
+                .await
+            {
                 warn!(
                     "failed to shut down v2 resident thread before unloading {candidate_thread_id}: {err}"
                 );
                 self.touch(candidate_thread_id);
                 continue;
             }
-            let _ = manager.remove_thread(&candidate_thread_id).await;
+            if !manager
+                .remove_thread_if_same_or_missing(&candidate_thread_id, &candidate_thread)
+                .await
+            {
+                self.touch(candidate_thread_id);
+                continue;
+            }
             return true;
         }
         false
@@ -155,6 +174,15 @@ impl V2Residency {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .residents
             .len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn contains_for_test(&self, thread_id: ThreadId) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .residents
+            .contains(&thread_id)
     }
 
     fn pop_lru_candidate(&self, protected_thread_id: Option<ThreadId>) -> Option<ThreadId> {
@@ -182,7 +210,7 @@ impl V2Residency {
         touch_resident(&mut state.residents, thread_id);
     }
 
-    fn remove(&self, thread_id: ThreadId) {
+    pub(super) fn remove(&self, thread_id: ThreadId) {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -222,17 +250,20 @@ pub(super) fn is_v2_resident_session_source(session_source: &SessionSource) -> b
     matches!(session_source, SessionSource::SubAgent(_))
 }
 
-async fn is_unloadable(thread: &CodexThread) -> bool {
-    matches!(
-        thread.agent_status().await,
-        AgentStatus::Completed(_) | AgentStatus::Errored(_) | AgentStatus::Interrupted
-    ) && thread.codex.session.active_turn.lock().await.is_none()
-        && !thread
+async fn unloadable_status(thread: &CodexThread) -> Option<AgentStatus> {
+    let status = thread.agent_status().await;
+    if !matches!(&status, AgentStatus::Completed(_) | AgentStatus::Errored(_))
+        || thread.codex.session.active_turn.lock().await.is_some()
+        || thread
             .codex
             .session
             .input_queue
             .has_pending_mailbox_items()
             .await
+    {
+        return None;
+    }
+    Some(status)
 }
 
 #[cfg(test)]

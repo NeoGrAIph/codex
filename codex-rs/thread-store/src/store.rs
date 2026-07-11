@@ -45,6 +45,16 @@ pub trait ThreadStore: Any + Send + Sync {
     /// Creates a new live thread.
     fn create_thread(&self, params: CreateThreadParams) -> ThreadStoreFuture<'_, ()>;
 
+    /// Reserves fail-closed lifecycle state before a fresh spawned thread can materialize its
+    /// durable history. Non-durable stores may keep the default no-op implementation.
+    fn reserve_pending_thread_spawn_edge(
+        &self,
+        _parent_thread_id: ThreadId,
+        _child_thread_id: ThreadId,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Reopens an existing thread for live appends.
     fn resume_thread(&self, params: ResumeThreadParams) -> ThreadStoreFuture<'_, ()>;
 
@@ -128,6 +138,17 @@ pub trait ThreadStore: Any + Send + Sync {
         &self,
         params: UpdateThreadMetadataParams,
     ) -> ThreadStoreFuture<'_, StoredThread>;
+
+    /// Applies the first metadata projection for a newly created live thread.
+    ///
+    /// Stores that maintain a lifecycle projection may distinguish this from historical
+    /// reconciliation. The default preserves existing store behavior.
+    fn update_new_thread_metadata(
+        &self,
+        params: UpdateThreadMetadataParams,
+    ) -> ThreadStoreFuture<'_, StoredThread> {
+        self.update_thread_metadata(params)
+    }
 
     /// Archives a thread.
     fn archive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, ()>;

@@ -73,3 +73,26 @@ fn config_schema_hides_unsupported_inline_mcp_bearer_token() {
         (false, true),
     );
 }
+
+#[test]
+fn config_schema_rejects_reserved_multi_agent_v2_tool_namespaces() {
+    let schema_json = config_schema_json().expect("serialize config schema");
+    let schema_value: serde_json::Value =
+        serde_json::from_slice(&schema_json).expect("decode schema json");
+    let tool_namespace = schema_value
+        .pointer("/definitions/MultiAgentV2ConfigToml/properties/tool_namespace")
+        .expect("multi-agent tool namespace schema should exist");
+    let reserved_pattern = tool_namespace
+        .pointer("/not/pattern")
+        .and_then(serde_json::Value::as_str)
+        .expect("reserved namespace exclusion should be represented by a pattern");
+
+    assert!(!reserved_pattern.contains("multi_agent_v1"));
+    assert!(reserved_pattern.contains("mcp(?:__.*)?"));
+    assert!(
+        !schema_value
+            .pointer("/definitions/MultiAgentV2ConfigToml/required")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|required| required.iter().any(|field| field == "tool_namespace"))
+    );
+}

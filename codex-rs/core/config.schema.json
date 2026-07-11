@@ -1769,6 +1769,10 @@
         "tool_namespace": {
           "maxLength": 64,
           "minLength": 1,
+          "not": {
+            "pattern": "^(?:mcp(?:__.*)?|api_tool|browser|computer|container|file_search|functions|image_gen|multi_tool_use|python|python_user_visible|submodel_delegator|terminal|tool_search|web)$",
+            "type": "string"
+          },
           "pattern": "^[a-zA-Z0-9_-]+$",
           "type": "string"
         },

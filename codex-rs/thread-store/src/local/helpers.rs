@@ -114,6 +114,7 @@ pub(super) fn stored_thread_from_rollout_item(
         item.git_origin_url.clone(),
     );
     let source = item.source.unwrap_or(SessionSource::Unknown);
+    let agent_path = source.get_agent_path().map(Into::into);
     let preview = item
         .preview
         .clone()
@@ -146,7 +147,7 @@ pub(super) fn stored_thread_from_rollout_item(
         thread_source: None,
         agent_nickname: item.agent_nickname,
         agent_role: item.agent_role,
-        agent_path: None,
+        agent_path,
         git_info,
         approval_mode: AskForApproval::OnRequest,
         permission_profile: PermissionProfile::read_only(),
@@ -244,6 +245,8 @@ fn thread_id_from_rollout_path(path: &Path) -> Option<ThreadId> {
 
 #[cfg(test)]
 mod tests {
+    use codex_protocol::AgentPath;
+    use codex_protocol::protocol::SubAgentSource;
     use codex_rollout::ThreadItem;
     use pretty_assertions::assert_eq;
     use uuid::Uuid;
@@ -272,5 +275,33 @@ mod tests {
                 compressed_path.with_file_name(format!("rollout-2025-01-03T12-00-00-{uuid}.jsonl"))
             )
         );
+    }
+
+    #[test]
+    fn stored_thread_from_rollout_item_projects_agent_path_from_source() {
+        let thread_id =
+            ThreadId::from_string(Uuid::from_u128(1).to_string().as_str()).expect("thread id");
+        let parent_thread_id = ThreadId::from_string(Uuid::from_u128(2).to_string().as_str())
+            .expect("parent thread id");
+        let agent_path = AgentPath::try_from("/root/worker").expect("agent path");
+        let thread = stored_thread_from_rollout_item(
+            ThreadItem {
+                path: PathBuf::from(format!("/tmp/rollout-{thread_id}.jsonl")),
+                thread_id: Some(thread_id),
+                source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id,
+                    depth: 1,
+                    agent_path: Some(agent_path.clone()),
+                    agent_nickname: None,
+                    agent_role: None,
+                })),
+                ..Default::default()
+            },
+            /*archived*/ false,
+            "test-provider",
+        )
+        .expect("stored thread");
+
+        assert_eq!(thread.agent_path.as_deref(), Some(agent_path.as_str()));
     }
 }

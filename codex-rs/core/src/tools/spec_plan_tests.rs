@@ -30,12 +30,16 @@ use codex_tools::ToolSpec;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
+use super::HIDDEN_AGENT_TYPE_DESCRIPTION;
+use super::MULTI_AGENT_V1_PROJECTION_USAGE_HINT;
+use crate::config::AgentRoleConfig;
 use crate::config::CurrentTimeReminderConfig;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
+use crate::tools::handlers::multi_agents_spec::SPAWN_AGENT_MODEL_CATALOG_OMITTED_GUIDANCE;
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
 use crate::tools::router::ToolSuggestCandidates;
@@ -165,6 +169,24 @@ impl ToolPlanProbe {
             .iter()
             .find(|spec| spec.name() == name)
             .unwrap_or_else(|| panic!("expected visible spec `{name}` in {:?}", self.visible_names))
+    }
+
+    fn namespace_function(&self, namespace_name: &str, function_name: &str) -> &ResponsesApiTool {
+        let ToolSpec::Namespace(namespace) = self.visible_spec(namespace_name) else {
+            panic!("expected namespace spec `{namespace_name}`");
+        };
+        namespace
+            .tools
+            .iter()
+            .find_map(|tool| match tool {
+                ResponsesApiNamespaceTool::Function(tool) if tool.name == function_name => {
+                    Some(tool)
+                }
+                ResponsesApiNamespaceTool::Function(_) => None,
+            })
+            .unwrap_or_else(|| {
+                panic!("expected function `{function_name}` in namespace `{namespace_name}`")
+            })
     }
 
     fn exposure(&self, name: &str) -> ToolExposure {
@@ -1152,10 +1174,28 @@ async fn excluded_deferred_namespaces_do_not_enable_nested_tool_guidance() {
 }
 
 #[tokio::test]
-async fn multi_agent_feature_selects_one_agent_tool_family() {
+async fn multi_agent_feature_exposes_v1_alongside_v2() {
+    const CUSTOM_ROLE_DESCRIPTION: &str = "Audits projected role discovery.";
+    const CUSTOM_ROLE_NAME: &str = "projection-auditor";
+    const V2_USAGE_HINT: &str = "custom V2-only usage guidance";
+    const V2_MODEL_DESCRIPTION: &str = "custom V2-only model description";
+
     let v1 = probe(|turn| {
         set_feature(turn, Feature::Collab, /*enabled*/ true);
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
+        update_config(turn, |config| {
+            config.agent_roles.insert(
+                "legacy-locked".to_string(),
+                AgentRoleConfig {
+                    description: Some(
+                        "Legacy locked role.\n- This role's model is set to `legacy-locked-model` and cannot be changed."
+                            .to_string(),
+                    ),
+                    config_file: None,
+                    nickname_candidates: None,
+                },
+            );
+        });
     })
     .await;
     v1.assert_visible_contains(&[MULTI_AGENT_V1_NAMESPACE]);
@@ -1181,39 +1221,69 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
             "wait_agent".to_string(),
         ]
     );
-    let ToolSpec::Namespace(namespace) = v1.visible_spec(MULTI_AGENT_V1_NAMESPACE) else {
-        panic!("expected v1 multi-agent namespace");
-    };
-    let Some(ResponsesApiNamespaceTool::Function(spawn_agent)) =
-        namespace.tools.iter().find(|tool| {
-            matches!(
-                tool,
-                ResponsesApiNamespaceTool::Function(tool) if tool.name == "spawn_agent"
-            )
-        })
-    else {
-        panic!("expected v1 spawn_agent function");
-    };
+    let spawn_agent = v1.namespace_function(MULTI_AGENT_V1_NAMESPACE, "spawn_agent");
+    assert!(
+        spawn_agent
+            .description
+            .contains("### When to delegate vs. do the subtask yourself")
+    );
     let properties = spawn_agent
         .parameters
         .properties
         .as_ref()
         .expect("spawn_agent should use object params");
-    for property in ["agent_type", "model", "reasoning_effort", "service_tier"] {
+    for property in [
+        "message",
+        "items",
+        "agent_type",
+        "fork_context",
+        "model",
+        "reasoning_effort",
+        "service_tier",
+    ] {
         assert!(
             properties.contains_key(property),
             "expected v1 spawn_agent to expose `{property}`"
         );
     }
+    for property in ["task_name", "fork_turns"] {
+        assert!(
+            !properties.contains_key(property),
+            "expected v1 spawn_agent to omit v2-only `{property}`"
+        );
+    }
+    let v1_agent_type_description = properties
+        .get("agent_type")
+        .and_then(|schema| schema.description.as_deref())
+        .expect("V1-only spawn_agent should describe available roles");
+    assert!(
+        v1_agent_type_description
+            .contains("This role's model is set to `legacy-locked-model` and cannot be changed.")
+    );
 
     let v2 = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        let model = turn
+            .available_models
+            .first_mut()
+            .expect("test turn should expose at least one available model");
+        model.show_in_picker = true;
+        model.description = V2_MODEL_DESCRIPTION.to_string();
         update_config(turn, |config| {
             config.multi_agent_v2.max_concurrent_threads_per_session = 17;
+            config.multi_agent_v2.hide_spawn_agent_metadata = false;
+            config.multi_agent_v2.usage_hint_text = Some(V2_USAGE_HINT.to_string());
+            config.agent_roles.insert(
+                CUSTOM_ROLE_NAME.to_string(),
+                AgentRoleConfig {
+                    description: Some(CUSTOM_ROLE_DESCRIPTION.to_string()),
+                    ..Default::default()
+                },
+            );
         });
     })
     .await;
-    v2.assert_visible_contains(&[MULTI_AGENT_V2_NAMESPACE]);
+    v2.assert_visible_contains(&[MULTI_AGENT_V2_NAMESPACE, MULTI_AGENT_V1_NAMESPACE]);
     v2.assert_visible_lacks(&[
         "spawn_agent",
         "send_message",
@@ -1244,6 +1314,34 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
     let ToolSpec::Namespace(namespace) = v2.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
         panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace");
     };
+    assert_eq!(
+        v2.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
+        &[
+            "close_agent".to_string(),
+            "resume_agent".to_string(),
+            "send_input".to_string(),
+            "spawn_agent".to_string(),
+            "wait_agent".to_string(),
+        ]
+    );
+    for tool_name in [
+        "spawn_agent",
+        "send_input",
+        "resume_agent",
+        "wait_agent",
+        "close_agent",
+    ] {
+        let namespaced_tool_name = ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, tool_name);
+        let namespaced_tool_name = namespaced_tool_name.to_string();
+        assert!(
+            v2.registered_names.contains(&namespaced_tool_name),
+            "expected v1 runtime for {tool_name} under v2"
+        );
+        assert_eq!(
+            v2.exposure(&namespaced_tool_name),
+            ToolExposure::DirectModelOnly
+        );
+    }
     let Some(ResponsesApiNamespaceTool::Function(spawn_agent)) =
         namespace.tools.iter().find(|tool| {
             matches!(
@@ -1259,6 +1357,88 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
     assert!(spawn_agent_description.contains(
         "Note that passing `fork_turns=\"none\"` will not pass any surrounding context to the spawned subagent"
     ));
+    assert!(spawn_agent_description.contains(V2_USAGE_HINT));
+    assert!(spawn_agent_description.contains(V2_MODEL_DESCRIPTION));
+    let v2_properties = spawn_agent
+        .parameters
+        .properties
+        .as_ref()
+        .expect("v2 spawn_agent should use object params");
+    for property in ["message", "task_name", "fork_turns"] {
+        assert!(
+            v2_properties.contains_key(property),
+            "expected v2 spawn_agent to expose `{property}`"
+        );
+    }
+    for property in ["items", "fork_context"] {
+        assert!(
+            !v2_properties.contains_key(property),
+            "expected v2 spawn_agent to omit legacy `{property}`"
+        );
+    }
+    let v2_agent_type_description = v2_properties
+        .get("agent_type")
+        .and_then(|schema| schema.description.as_deref())
+        .expect("v2 spawn_agent should describe available roles");
+    assert!(v2_agent_type_description.contains(CUSTOM_ROLE_NAME));
+    assert!(v2_agent_type_description.contains(CUSTOM_ROLE_DESCRIPTION));
+    let v2_v1_spawn_agent = v2.namespace_function(MULTI_AGENT_V1_NAMESPACE, "spawn_agent");
+    assert!(
+        v2_v1_spawn_agent
+            .description
+            .contains(MULTI_AGENT_V1_PROJECTION_USAGE_HINT)
+    );
+    assert!(!v2_v1_spawn_agent.description.contains(V2_USAGE_HINT));
+    assert!(!v2_v1_spawn_agent.description.contains(V2_MODEL_DESCRIPTION));
+    assert!(
+        v2_v1_spawn_agent
+            .description
+            .contains(SPAWN_AGENT_MODEL_CATALOG_OMITTED_GUIDANCE)
+    );
+    assert!(
+        !v2_v1_spawn_agent
+            .description
+            .contains("No picker-visible model overrides are currently loaded.")
+    );
+    assert!(
+        !v2_v1_spawn_agent
+            .description
+            .contains("### When to delegate vs. do the subtask yourself")
+    );
+    let v2_v1_properties = v2_v1_spawn_agent
+        .parameters
+        .properties
+        .as_ref()
+        .expect("v1 spawn_agent namespace spec should use object params");
+    let v1_agent_type_description = v2_v1_properties
+        .get("agent_type")
+        .and_then(|schema| schema.description.as_deref())
+        .expect("projected v1 spawn_agent should describe available roles");
+    assert_eq!(v1_agent_type_description, v2_agent_type_description);
+    assert!(
+        serde_json::to_string(v2_agent_type_description)
+            .expect("serialize V2 role catalog")
+            .len()
+            <= 2_048
+    );
+    assert!(
+        serde_json::to_string(v1_agent_type_description)
+            .expect("serialize projected V1 role catalog")
+            .len()
+            <= 2_048
+    );
+    for property in ["message", "items", "fork_context"] {
+        assert!(
+            v2_v1_properties.contains_key(property),
+            "expected v1 spawn_agent under v2 to keep legacy `{property}`"
+        );
+    }
+    for property in ["task_name", "fork_turns"] {
+        assert!(
+            !v2_v1_properties.contains_key(property),
+            "expected v1 spawn_agent under v2 to omit v2-only `{property}`"
+        );
+    }
 
     let direct_model_only = probe(|turn| {
         set_features(
@@ -1271,16 +1451,50 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
         );
         update_config(turn, |config| {
             config.multi_agent_v2.non_code_mode_only = true;
+            config.agent_roles.insert(
+                CUSTOM_ROLE_NAME.to_string(),
+                AgentRoleConfig {
+                    description: Some(CUSTOM_ROLE_DESCRIPTION.to_string()),
+                    ..Default::default()
+                },
+            );
         });
     })
     .await;
-    direct_model_only.assert_visible_contains(&[MULTI_AGENT_V2_NAMESPACE]);
+    direct_model_only
+        .assert_visible_contains(&[MULTI_AGENT_V2_NAMESPACE, MULTI_AGENT_V1_NAMESPACE]);
     direct_model_only.assert_visible_lacks(&["spawn_agent", "send_message", "wait_agent"]);
     assert_eq!(
         direct_model_only
             .exposure(&ToolName::namespaced(MULTI_AGENT_V2_NAMESPACE, "spawn_agent").to_string()),
         ToolExposure::DirectModelOnly
     );
+    assert_eq!(
+        direct_model_only
+            .exposure(&ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "spawn_agent").to_string()),
+        ToolExposure::DirectModelOnly
+    );
+    let direct_v2_spawn_agent =
+        direct_model_only.namespace_function(MULTI_AGENT_V2_NAMESPACE, "spawn_agent");
+    assert!(
+        !direct_v2_spawn_agent
+            .parameters
+            .properties
+            .as_ref()
+            .is_some_and(|properties| properties.contains_key("agent_type"))
+    );
+    let direct_v1_spawn_agent =
+        direct_model_only.namespace_function(MULTI_AGENT_V1_NAMESPACE, "spawn_agent");
+    assert_eq!(
+        direct_v1_spawn_agent
+            .parameters
+            .properties
+            .as_ref()
+            .and_then(|properties| properties.get("agent_type"))
+            .and_then(|schema| schema.description.as_deref()),
+        Some(HIDDEN_AGENT_TYPE_DESCRIPTION)
+    );
+    assert!(!direct_v1_spawn_agent.description.contains(CUSTOM_ROLE_NAME));
 }
 
 #[tokio::test]
@@ -1383,7 +1597,7 @@ async fn multi_agent_v2_can_use_configured_tool_namespace() {
     })
     .await;
 
-    namespaced.assert_visible_contains(&["agents"]);
+    namespaced.assert_visible_contains(&["agents", MULTI_AGENT_V1_NAMESPACE]);
     namespaced.assert_visible_lacks(&["assign_task"]);
     assert!(
         !namespaced
@@ -1425,6 +1639,28 @@ async fn multi_agent_v2_can_use_configured_tool_namespace() {
                 .iter()
                 .any(|name| name == tool_name),
             "expected {tool_name} in agents namespace"
+        );
+    }
+    for tool_name in [
+        "spawn_agent",
+        "send_input",
+        "resume_agent",
+        "wait_agent",
+        "close_agent",
+    ] {
+        let namespaced_tool_name = ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, tool_name);
+        assert!(
+            namespaced
+                .registered_names
+                .contains(&namespaced_tool_name.to_string()),
+            "expected v1 runtime for {tool_name} under configured v2 namespace"
+        );
+        assert!(
+            namespaced
+                .namespace_function_names(MULTI_AGENT_V1_NAMESPACE)
+                .iter()
+                .any(|name| name == tool_name),
+            "expected {tool_name} in v1 namespace"
         );
     }
 }
@@ -1478,7 +1714,8 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
             "wait",
             "request_user_input",
             "agents",
-            // Hosted Responses tool.
+            MULTI_AGENT_V1_NAMESPACE,
+            // Hosted Responses tools.
             "web_search",
         ]
     );
@@ -1504,6 +1741,16 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
             "expected {tool_name} in agents namespace"
         );
     }
+    assert_eq!(
+        plan.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
+        &[
+            "close_agent".to_string(),
+            "resume_agent".to_string(),
+            "send_input".to_string(),
+            "spawn_agent".to_string(),
+            "wait_agent".to_string(),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -1598,6 +1845,7 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
             "request_user_input",
             // Multi-agent v2 tools.
             MULTI_AGENT_V2_NAMESPACE,
+            MULTI_AGENT_V1_NAMESPACE,
             // Hosted Responses tools.
             "web_search",
         ]

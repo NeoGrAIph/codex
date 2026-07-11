@@ -1,7 +1,6 @@
 use anyhow::Result;
 use codex_core::StartThreadOptions;
 use codex_core::ThreadConfigSnapshot;
-use codex_core::config::AgentRoleConfig;
 use codex_features::Feature;
 use codex_protocol::ThreadId;
 use codex_protocol::models::PermissionProfile;
@@ -9,6 +8,7 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -980,15 +980,13 @@ async fn spawn_agent_requested_model_and_reasoning_override_inherited_settings_w
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
+async fn multi_agent_v1_spawn_is_visible_and_runs_under_resolved_v2() -> Result<()> {
     let server = start_mock_server().await;
     let spawn_args = serde_json::to_string(&json!({
         "message": CHILD_PROMPT,
-        "task_name": "worker",
+        "fork_context": false,
     }))?;
-    mount_sse_once_match(
+    let spawn_turn = mount_sse_once_match(
         &server,
         |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
         sse(vec![
@@ -1039,6 +1037,105 @@ async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Res
         config.developer_instructions = Some("Parent developer instructions.".to_string());
     });
     let test = builder.build(&server).await?;
+
+    test.submit_turn(TURN_1_PROMPT).await?;
+
+    assert_eq!(
+        test.codex.multi_agent_version(),
+        Some(MultiAgentVersion::V2)
+    );
+    let parent_request = spawn_turn.single_request();
+    let parent_request_body = parent_request.body_json();
+    assert!(
+        namespace_child_tool(
+            &parent_request_body,
+            MULTI_AGENT_V1_NAMESPACE,
+            "spawn_agent"
+        )
+        .is_some(),
+        "resolved V2 request should expose multi_agent_v1.spawn_agent"
+    );
+    assert!(
+        namespace_child_tool(
+            &parent_request_body,
+            MULTI_AGENT_V2_NAMESPACE,
+            "spawn_agent"
+        )
+        .is_some(),
+        "resolved V2 request should retain native V2 spawn_agent"
+    );
+
+    let child_requests = wait_for_requests(&child_request_log).await?;
+    let child_request = child_requests
+        .last()
+        .expect("child request log should capture at least one request");
+    assert!(child_request.body_contains_text("Parent developer instructions."));
+    assert!(child_request.body_contains_text(CHILD_PROMPT));
+    assert_eq!(test.thread_manager.list_thread_ids().await.len(), 2);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawned_multi_agent_v2_child_inherits_parent_developer_context() -> Result<()> {
+    let server = start_mock_server().await;
+    let spawn_args = serde_json::to_string(&json!({
+        "message": CHILD_PROMPT,
+        "task_name": "worker",
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-native-v2-turn1-1"),
+            ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                MULTI_AGENT_V2_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-native-v2-turn1-1"),
+        ]),
+    )
+    .await;
+
+    let child_request_log = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, CHILD_PROMPT) && !body_contains(req, SPAWN_CALL_ID)
+        },
+        sse(vec![
+            ev_response_created("resp-native-v2-child-1"),
+            ev_completed("resp-native-v2-child-1"),
+        ]),
+    )
+    .await;
+
+    let _turn1_followup = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, SPAWN_CALL_ID),
+        sse(vec![
+            ev_response_created("resp-native-v2-turn1-2"),
+            ev_assistant_message("msg-native-v2-turn1-2", "parent done"),
+            ev_completed("resp-native-v2-turn1-2"),
+        ]),
+    )
+    .await;
+
+    let test = test_codex()
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
+            config.developer_instructions = Some("Parent developer instructions.".to_string());
+        })
+        .build(&server)
+        .await?;
 
     test.submit_turn(TURN_1_PROMPT).await?;
 
@@ -1341,6 +1438,167 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn projected_multi_agent_v1_completion_uses_canonical_v2_path() -> Result<()> {
+    let server = start_mock_server().await;
+    let child_prompt = "legacy projected child completion";
+    let spawn_args = serde_json::to_string(&json!({
+        "message": child_prompt,
+        "fork_context": false,
+    }))?;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| body_contains(req, TURN_1_PROMPT),
+        sse(vec![
+            ev_response_created("resp-v1-parent-1"),
+            ev_function_call_with_namespace(
+                SPAWN_CALL_ID,
+                MULTI_AGENT_V1_NAMESPACE,
+                "spawn_agent",
+                &spawn_args,
+            ),
+            ev_completed("resp-v1-parent-1"),
+        ]),
+    )
+    .await;
+    let child_request = mount_response_once_match(
+        &server,
+        move |req: &wiremock::Request| {
+            body_contains(req, child_prompt) && !body_contains(req, SPAWN_CALL_ID)
+        },
+        sse_response(sse(vec![
+            ev_response_created("resp-v1-child-1"),
+            ev_assistant_message("msg-v1-child-1", "legacy child done"),
+            ev_completed("resp-v1-child-1"),
+        ]))
+        .set_delay(Duration::from_secs(1)),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, SPAWN_CALL_ID) && !body_contains(req, "Message Type: FINAL_ANSWER")
+        },
+        sse(vec![
+            ev_response_created("resp-v1-parent-2"),
+            ev_assistant_message("msg-v1-parent-2", "parent done"),
+            ev_completed("resp-v1-parent-2"),
+        ]),
+    )
+    .await;
+    mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, TURN_2_NO_WAIT_PROMPT)
+                && !body_contains(req, "Message Type: FINAL_ANSWER")
+        },
+        sse(vec![
+            ev_response_created("resp-v1-parent-3"),
+            ev_function_call_with_namespace(
+                "wait-v1-projected-child",
+                MULTI_AGENT_V2_NAMESPACE,
+                "wait_agent",
+                "{}",
+            ),
+            ev_completed("resp-v1-parent-3"),
+        ]),
+    )
+    .await;
+    let completion_request = mount_sse_once_match(
+        &server,
+        |req: &wiremock::Request| {
+            body_contains(req, TURN_2_NO_WAIT_PROMPT)
+                && body_contains(req, "Message Type: FINAL_ANSWER")
+                && body_contains(req, "legacy child done")
+        },
+        sse(vec![
+            ev_response_created("resp-v1-parent-4"),
+            ev_assistant_message("msg-v1-parent-4", "done"),
+            ev_completed("resp-v1-parent-4"),
+        ]),
+    )
+    .await;
+
+    let test = test_codex()
+        .with_model("koffing")
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(0);
+            config.model_provider.supports_websockets = false;
+        })
+        .build(&server)
+        .await?;
+    let root_thread_id = test.session_configured.thread_id;
+
+    test.submit_turn(TURN_1_PROMPT).await?;
+    let _ = wait_for_requests(&child_request).await?;
+    test.submit_turn(TURN_2_NO_WAIT_PROMPT).await?;
+
+    let request = wait_for_requests(&completion_request)
+        .await?
+        .pop()
+        .expect("completion request");
+    let messages = strip_metadata_from_json(Value::Array(request.inputs_of_type("agent_message")));
+    let Value::Array(messages) = messages else {
+        panic!("expected agent message array");
+    };
+    assert_eq!(messages.len(), 1, "completion should be delivered once");
+    let message = messages.first().expect("completion message");
+    let author = message
+        .get("author")
+        .and_then(Value::as_str)
+        .expect("completion author");
+    let generated_segment = author
+        .strip_prefix("/root/agent_")
+        .expect("projected V1 child should have a generated V2 path");
+    assert_eq!(generated_segment.len(), 32);
+    assert!(
+        generated_segment
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()),
+        "generated path should use UUID simple hex"
+    );
+    assert_eq!(message.get("recipient"), Some(&json!("/root")));
+    assert_eq!(
+        message.get("content"),
+        Some(&json!([{
+            "type": "input_text",
+            "text": format!(
+                "Message Type: FINAL_ANSWER\nTask name: /root\nSender: {author}\nPayload:\nlegacy child done"
+            ),
+        }]))
+    );
+
+    let child_thread_id = test
+        .thread_manager
+        .list_thread_ids()
+        .await
+        .into_iter()
+        .find(|thread_id| *thread_id != root_thread_id)
+        .expect("child thread ID");
+    let child_snapshot = test
+        .thread_manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist")
+        .config_snapshot()
+        .await;
+    assert_eq!(
+        child_snapshot.session_source.get_agent_path().as_deref(),
+        Some(author)
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -1421,7 +1679,8 @@ async fn skills_toggle_skips_instructions_for_parent_and_spawned_child() -> Resu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> Result<()> {
+async fn native_v1_spawn_agent_role_uses_materialized_settings_after_source_is_removed()
+-> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -1434,24 +1693,30 @@ async fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> 
             "reasoning_effort": REQUESTED_REASONING_EFFORT,
         }),
         |builder| {
-            builder.with_config(|config| {
-                let role_path = config.codex_home.join("custom-role.toml");
-                std::fs::write(
-                    &role_path,
-                    format!(
-                        "model = \"{ROLE_MODEL}\"\nmodel_reasoning_effort = \"{ROLE_REASONING_EFFORT}\"\n",
-                    ),
-                )
-                .expect("write role config");
-                config.agent_roles.insert(
-                    "custom".to_string(),
-                    AgentRoleConfig {
-                        description: Some("Custom role".to_string()),
-                        config_file: Some(role_path.to_path_buf()),
-                        nickname_candidates: None,
-                    },
-                );
-            })
+            builder
+                .with_pre_build_hook(|codex_home| {
+                    let role_path = codex_home.join("custom-role.toml");
+                    std::fs::write(
+                        &role_path,
+                        format!(
+                            "model = \"{ROLE_MODEL}\"\nmodel_reasoning_effort = \"{ROLE_REASONING_EFFORT}\"\n",
+                        ),
+                    )
+                    .expect("write role config");
+                    std::fs::write(
+                        codex_home.join("config.toml"),
+                        "[agents.custom]\ndescription = \"Custom role\"\nconfig_file = \"./custom-role.toml\"\n",
+                    )
+                    .expect("write config");
+                })
+                .with_config(|config| {
+                    config
+                        .features
+                        .disable(Feature::MultiAgentV2)
+                        .expect("test config should keep native V1");
+                    std::fs::remove_file(config.codex_home.join("custom-role.toml"))
+                        .expect("remove role source after config loading");
+                })
         },
     )
     .await?;
@@ -1463,9 +1728,7 @@ async fn spawn_agent_role_overrides_requested_model_and_reasoning_settings() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn spawn_agent_tool_description_mentions_role_locked_settings() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
+async fn spawn_agent_tool_description_uses_materialized_role_metadata_only() -> Result<()> {
     let server = start_mock_server().await;
     let call_id = "tool-search-spawn-agent";
     let resp_mock = mount_sse_sequence(
@@ -1491,13 +1754,9 @@ async fn spawn_agent_tool_description_mentions_role_locked_settings() -> Result<
     )
     .await;
 
-    let mut builder = test_codex().with_config(|config| {
-        config
-            .features
-            .enable(Feature::Collab)
-            .expect("test config should allow feature update");
-        config.multi_agent_v2.hide_spawn_agent_metadata = false;
-        let role_path = config.codex_home.join("custom-role.toml");
+    let mut builder = test_codex()
+        .with_pre_build_hook(|codex_home| {
+        let role_path = codex_home.join("custom-role.toml");
         std::fs::write(
             &role_path,
             format!(
@@ -1505,31 +1764,43 @@ async fn spawn_agent_tool_description_mentions_role_locked_settings() -> Result<
             ),
         )
         .expect("write role config");
-        config.agent_roles.insert(
-            "custom".to_string(),
-            AgentRoleConfig {
-                description: Some("Custom role".to_string()),
-                config_file: Some(role_path.to_path_buf()),
-                nickname_candidates: None,
-            },
-        );
-    });
+        std::fs::write(
+            codex_home.join("config.toml"),
+            "[agents.custom]\ndescription = \"Custom role\"\nconfig_file = \"./custom-role.toml\"\n",
+        )
+        .expect("write config");
+    })
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow V2 projection");
+            config.multi_agent_v2.hide_spawn_agent_metadata = false;
+            std::fs::remove_file(config.codex_home.join("custom-role.toml"))
+                .expect("remove role source after config loading");
+        });
     let test = builder.build(&server).await?;
 
     test.submit_turn(TURN_1_PROMPT).await?;
 
     let requests = resp_mock.requests();
     assert_eq!(requests.len(), 2);
-    let output = requests[1].tool_search_output(call_id);
-    let spawn_agent = namespace_child_tool(&output, "multi_agent_v1", "spawn_agent")
-        .expect("tool_search should return multi_agent_v1.spawn_agent");
+    let request_body = requests[0].body_json();
+    let spawn_agent = namespace_child_tool(&request_body, "multi_agent_v1", "spawn_agent")
+        .expect("V2 request should expose projected multi_agent_v1.spawn_agent");
     let agent_type_description = tool_parameter_description(spawn_agent, "agent_type")
         .expect("spawn_agent agent_type description");
     let custom_role_description =
         role_block(&agent_type_description, "custom").expect("custom role description");
     assert_eq!(
         custom_role_description,
-        "custom: {\nCustom role\n- This role's model is set to `gpt-5.4` and its reasoning effort is set to `high`. These settings cannot be changed.\n}"
+        format!(
+            "custom: {{\nCustom role\n- This role's model is set to `{ROLE_MODEL}` and its reasoning effort is set to `{ROLE_REASONING_EFFORT}`. These settings cannot be changed.\n}}"
+        )
     );
 
     Ok(())

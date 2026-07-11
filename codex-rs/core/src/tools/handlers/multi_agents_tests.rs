@@ -1,5 +1,6 @@
 use super::*;
 use crate::ThreadManager;
+use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::function_tool::FunctionCallError;
@@ -18,6 +19,11 @@ use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHa
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::turn_diff_tracker::TurnDiffTracker;
+use codex_agent_graph_store::AgentGraphStore;
+use codex_agent_graph_store::AgentGraphStoreError;
+use codex_agent_graph_store::AgentGraphStoreFuture;
+use codex_agent_graph_store::ThreadSpawnEdge;
+use codex_agent_graph_store::ThreadSpawnEdgeStatus;
 use codex_extension_api::empty_extension_registry;
 use codex_features::Feature;
 use codex_login::AuthManager;
@@ -29,6 +35,7 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
+use codex_protocol::error::CodexErr;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -57,17 +64,23 @@ use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
 use codex_protocol::user_input::UserInput;
 use codex_state::DirectionalThreadSpawnEdgeStatus;
+use codex_thread_store::InMemoryThreadStore;
+use codex_thread_store::ThreadStore;
 use core_test_support::TempDirExt;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
+use tracing::Level;
+use tracing_test::internal::MockWriter;
 
 fn invocation(
     session: Arc<crate::session::session::Session>,
@@ -99,11 +112,174 @@ fn parse_agent_id(id: &str) -> ThreadId {
     ThreadId::from_string(id).expect("agent id should be valid")
 }
 
+#[derive(Default)]
+struct TestAgentGraphStore {
+    edges: Mutex<HashMap<ThreadId, ThreadSpawnEdge>>,
+}
+
+impl AgentGraphStore for TestAgentGraphStore {
+    fn upsert_thread_spawn_edge(
+        &self,
+        parent_thread_id: ThreadId,
+        child_thread_id: ThreadId,
+        status: ThreadSpawnEdgeStatus,
+    ) -> AgentGraphStoreFuture<'_, ()> {
+        Box::pin(async move {
+            self.edges.lock().await.insert(
+                child_thread_id,
+                ThreadSpawnEdge {
+                    parent_thread_id,
+                    status,
+                },
+            );
+            Ok(())
+        })
+    }
+
+    fn get_thread_spawn_parent(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> AgentGraphStoreFuture<'_, Option<ThreadId>> {
+        Box::pin(async move {
+            Ok(self
+                .edges
+                .lock()
+                .await
+                .get(&child_thread_id)
+                .map(|edge| edge.parent_thread_id))
+        })
+    }
+
+    fn get_thread_spawn_edge(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> AgentGraphStoreFuture<'_, Option<ThreadSpawnEdge>> {
+        Box::pin(async move { Ok(self.edges.lock().await.get(&child_thread_id).copied()) })
+    }
+
+    fn remove_thread_spawn_edge(&self, child_thread_id: ThreadId) -> AgentGraphStoreFuture<'_, ()> {
+        Box::pin(async move {
+            self.edges.lock().await.remove(&child_thread_id);
+            Ok(())
+        })
+    }
+
+    fn set_thread_spawn_edge_status(
+        &self,
+        child_thread_id: ThreadId,
+        status: ThreadSpawnEdgeStatus,
+    ) -> AgentGraphStoreFuture<'_, ()> {
+        Box::pin(async move {
+            let mut edges = self.edges.lock().await;
+            let edge = edges.get_mut(&child_thread_id).ok_or_else(|| {
+                AgentGraphStoreError::InvalidRequest {
+                    message: format!("thread {child_thread_id} has no incoming edge"),
+                }
+            })?;
+            edge.status = status;
+            Ok(())
+        })
+    }
+
+    fn list_thread_spawn_children(
+        &self,
+        parent_thread_id: ThreadId,
+        status_filter: Option<ThreadSpawnEdgeStatus>,
+    ) -> AgentGraphStoreFuture<'_, Vec<ThreadId>> {
+        Box::pin(async move {
+            let mut child_thread_ids = self
+                .edges
+                .lock()
+                .await
+                .iter()
+                .filter_map(|(child_thread_id, edge)| {
+                    (edge.parent_thread_id == parent_thread_id
+                        && status_filter.is_none_or(|status| edge.status == status))
+                    .then_some(*child_thread_id)
+                })
+                .collect::<Vec<_>>();
+            child_thread_ids.sort_by_key(ThreadId::to_string);
+            Ok(child_thread_ids)
+        })
+    }
+
+    fn list_thread_spawn_descendants(
+        &self,
+        root_thread_id: ThreadId,
+        status_filter: Option<ThreadSpawnEdgeStatus>,
+    ) -> AgentGraphStoreFuture<'_, Vec<ThreadId>> {
+        Box::pin(async move {
+            let edges = self.edges.lock().await.clone();
+            let mut children_by_parent = HashMap::<ThreadId, Vec<ThreadId>>::new();
+            for (child_thread_id, edge) in edges {
+                if status_filter.is_none_or(|status| edge.status == status) {
+                    children_by_parent
+                        .entry(edge.parent_thread_id)
+                        .or_default()
+                        .push(child_thread_id);
+                }
+            }
+            for child_thread_ids in children_by_parent.values_mut() {
+                child_thread_ids.sort_by_key(ThreadId::to_string);
+            }
+
+            let mut visited = HashSet::from([root_thread_id]);
+            let mut queue = VecDeque::from(
+                children_by_parent
+                    .remove(&root_thread_id)
+                    .unwrap_or_default(),
+            );
+            let mut descendants = Vec::new();
+            while let Some(thread_id) = queue.pop_front() {
+                if !visited.insert(thread_id) {
+                    return Err(AgentGraphStoreError::InvalidRequest {
+                        message: format!("agent graph contains a cycle below {root_thread_id}"),
+                    });
+                }
+                descendants.push(thread_id);
+                queue.extend(children_by_parent.remove(&thread_id).unwrap_or_default());
+            }
+            Ok(descendants)
+        })
+    }
+}
+
 fn thread_manager() -> ThreadManager {
+    let thread_store: Arc<dyn ThreadStore> = Arc::new(InMemoryThreadStore::default());
+    let agent_graph_store: Arc<dyn AgentGraphStore> = Arc::new(TestAgentGraphStore::default());
     ThreadManager::with_models_provider_for_tests(
         CodexAuth::from_api_key("dummy"),
         built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["openai"].clone(),
     )
+    .with_persistence_for_tests(thread_store, agent_graph_store)
+}
+
+async fn attach_live_root(
+    manager: &ThreadManager,
+    session: &mut crate::session::session::Session,
+    config: crate::config::Config,
+) -> ThreadId {
+    let root = manager
+        .start_thread(config)
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    session
+        .services
+        .agent_control
+        .register_session_root(root.thread_id, /*current_parent_thread_id*/ None);
+    root.thread_id
+}
+
+async fn wait_for_lifecycle_waiter(control: &crate::agent::AgentControl) {
+    timeout(Duration::from_secs(1), async {
+        while control.lifecycle_waiter_count_for_test() == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("transactional handler should wait on the lifecycle gate");
 }
 
 async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
@@ -135,6 +311,9 @@ model_reasoning_effort = "minimal"
             nickname_candidates: None,
         },
     );
+    crate::config::agent_roles::materialize_agent_role_for_test(&mut config, &role_name)
+        .await
+        .expect("role should materialize");
     turn.config = Arc::new(config);
 
     role_name
@@ -186,6 +365,37 @@ struct ListedAgentResult {
 #[derive(Debug, Deserialize)]
 struct InterruptAgentResult {
     previous_status: AgentStatus,
+}
+
+#[test]
+fn collab_errors_do_not_reflect_internal_diagnostics() {
+    let agent_id = ThreadId::new();
+    let secret = "sensitive internal path and diagnostic";
+    let buffer: &'static std::sync::Mutex<Vec<u8>> =
+        Box::leak(Box::new(std::sync::Mutex::new(Vec::new())));
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_max_level(Level::TRACE)
+        .with_writer(MockWriter::new(buffer))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let spawn_error = collab_spawn_error(CodexErr::Fatal(secret.to_string()));
+    let agent_error = collab_agent_error(agent_id, CodexErr::Fatal(secret.to_string()));
+
+    assert_eq!(
+        spawn_error,
+        FunctionCallError::RespondToModel("collab spawn failed".to_string())
+    );
+    assert_eq!(
+        agent_error,
+        FunctionCallError::RespondToModel("collab tool failed".to_string())
+    );
+    assert!(!format!("{spawn_error:?}{agent_error:?}").contains(secret));
+    let logs = String::from_utf8(buffer.lock().expect("log buffer lock").clone())
+        .expect("logs should be UTF-8");
+    assert!(!logs.contains(secret));
+    assert!(logs.contains("error_kind=\"fatal\""));
 }
 
 #[tokio::test]
@@ -261,7 +471,7 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
 
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
+    attach_live_root(&manager, &mut session, (*turn.config).clone()).await;
     let mut config = (*turn.config).clone();
     let provider_info =
         built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["ollama"].clone();
@@ -309,6 +519,10 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
         .await;
     assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
     assert_eq!(snapshot.model_provider_id, "ollama");
+    assert_eq!(
+        snapshot.session_source.get_agent_role().as_deref(),
+        Some("explorer")
+    );
 }
 
 #[tokio::test]
@@ -378,6 +592,239 @@ async fn spawn_agent_fork_context_rejects_child_model_overrides() {
             "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
         )
     );
+}
+
+#[tokio::test]
+async fn full_history_fork_persists_inherited_role_for_resume() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnResult {
+        agent_id: String,
+    }
+
+    let (mut session, mut root_turn) = make_session_and_context().await;
+    let role_name = install_role_with_model_override(&mut root_turn).await;
+    let mut root_config = (*root_turn.config).clone();
+    root_config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    root_config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite state");
+    root_config.agent_max_depth = 2;
+    set_turn_config(&mut root_turn, root_config);
+    root_turn.multi_agent_version = MultiAgentVersion::V2;
+    let role_path = root_turn
+        .config
+        .codex_home
+        .as_path()
+        .join("fork-context-role.toml");
+    let state_db = init_state_db(root_turn.config.as_ref()).await;
+    let manager = ThreadManager::new(
+        root_turn.config.as_ref(),
+        AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        /*analytics_events_client*/ None,
+        thread_store_from_config(root_turn.config.as_ref(), state_db.clone()),
+        local_agent_graph_store_from_state_db(state_db.as_ref()),
+        "33333333-3333-4333-8333-333333333333".to_string(),
+        /*attestation_provider*/ None,
+        /*external_time_provider*/ None,
+    );
+    let root = manager
+        .start_thread((*root_turn.config).clone())
+        .await
+        .expect("root thread should start");
+    root.thread
+        .codex
+        .session
+        .set_multi_agent_version_if_unset(MultiAgentVersion::V2);
+    let control = manager.agent_control();
+    session.services.agent_control = control.clone();
+    session.thread_id = root.thread_id;
+    let root_session = Arc::new(session);
+    let root_turn = Arc::new(root_turn);
+
+    let parent_output = SpawnAgentHandler::default()
+        .handle(invocation(
+            root_session,
+            root_turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "be the role-bearing parent",
+                "agent_type": role_name
+            })),
+        ))
+        .await
+        .expect("role-bearing parent should spawn");
+    let (parent_content, _) = expect_text_output(parent_output);
+    let parent_result: SpawnResult =
+        serde_json::from_str(&parent_content).expect("parent spawn result");
+    let parent_thread_id = parse_agent_id(&parent_result.agent_id);
+    let parent_thread = manager
+        .get_thread(parent_thread_id)
+        .await
+        .expect("role-bearing parent should exist");
+    let mut parent_turn = parent_thread.codex.session.new_default_turn().await;
+    assert_eq!(parent_turn.multi_agent_version, MultiAgentVersion::V2);
+    let parent_agent_path = parent_turn
+        .session_source
+        .get_agent_path()
+        .expect("projected V1 parent should have a canonical V2 path");
+    let mut parent_config = (*parent_turn.config).clone();
+    parent_config.agent_max_depth = 2;
+    Arc::get_mut(&mut parent_turn)
+        .expect("fresh parent turn should be uniquely owned")
+        .config = Arc::new(parent_config);
+    assert_eq!(parent_turn.multi_agent_version, MultiAgentVersion::V2);
+
+    let child_output = SpawnAgentHandler::default()
+        .handle(invocation(
+            parent_thread.codex.session.clone(),
+            parent_turn,
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inherit the parent role",
+                "fork_context": true
+            })),
+        ))
+        .await
+        .expect("full-history child should spawn");
+    let (child_content, _) = expect_text_output(child_output);
+    let child_result: SpawnResult =
+        serde_json::from_str(&child_content).expect("child spawn result");
+    let child_thread_id = parse_agent_id(&child_result.agent_id);
+    let child_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("full-history child should exist");
+    let child_snapshot = child_thread.config_snapshot().await;
+    assert_eq!(
+        child_snapshot.session_source.get_agent_role().as_deref(),
+        Some(role_name.as_str())
+    );
+    let child_agent_path = child_snapshot
+        .session_source
+        .get_agent_path()
+        .expect("full-history child should have a canonical V2 path");
+    assert_eq!(
+        child_agent_path
+            .as_str()
+            .rsplit_once('/')
+            .map(|(parent, _)| parent),
+        Some(parent_agent_path.as_str())
+    );
+    child_thread
+        .codex
+        .session
+        .ensure_rollout_materialized()
+        .await;
+    child_thread
+        .codex
+        .session
+        .flush_rollout()
+        .await
+        .expect("full-history child rollout should flush");
+    control
+        .shutdown_live_agent(child_thread_id)
+        .await
+        .expect("full-history child should shut down");
+    let stored_child = manager
+        .update_thread_metadata(
+            child_thread_id,
+            codex_thread_store::ThreadMetadataPatch::default(),
+            /*include_archived*/ true,
+        )
+        .await
+        .expect("full-history child metadata should remain readable");
+    assert_eq!(
+        stored_child.agent_path.as_deref(),
+        Some(child_agent_path.as_str())
+    );
+    assert_eq!(
+        stored_child.source.get_agent_path().as_ref(),
+        Some(&child_agent_path)
+    );
+    let (rollout_items, _, _) = codex_rollout::RolloutRecorder::load_rollout_items(
+        stored_child
+            .rollout_path
+            .as_deref()
+            .expect("full-history child should have a rollout path"),
+    )
+    .await
+    .expect("full-history child rollout should be readable");
+    let child_session_meta = rollout_items
+        .iter()
+        .find_map(|item| match item {
+            RolloutItem::SessionMeta(meta_line) if meta_line.meta.id == child_thread_id => {
+                Some(&meta_line.meta)
+            }
+            _ => None,
+        })
+        .expect("full-history child should persist its own session metadata");
+    assert_eq!(child_session_meta.source, child_snapshot.session_source);
+    assert_eq!(child_session_meta.parent_thread_id, Some(parent_thread_id));
+    assert_eq!(
+        child_session_meta.agent_path.as_deref(),
+        Some(child_agent_path.as_str())
+    );
+    assert_eq!(
+        child_session_meta.agent_role.as_deref(),
+        Some(role_name.as_str())
+    );
+    assert_eq!(
+        child_session_meta.multi_agent_version,
+        Some(MultiAgentVersion::V2)
+    );
+    tokio::fs::write(
+        role_path,
+        "model = \"resumed-inherited-role-model\"\nmodel_reasoning_effort = \"high\"\n",
+    )
+    .await
+    .expect("trusted inherited role should update");
+    let mut resume_config = (*root_turn.config).clone();
+    crate::config::agent_roles::materialize_agent_role_for_test(&mut resume_config, &role_name)
+        .await
+        .expect("new runtime config should materialize the updated inherited role");
+
+    control
+        .resume_agent_from_rollout(
+            resume_config,
+            child_thread_id,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+        )
+        .await
+        .expect("full-history child should resume");
+    let resumed_snapshot = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("resumed full-history child should exist")
+        .config_snapshot()
+        .await;
+    assert_eq!(resumed_snapshot.model, "resumed-inherited-role-model");
+    assert_eq!(
+        resumed_snapshot.reasoning_effort,
+        Some(ReasoningEffort::High)
+    );
+    assert_eq!(
+        resumed_snapshot.session_source.get_agent_role().as_deref(),
+        Some(role_name.as_str())
+    );
+    assert_eq!(
+        resumed_snapshot.session_source.get_agent_path().as_ref(),
+        Some(&child_agent_path)
+    );
+    assert_eq!(resumed_snapshot.parent_thread_id, Some(parent_thread_id));
 }
 
 #[tokio::test]
@@ -684,6 +1131,9 @@ service_tier = "priority"
                 nickname_candidates: None,
             },
         );
+        crate::config::agent_roles::materialize_agent_role_for_test(&mut config, &role_name)
+            .await
+            .expect("role should materialize");
         turn.config = Arc::new(config);
         let manager = thread_manager();
         let root = manager
@@ -757,6 +1207,9 @@ service_tier = "turbo"
             nickname_candidates: None,
         },
     );
+    crate::config::agent_roles::materialize_agent_role_for_test(&mut config, &role_name)
+        .await
+        .expect("role should materialize");
     turn.config = Arc::new(config);
     let manager = thread_manager();
     let root = manager
@@ -820,6 +1273,9 @@ service_tier = "priority"
             nickname_candidates: None,
         },
     );
+    crate::config::agent_roles::materialize_agent_role_for_test(&mut config, &role_name)
+        .await
+        .expect("role should materialize");
     turn.config = Arc::new(config);
 
     let result = SpawnAgentHandler::default()
@@ -1020,7 +1476,7 @@ async fn multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override() {
 async fn spawn_agent_returns_agent_id_without_task_name() {
     let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
+    attach_live_root(&manager, &mut session, (*turn.config).clone()).await;
 
     let output = SpawnAgentHandler::default()
         .handle(invocation(
@@ -1230,6 +1686,167 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
                         && !communication.trigger_turn
             )
     }));
+}
+
+#[tokio::test]
+async fn multi_agent_v1_spawn_under_v2_returns_agent_id_and_assigns_internal_path() {
+    #[derive(Debug, Deserialize)]
+    struct LegacySpawnAgentResult {
+        agent_id: String,
+        nickname: Option<String>,
+    }
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("root thread should start");
+    root.thread.codex.session.new_default_turn().await;
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let spawn_output = SpawnAgentHandler::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "legacy v1 prompt"
+            })),
+        ))
+        .await
+        .expect("legacy spawn_agent should succeed under v2");
+    let (content, _) = expect_text_output(spawn_output);
+    let spawn_result: LegacySpawnAgentResult =
+        serde_json::from_str(&content).expect("legacy spawn result should parse");
+    assert!(spawn_result.nickname.is_some());
+
+    let child_thread_id = parse_agent_id(&spawn_result.agent_id);
+    let child_snapshot = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist")
+        .config_snapshot()
+        .await;
+    let child_path_text = child_snapshot
+        .session_source
+        .get_agent_path()
+        .expect("v1 spawned agent under v2 should have an internal path")
+        .to_string();
+    assert_eq!(
+        child_snapshot.session_source.get_agent_role().as_deref(),
+        Some(DEFAULT_ROLE_NAME)
+    );
+    let generated_segment = child_path_text
+        .strip_prefix("/root/agent_")
+        .expect("generated path should use the agent_ prefix");
+    assert_eq!(generated_segment.len(), 32);
+    assert!(
+        generated_segment
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()),
+        "generated path should use UUID simple hex"
+    );
+    let child_path = AgentPath::try_from(child_path_text.as_str()).expect("child path");
+
+    SendMessageHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_message",
+            function_payload(json!({
+                "target": spawn_result.agent_id,
+                "message": "encrypted-send-message"
+            })),
+        ))
+        .await
+        .expect("v2 send_message should accept legacy agent_id");
+    assert!(manager.captured_ops().iter().any(|(id, op)| {
+        *id == child_thread_id
+            && matches!(
+                op,
+                Op::InterAgentCommunication { communication }
+                    if communication.author == AgentPath::root()
+                        && communication.recipient == child_path
+                        && communication.other_recipients.is_empty()
+                        && communication.content.is_empty()
+                        && communication.encrypted_content.as_deref() == Some("encrypted-send-message")
+                        && !communication.trigger_turn
+            )
+    }));
+
+    let output = ListAgentsHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "list_agents",
+            function_payload(json!({})),
+        ))
+        .await
+        .expect("list_agents should include legacy-spawned v2 child");
+    let (content, _) = expect_text_output(output);
+    let result: ListAgentsResult =
+        serde_json::from_str(&content).expect("list_agents result should be json");
+    assert!(
+        result
+            .agents
+            .iter()
+            .any(|agent| agent.agent_name == child_path_text),
+        "expected list_agents to include generated child path"
+    );
+
+    let child_thread = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("child thread should exist");
+    let child_turn = child_thread.codex.session.new_default_turn().await;
+    child_thread
+        .codex
+        .session
+        .send_event(
+            child_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: child_turn.sub_id.clone(),
+                last_agent_message: Some("done".to_string()),
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    let wait_output = WaitAgentHandler::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "wait_agent",
+            function_payload(json!({
+                "targets": [spawn_result.agent_id],
+                "timeout_ms": 10_000
+            })),
+        ))
+        .await
+        .expect("v1 wait_agent should accept legacy agent_id under v2");
+    let (content, _) = expect_text_output(wait_output);
+    let wait_result: wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert!(!wait_result.timed_out);
+    assert_eq!(
+        wait_result.status,
+        HashMap::from([(
+            spawn_result.agent_id,
+            AgentStatus::Completed(Some("done".to_string()))
+        )])
+    );
 }
 
 #[tokio::test]
@@ -2326,7 +2943,7 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
 
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
+    attach_live_root(&manager, &mut session, (*turn.config).clone()).await;
     let expected_sandbox = turn.config.legacy_sandbox_policy();
     #[allow(deprecated)]
     let mut expected_file_system_sandbox_policy =
@@ -2412,7 +3029,7 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
 async fn spawn_agent_rejects_when_depth_limit_exceeded() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
+    attach_live_root(&manager, &mut session, (*turn.config).clone()).await;
 
     let max_depth = turn.config.agent_max_depth;
     turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -2450,7 +3067,7 @@ async fn spawn_agent_allows_depth_up_to_configured_max_depth() {
 
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
+    attach_live_root(&manager, &mut session, (*turn.config).clone()).await;
 
     let mut config = (*turn.config).clone();
     config.agent_max_depth = DEFAULT_AGENT_MAX_DEPTH + 1;
@@ -2508,6 +3125,10 @@ async fn multi_agent_v2_spawn_agent_ignores_configured_max_depth() {
         .expect("root thread should start");
     session.services.agent_control = manager.agent_control();
     session.thread_id = root.thread_id;
+    session
+        .services
+        .agent_control
+        .register_session_root(root.thread_id, /*current_parent_thread_id*/ None);
     set_turn_config(&mut turn, config);
     let parent_path = AgentPath::try_from("/root/parent").expect("agent path");
     turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -2537,6 +3158,72 @@ async fn multi_agent_v2_spawn_agent_ignores_configured_max_depth() {
         serde_json::from_str(&content).expect("spawn_agent result should be json");
     assert_eq!(result.task_name, "/root/parent/child");
     assert_eq!(result.nickname, None);
+    assert_eq!(success, Some(true));
+}
+
+#[tokio::test]
+async fn multi_agent_v1_spawn_under_v2_ignores_configured_max_depth() {
+    #[derive(Debug, Deserialize)]
+    struct LegacySpawnAgentResult {
+        agent_id: String,
+    }
+
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config.agent_max_depth = 1;
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    session
+        .services
+        .agent_control
+        .register_session_root(root.thread_id, /*current_parent_thread_id*/ None);
+    set_turn_config(&mut turn, config);
+    let parent_path = AgentPath::try_from("/root/parent").expect("agent path");
+    turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: root.thread_id,
+        depth: 1,
+        agent_path: Some(parent_path),
+        agent_nickname: None,
+        agent_role: None,
+    });
+
+    let output = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "legacy v1 prompt"
+            })),
+        ))
+        .await
+        .expect("legacy spawn under v2 should ignore max depth");
+    let (content, success) = expect_text_output(output);
+    let result: LegacySpawnAgentResult =
+        serde_json::from_str(&content).expect("legacy spawn result should parse");
+    let child_snapshot = manager
+        .get_thread(parse_agent_id(&result.agent_id))
+        .await
+        .expect("child thread should exist")
+        .config_snapshot()
+        .await;
+    let child_path = child_snapshot
+        .session_source
+        .get_agent_path()
+        .expect("legacy spawned v2 child should have an internal path");
+    assert!(
+        child_path.as_str().starts_with("/root/parent/agent_"),
+        "expected generated child path under the current v2 parent, got {child_path}"
+    );
     assert_eq!(success, Some(true));
 }
 
@@ -2760,6 +3447,168 @@ async fn resume_agent_reports_missing_agent() {
 }
 
 #[tokio::test]
+async fn projected_v1_resume_authorizes_owned_pathless_child_and_rejects_foreign_root() {
+    let (_session, turn) = make_session_and_context().await;
+    let mut config = turn.config.as_ref().clone();
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    config
+        .features
+        .enable(Feature::Collab)
+        .expect("test config should allow collaboration");
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow multi-agent v2");
+    let state_db = init_state_db(&config).await;
+    let manager = ThreadManager::new(
+        &config,
+        AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        /*analytics_events_client*/ None,
+        thread_store_from_config(&config, state_db.clone()),
+        local_agent_graph_store_from_state_db(state_db.as_ref()),
+        "22222222-2222-4222-8222-222222222222".to_string(),
+        /*attestation_provider*/ None,
+        /*external_time_provider*/ None,
+    );
+    let owned_root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("owned root should start");
+    let foreign_root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("foreign root should start");
+    let owned_control = owned_root
+        .thread
+        .codex
+        .session
+        .services
+        .agent_control
+        .clone();
+    let foreign_control = foreign_root
+        .thread
+        .codex
+        .session
+        .services
+        .agent_control
+        .clone();
+
+    let owned_child_id = owned_control
+        .spawn_agent(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "historical owned pathless child".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: owned_root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+        )
+        .await
+        .expect("owned pathless child should spawn");
+    let foreign_child_id = foreign_control
+        .spawn_agent(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "historical foreign pathless child".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: foreign_root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+        )
+        .await
+        .expect("foreign pathless child should spawn");
+
+    for child_id in [owned_child_id, foreign_child_id] {
+        let child = manager
+            .get_thread(child_id)
+            .await
+            .expect("pathless child should exist");
+        child.codex.session.ensure_rollout_materialized().await;
+        child
+            .codex
+            .session
+            .flush_rollout()
+            .await
+            .expect("pathless child rollout should flush");
+    }
+    owned_control
+        .shutdown_live_agent(owned_child_id)
+        .await
+        .expect("owned child should shut down");
+    foreign_control
+        .shutdown_live_agent(foreign_child_id)
+        .await
+        .expect("foreign child should shut down");
+
+    let Err(foreign_err) = ResumeAgentHandler
+        .handle(invocation(
+            owned_root.thread.codex.session.clone(),
+            owned_root.thread.codex.session.new_default_turn().await,
+            "resume_agent",
+            function_payload(json!({"id": foreign_child_id.to_string()})),
+        ))
+        .await
+    else {
+        panic!("foreign persisted child should be rejected");
+    };
+    assert_eq!(
+        foreign_err,
+        FunctionCallError::RespondToModel(format!("agent with id {foreign_child_id} not found"))
+    );
+    assert!(
+        manager.get_thread(foreign_child_id).await.is_err(),
+        "rejected foreign child must remain unloaded"
+    );
+
+    ResumeAgentHandler
+        .handle(invocation(
+            owned_root.thread.codex.session.clone(),
+            owned_root.thread.codex.session.new_default_turn().await,
+            "resume_agent",
+            function_payload(json!({"id": owned_child_id.to_string()})),
+        ))
+        .await
+        .expect("owned persisted child should resume");
+    let owned_snapshot = manager
+        .get_thread(owned_child_id)
+        .await
+        .expect("owned child should be loaded")
+        .config_snapshot()
+        .await;
+    let owned_path = owned_snapshot
+        .session_source
+        .get_agent_path()
+        .expect("owned child should receive a canonical path");
+    let generated_segment = owned_path
+        .as_str()
+        .strip_prefix("/root/agent_")
+        .expect("owned child path should use the generated prefix");
+    assert_eq!(generated_segment.len(), 32);
+    assert!(
+        generated_segment
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    );
+}
+
+#[tokio::test]
 async fn resume_agent_noops_for_active_agent() {
     let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
@@ -2965,6 +3814,94 @@ async fn wait_agent_rejects_empty_targets() {
         err,
         FunctionCallError::RespondToModel("agent ids must be non-empty".to_string())
     );
+}
+
+#[test]
+fn projected_wait_agent_deduplicates_targets_in_first_seen_order() {
+    let first = ThreadId::new();
+    let second = ThreadId::new();
+
+    let targets = parse_projected_agent_id_targets(vec![
+        first.to_string(),
+        second.to_string(),
+        first.to_string(),
+    ])
+    .expect("duplicate agent ids should be accepted");
+
+    assert_eq!(targets, vec![first, second]);
+}
+
+#[test]
+fn legacy_wait_agent_parser_preserves_duplicate_targets() {
+    let first = ThreadId::new();
+    let second = ThreadId::new();
+
+    let targets = parse_agent_id_targets(vec![
+        first.to_string(),
+        second.to_string(),
+        first.to_string(),
+    ])
+    .expect("legacy duplicate agent ids should be accepted");
+
+    assert_eq!(targets, vec![first, second, first]);
+}
+
+#[test]
+fn projected_wait_agent_rejects_more_than_the_supported_target_count() {
+    let targets = (0..=crate::tools::handlers::multi_agents_spec::MAX_WAIT_AGENT_TARGETS)
+        .map(|_| ThreadId::new().to_string())
+        .collect();
+
+    let err =
+        parse_projected_agent_id_targets(targets).expect_err("oversized target list should fail");
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel(
+            "at most 64 agent ids can be waited on at once".to_string()
+        )
+    );
+}
+
+#[test]
+fn projected_wait_agent_bounds_aggregate_json_output() {
+    let statuses = (0..crate::tools::handlers::multi_agents_spec::MAX_WAIT_AGENT_TARGETS)
+        .map(|index| {
+            let status = if index % 2 == 0 {
+                AgentStatus::Completed(Some("\n".repeat(20_000)))
+            } else {
+                AgentStatus::Errored("\0".repeat(20_000))
+            };
+            (ThreadId::new(), status)
+        })
+        .collect::<Vec<_>>();
+    let original = statuses.clone();
+
+    let bounded = wait::bound_projected_wait_statuses(statuses);
+    let result = wait::WaitAgentResult {
+        status: bounded
+            .into_iter()
+            .map(|(thread_id, status)| (thread_id.to_string(), status))
+            .collect(),
+        timed_out: false,
+    };
+    let serialized = serde_json::to_vec(&result).expect("wait result should serialize");
+
+    assert!(
+        serialized.len() <= wait::MAX_PROJECTED_WAIT_RESULT_BYTES,
+        "projected wait output was {} bytes",
+        serialized.len()
+    );
+    assert!(result.status.values().all(|status| match status {
+        AgentStatus::Completed(Some(text)) | AgentStatus::Errored(text) => {
+            text.ends_with("...[truncated]")
+        }
+        status => panic!("unexpected bounded status: {status:?}"),
+    }));
+    assert!(original.iter().all(|(_, status)| match status {
+        AgentStatus::Completed(Some(text)) | AgentStatus::Errored(text) => text.len() == 20_000,
+        _ => false,
+    }));
 }
 
 #[tokio::test]
@@ -3341,6 +4278,107 @@ async fn wait_agent_times_out_when_status_is_not_final() {
         .handle(invocation)
         .await
         .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        wait::WaitAgentResult {
+            status: HashMap::new(),
+            timed_out: true
+        }
+    );
+    assert_eq!(success, None);
+
+    let _ = thread
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("shutdown should submit");
+}
+
+#[tokio::test]
+async fn projected_wait_agent_uses_configured_timeout_options() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let thread = manager
+        .start_thread(turn.config.as_ref().clone())
+        .await
+        .expect("start thread");
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({
+            "targets": [thread.thread_id.to_string()]
+        })),
+    );
+    let output = timeout(
+        Duration::from_secs(/*secs*/ 1),
+        WaitAgentHandler::new_projected(
+            crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions {
+                min_timeout_ms: 1,
+                max_timeout_ms: 1,
+                default_timeout_ms: 1,
+            },
+        )
+        .handle(invocation),
+    )
+    .await
+    .expect("configured default should be shorter than the test timeout")
+    .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        wait::WaitAgentResult {
+            status: HashMap::new(),
+            timed_out: true
+        }
+    );
+    assert_eq!(success, None);
+
+    let _ = thread
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("shutdown should submit");
+}
+
+#[tokio::test]
+async fn projected_wait_agent_allows_zero_when_configured_timeout_allows_zero() {
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let thread = manager
+        .start_thread(turn.config.as_ref().clone())
+        .await
+        .expect("start thread");
+    let invocation = invocation(
+        Arc::new(session),
+        Arc::new(turn),
+        "wait_agent",
+        function_payload(json!({
+            "targets": [thread.thread_id.to_string()],
+            "timeout_ms": 0
+        })),
+    );
+    let output = timeout(
+        Duration::from_secs(/*secs*/ 1),
+        WaitAgentHandler::new_projected(
+            crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions {
+                min_timeout_ms: 0,
+                max_timeout_ms: 0,
+                default_timeout_ms: 0,
+            },
+        )
+        .handle(invocation),
+    )
+    .await
+    .expect("zero timeout should complete immediately")
+    .expect("wait_agent should succeed");
     let (content, success) = expect_text_output(output);
     let result: wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
@@ -4242,6 +5280,182 @@ async fn close_agent_submits_shutdown_and_returns_previous_status() {
 }
 
 #[tokio::test]
+async fn legacy_send_and_close_route_by_turn_multi_agent_version() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should enable multi-agent V2");
+    let manager = thread_manager();
+    attach_live_root(&manager, &mut session, config.clone()).await;
+    set_turn_config(&mut turn, config);
+    let native_v1_turn = session.new_default_turn().await;
+    assert_eq!(native_v1_turn.multi_agent_version, MultiAgentVersion::V1);
+    let session = Arc::new(session);
+    let v2_turn = Arc::new(turn);
+
+    let spawn_output = SpawnAgentHandler::default()
+        .handle(invocation(
+            session.clone(),
+            v2_turn.clone(),
+            "spawn_agent",
+            function_payload(json!({"message": "routing child"})),
+        ))
+        .await
+        .expect("projected V1 child should spawn under V2");
+    let (spawn_content, _) = expect_text_output(spawn_output);
+    let spawn_result: serde_json::Value =
+        serde_json::from_str(&spawn_content).expect("spawn result should be json");
+    let child_thread_id = parse_agent_id(
+        spawn_result
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str)
+            .expect("spawn result should include agent_id"),
+    );
+    let control = session.services.agent_control.clone();
+    let send_handler = SendInputHandler;
+    let input_count_before = manager
+        .captured_ops()
+        .into_iter()
+        .filter(|(thread_id, op)| {
+            *thread_id == child_thread_id && matches!(op, Op::UserInput { .. })
+        })
+        .count();
+
+    let gate_guard = control.lifecycle_gate_for_test().lock_owned().await;
+    let v2_send_invocation = invocation(
+        session.clone(),
+        v2_turn.clone(),
+        "send_input",
+        function_payload(json!({
+            "target": child_thread_id.to_string(),
+            "message": "transactional send"
+        })),
+    );
+    let v2_send = tokio::spawn(async move {
+        SendInputHandler
+            .handle(v2_send_invocation)
+            .await
+            .map(|_| ())
+    });
+    wait_for_lifecycle_waiter(&control).await;
+    assert!(!v2_send.is_finished());
+    assert_eq!(
+        manager
+            .captured_ops()
+            .into_iter()
+            .filter(|(thread_id, op)| {
+                *thread_id == child_thread_id && matches!(op, Op::UserInput { .. })
+            })
+            .count(),
+        input_count_before
+    );
+    drop(gate_guard);
+    v2_send
+        .await
+        .expect("projected V1 send task should join")
+        .expect("projected V1 send should continue after lifecycle gate release");
+    assert_eq!(
+        manager
+            .captured_ops()
+            .into_iter()
+            .filter(|(thread_id, op)| {
+                *thread_id == child_thread_id && matches!(op, Op::UserInput { .. })
+            })
+            .count(),
+        input_count_before + 1
+    );
+
+    let gate_guard = control.lifecycle_gate_for_test().lock_owned().await;
+    timeout(
+        Duration::from_secs(1),
+        send_handler.handle(invocation(
+            session.clone(),
+            native_v1_turn.clone(),
+            "send_input",
+            function_payload(json!({
+                "target": child_thread_id.to_string(),
+                "message": "native V1 send"
+            })),
+        )),
+    )
+    .await
+    .expect("native V1 send must not wait for the V2 lifecycle gate")
+    .expect("native V1 send should succeed");
+    drop(gate_guard);
+    assert_eq!(
+        manager
+            .captured_ops()
+            .into_iter()
+            .filter(|(thread_id, op)| {
+                *thread_id == child_thread_id && matches!(op, Op::UserInput { .. })
+            })
+            .count(),
+        input_count_before + 2
+    );
+
+    let v1_close_spawn_output = SpawnAgentHandler::default()
+        .handle(invocation(
+            session.clone(),
+            v2_turn.clone(),
+            "spawn_agent",
+            function_payload(json!({"message": "native V1 close routing child"})),
+        ))
+        .await
+        .expect("second projected V1 child should spawn under V2");
+    let (v1_close_spawn_content, _) = expect_text_output(v1_close_spawn_output);
+    let v1_close_spawn_result: serde_json::Value =
+        serde_json::from_str(&v1_close_spawn_content).expect("second spawn result should be json");
+    let v1_close_child_thread_id = parse_agent_id(
+        v1_close_spawn_result
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str)
+            .expect("second spawn result should include agent_id"),
+    );
+
+    let close_handler = CloseAgentHandler;
+    let gate_guard = control.lifecycle_gate_for_test().lock_owned().await;
+    let v2_close_invocation = invocation(
+        session.clone(),
+        v2_turn,
+        "close_agent",
+        function_payload(json!({"target": child_thread_id.to_string()})),
+    );
+    let v2_close = tokio::spawn(async move {
+        CloseAgentHandler
+            .handle(v2_close_invocation)
+            .await
+            .map(|_| ())
+    });
+    wait_for_lifecycle_waiter(&control).await;
+    assert!(!v2_close.is_finished());
+    assert!(manager.get_thread(child_thread_id).await.is_ok());
+
+    timeout(
+        Duration::from_secs(1),
+        close_handler.handle(invocation(
+            session.clone(),
+            native_v1_turn,
+            "close_agent",
+            function_payload(json!({"target": v1_close_child_thread_id.to_string()})),
+        )),
+    )
+    .await
+    .expect("native V1 close must not wait for the V2 lifecycle gate")
+    .expect("native V1 close should succeed");
+    assert!(manager.get_thread(v1_close_child_thread_id).await.is_err());
+    drop(gate_guard);
+
+    timeout(Duration::from_secs(1), v2_close)
+        .await
+        .expect("projected V1 close should continue after lifecycle gate release")
+        .expect("projected V1 close task should join")
+        .expect("projected V1 close should succeed");
+    assert!(manager.get_thread(child_thread_id).await.is_err());
+}
+
+#[tokio::test]
 async fn tool_handlers_cascade_close_and_resume_and_keep_explicitly_closed_subtrees_closed() {
     let (_session, turn) = make_session_and_context().await;
     let mut config = turn.config.as_ref().clone();
@@ -4565,9 +5779,5 @@ async fn build_agent_resume_config_clears_base_instructions() {
         .approval_policy
         .set(AskForApproval::OnRequest)
         .expect("approval policy set");
-    expected
-        .permissions
-        .set_permission_profile(turn.permission_profile())
-        .expect("permission profile set");
     assert_eq!(config, expected);
 }

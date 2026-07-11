@@ -28,6 +28,7 @@ pub use feature_configs::NetworkProxyUnixSocketPermissionToml;
 use feature_configs::RemovedAppsMcpPathOverrideConfigToml;
 pub use feature_configs::RolloutBudgetConfigToml;
 pub use feature_configs::TokenBudgetConfigToml;
+pub use feature_configs::is_reserved_responses_tool_namespace;
 use legacy::LegacyFeatureToggles;
 pub use legacy::legacy_feature_keys;
 

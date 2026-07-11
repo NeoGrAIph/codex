@@ -505,6 +505,7 @@ impl Session {
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
         external_time_provider: Option<Arc<dyn TimeProvider>>,
         multi_agent_version: Option<MultiAgentVersion>,
+        initial_task_publication: InitialTaskPublication,
     ) -> anyhow::Result<Arc<Self>> {
         debug!(
             "Configuring session: model={}; provider={:?}",
@@ -616,7 +617,18 @@ impl Session {
                                 },
                             },
                         };
-                        LiveThread::create(Arc::clone(&thread_store), params).await?
+                        match initial_task_publication {
+                            InitialTaskPublication::Published => {
+                                LiveThread::create(Arc::clone(&thread_store), params).await?
+                            }
+                            InitialTaskPublication::Pending => {
+                                LiveThread::create_pending_activation(
+                                    Arc::clone(&thread_store),
+                                    params,
+                                )
+                                .await?
+                            }
+                        }
                     }
                     InitialHistory::Resumed(resumed_history) => {
                         let params = ResumeThreadParams {

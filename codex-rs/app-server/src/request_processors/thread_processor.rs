@@ -3,9 +3,12 @@ use crate::error_code::method_not_found;
 use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
+use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_state::DirectionalThreadSpawnEdgeStatus;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
@@ -145,22 +148,48 @@ fn collect_resume_override_mismatches(
 }
 
 fn merge_persisted_resume_metadata(
-    request_overrides: &mut Option<HashMap<String, serde_json::Value>>,
+    request_overrides: Option<&HashMap<String, serde_json::Value>>,
     typesafe_overrides: &mut ConfigOverrides,
     persisted_metadata: &ThreadMetadata,
-) {
-    if has_model_resume_override(request_overrides.as_ref(), typesafe_overrides) {
-        return;
+) -> Option<ReasoningEffort> {
+    if has_model_resume_override(request_overrides, typesafe_overrides) {
+        return None;
     }
 
     typesafe_overrides.model = persisted_metadata.model.clone();
     typesafe_overrides.model_provider = Some(persisted_metadata.model_provider.clone());
+    persisted_metadata.reasoning_effort.clone()
+}
 
-    if let Some(reasoning_effort) = persisted_metadata.reasoning_effort.as_ref() {
-        request_overrides.get_or_insert_with(HashMap::new).insert(
-            "model_reasoning_effort".to_string(),
-            serde_json::Value::String(reasoning_effort.to_string()),
+fn project_top_level_resume_overrides_into_request_layer(
+    request_overrides: &mut Option<HashMap<String, serde_json::Value>>,
+    typesafe_overrides: &ConfigOverrides,
+) {
+    let mut insert = |key: &str, value: String| {
+        request_overrides
+            .get_or_insert_with(HashMap::new)
+            .insert(key.to_string(), serde_json::Value::String(value));
+    };
+
+    if let Some(model) = typesafe_overrides.model.clone() {
+        insert("model", model);
+    }
+    if let Some(model_provider) = typesafe_overrides.model_provider.clone() {
+        insert("model_provider", model_provider);
+    }
+    if let Some(service_tier) = typesafe_overrides.service_tier.as_ref() {
+        insert(
+            "service_tier",
+            service_tier
+                .clone()
+                .unwrap_or_else(|| SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string()),
         );
+    }
+    if let Some(developer_instructions) = typesafe_overrides.developer_instructions.clone() {
+        insert("developer_instructions", developer_instructions);
+    }
+    if let Some(personality) = typesafe_overrides.personality {
+        insert("personality", personality.to_string());
     }
 }
 
@@ -223,75 +252,23 @@ fn has_model_resume_override(
     typesafe_overrides.model.is_some()
         || typesafe_overrides.model_provider.is_some()
         || request_overrides.is_some_and(|overrides| overrides.contains_key("model"))
+        || request_overrides.is_some_and(|overrides| overrides.contains_key("model_provider"))
         || request_overrides
             .is_some_and(|overrides| overrides.contains_key("model_reasoning_effort"))
 }
 
 fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
-    const DYNAMIC_TOOL_NAME_MAX_LEN: usize = 128;
-    const DYNAMIC_TOOL_NAMESPACE_MAX_LEN: usize = 64;
-    const DYNAMIC_TOOL_NAMESPACE_DESCRIPTION_MAX_LEN: usize = 1024;
-    const DYNAMIC_TOOL_IDENTIFIER_PATTERN: &str = "^[a-zA-Z0-9_-]+$";
-    const RESERVED_RESPONSES_NAMESPACES: &[&str] = &[
-        "api_tool",
-        "browser",
-        "computer",
-        "container",
-        "file_search",
-        "functions",
-        "image_gen",
-        "multi_tool_use",
-        "python",
-        "python_user_visible",
-        "submodel_delegator",
-        "terminal",
-        "tool_search",
-        "web",
-    ];
-
-    fn escape_identifier_for_error(value: &str) -> String {
-        value.escape_default().to_string()
-    }
-
-    fn validate_dynamic_tool_identifier(
-        value: &str,
-        label: &str,
-        max_len: usize,
-    ) -> Result<(), String> {
-        if !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-        {
-            return Err(format!(
-                "{label} must match {DYNAMIC_TOOL_IDENTIFIER_PATTERN} to match Responses API: {}",
-                escape_identifier_for_error(value),
-            ));
-        }
-        if value.chars().count() > max_len {
-            return Err(format!(
-                "{label} must be at most {max_len} characters to match Responses API: {}",
-                escape_identifier_for_error(value),
-            ));
-        }
-        Ok(())
-    }
-
     fn validate_dynamic_tool<'a>(
         tool: &'a DynamicToolFunctionSpec,
         namespace: Option<&str>,
         seen: &mut HashSet<&'a str>,
     ) -> Result<(), String> {
         let name = tool.name.trim();
-        if name.is_empty() {
-            return Err("dynamic tool name must not be empty".to_string());
-        }
-        if name != tool.name {
-            return Err(format!(
-                "dynamic tool name has leading/trailing whitespace: {}",
-                escape_identifier_for_error(&tool.name),
-            ));
-        }
-        validate_dynamic_tool_identifier(name, "dynamic tool name", DYNAMIC_TOOL_NAME_MAX_LEN)?;
+        codex_tools::validate_dynamic_tool_identifier(
+            &tool.name,
+            "dynamic tool name",
+            codex_tools::DYNAMIC_TOOL_NAME_MAX_LEN,
+        )?;
         if name == "mcp" || name.starts_with("mcp__") {
             return Err(format!("dynamic tool name is reserved: {name}"));
         }
@@ -325,36 +302,12 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
                 validate_dynamic_tool(tool, /*namespace*/ None, &mut seen_tools)?;
             }
             DynamicToolSpec::Namespace(namespace) => {
-                let name = namespace.name.trim();
-                if name.is_empty() {
-                    return Err("dynamic tool namespace must not be empty".to_string());
-                }
-                if name != namespace.name {
-                    return Err(format!(
-                        "dynamic tool namespace has leading/trailing whitespace: {}",
-                        escape_identifier_for_error(&namespace.name),
-                    ));
-                }
-                validate_dynamic_tool_identifier(
-                    name,
-                    "dynamic tool namespace",
-                    DYNAMIC_TOOL_NAMESPACE_MAX_LEN,
+                let name = namespace.name.as_str();
+                codex_tools::validate_dynamic_tool_namespace(namespace)?;
+                codex_tools::validate_reserved_dynamic_tool_namespaces(
+                    std::slice::from_ref(spec),
+                    /*additional_reserved_namespaces*/ &[],
                 )?;
-                if namespace.description.chars().count()
-                    > DYNAMIC_TOOL_NAMESPACE_DESCRIPTION_MAX_LEN
-                {
-                    return Err(format!(
-                        "dynamic tool namespace description must be at most {DYNAMIC_TOOL_NAMESPACE_DESCRIPTION_MAX_LEN} characters"
-                    ));
-                }
-                if name == "mcp" || name.starts_with("mcp__") {
-                    return Err(format!("dynamic tool namespace is reserved: {name}"));
-                }
-                if RESERVED_RESPONSES_NAMESPACES.contains(&name) {
-                    return Err(format!(
-                        "dynamic tool namespace collides with a reserved Responses API namespace: {name}",
-                    ));
-                }
                 if !seen_namespaces.insert(name) {
                     return Err(format!("duplicate dynamic tool namespace: {name}"));
                 }
@@ -2107,6 +2060,14 @@ impl ThreadRequestProcessor {
                 .map_err(thread_store_list_error)?;
 
             for result in page.items {
+                if self
+                    .thread_manager
+                    .loaded_thread_is_available_for_external_access(result.thread.thread_id)
+                    .await
+                    == Some(false)
+                {
+                    continue;
+                }
                 let source = with_thread_spawn_agent_metadata(
                     result.thread.source.clone(),
                     result.thread.agent_nickname.clone(),
@@ -2252,6 +2213,8 @@ impl ThreadRequestProcessor {
         thread_id: ThreadId,
         include_turns: bool,
     ) -> Result<Thread, ThreadReadViewError> {
+        self.ensure_initial_task_is_published_for_read(thread_id)
+            .await?;
         let loaded_thread = self.thread_manager.get_thread(thread_id).await.ok();
         let mut thread = if include_turns {
             if let Some(loaded_thread) = loaded_thread.as_ref() {
@@ -2318,6 +2281,38 @@ impl ThreadRequestProcessor {
             has_live_in_progress_turn,
         );
         Ok(thread)
+    }
+
+    async fn ensure_initial_task_is_published_for_read(
+        &self,
+        thread_id: ThreadId,
+    ) -> Result<(), ThreadReadViewError> {
+        if self
+            .thread_manager
+            .loaded_thread_is_available_for_external_access(thread_id)
+            .await
+            == Some(false)
+        {
+            return Err(ThreadReadViewError::InvalidRequest(format!(
+                "thread not loaded: {thread_id}"
+            )));
+        }
+        let Some(state_db) = self.state_db.as_ref() else {
+            return Ok(());
+        };
+        match state_db.get_thread_spawn_edge(thread_id).await {
+            Ok(Some((_, DirectionalThreadSpawnEdgeStatus::PendingActivation))) => Err(
+                ThreadReadViewError::InvalidRequest(format!("thread not loaded: {thread_id}")),
+            ),
+            Ok(Some((
+                _,
+                DirectionalThreadSpawnEdgeStatus::Open | DirectionalThreadSpawnEdgeStatus::Closed,
+            )))
+            | Ok(None) => Ok(()),
+            Err(err) => Err(ThreadReadViewError::Internal(format!(
+                "failed to inspect thread activation state: {err}"
+            ))),
+        }
     }
 
     async fn load_persisted_thread_for_read(
@@ -2782,15 +2777,20 @@ impl ThreadRequestProcessor {
             developer_instructions,
             personality,
         );
-        self.load_and_apply_persisted_resume_metadata(
-            &thread_history,
+        project_top_level_resume_overrides_into_request_layer(
             &mut request_overrides,
-            &mut typesafe_overrides,
-        )
-        .await;
+            &typesafe_overrides,
+        );
+        let persisted_reasoning_effort = self
+            .load_and_apply_persisted_resume_metadata(
+                &thread_history,
+                request_overrides.as_ref(),
+                &mut typesafe_overrides,
+            )
+            .await;
 
         // Derive a Config using the same logic as new conversation, honoring overrides if provided.
-        let config = match self
+        let mut config = match self
             .config_manager
             .load_for_cwd(request_overrides, typesafe_overrides, history_cwd)
             .await
@@ -2802,6 +2802,9 @@ impl ThreadRequestProcessor {
                 return Ok(());
             }
         };
+        if let Some(reasoning_effort) = persisted_reasoning_effort {
+            config.model_reasoning_effort = Some(reasoning_effort);
+        }
 
         let response_history = thread_history.clone();
 
@@ -2972,7 +2975,24 @@ impl ThreadRequestProcessor {
                     .await;
             }
             Err(err) => {
-                let error = internal_error(format!("error resuming thread: {err}"));
+                let error = match err {
+                    CodexErr::InvalidRequest(message)
+                        if message.starts_with("dynamic tool namespace ")
+                            || message.starts_with(
+                                "features.multi_agent_v2.tool_namespace collides ",
+                            )
+                            || message.starts_with("failed to restore resumed agent role: ")
+                            || message.starts_with(
+                                "cannot resume an agent whose initial task was not durably activated",
+                            )
+                            || message.starts_with(
+                                "cannot resume a V2 agent without authoritative lifecycle state",
+                            ) =>
+                    {
+                        invalid_request(message)
+                    }
+                    err => internal_error(format!("error resuming thread: {err}")),
+                };
                 self.outgoing.send_error(request_id, error).await;
             }
         }
@@ -2982,14 +3002,10 @@ impl ThreadRequestProcessor {
     async fn load_and_apply_persisted_resume_metadata(
         &self,
         thread_history: &InitialHistory,
-        request_overrides: &mut Option<HashMap<String, serde_json::Value>>,
+        request_overrides: Option<&HashMap<String, serde_json::Value>>,
         typesafe_overrides: &mut ConfigOverrides,
-    ) -> Option<ThreadMetadata> {
-        merge_persisted_approvals_reviewer(
-            thread_history,
-            request_overrides.as_ref(),
-            typesafe_overrides,
-        );
+    ) -> Option<ReasoningEffort> {
+        merge_persisted_approvals_reviewer(thread_history, request_overrides, typesafe_overrides);
         let InitialHistory::Resumed(resumed_history) = thread_history else {
             return None;
         };
@@ -2999,8 +3015,7 @@ impl ThreadRequestProcessor {
             .await
             .ok()
             .flatten()?;
-        merge_persisted_resume_metadata(request_overrides, typesafe_overrides, &persisted_metadata);
-        Some(persisted_metadata)
+        merge_persisted_resume_metadata(request_overrides, typesafe_overrides, &persisted_metadata)
     }
 
     #[tracing::instrument(level = "trace", skip_all)]
@@ -3265,6 +3280,9 @@ impl ThreadRequestProcessor {
         &self,
         stored_thread: &mut StoredThread,
     ) -> Result<InitialHistory, JSONRPCErrorError> {
+        stored_thread
+            .project_identity_into_history()
+            .map_err(|err| invalid_request(format!("invalid stored agent identity: {err}")))?;
         let thread_id = stored_thread.thread_id;
         let history = stored_thread
             .history
@@ -3821,6 +3839,14 @@ impl ThreadRequestProcessor {
 
             let mut filtered = Vec::with_capacity(page.items.len());
             for it in page.items {
+                if self
+                    .thread_manager
+                    .loaded_thread_is_available_for_external_access(it.thread_id)
+                    .await
+                    == Some(false)
+                {
+                    continue;
+                }
                 let source = with_thread_spawn_agent_metadata(
                     it.source.clone(),
                     it.agent_nickname.clone(),

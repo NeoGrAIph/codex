@@ -9,11 +9,13 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 pub const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
+pub(crate) const MAX_WAIT_AGENT_TARGETS: usize = 64;
 const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
 const SPAWN_AGENT_MODEL_OVERRIDE_DESCRIPTION: &str =
     "Model override for the new agent. Omit unless an explicit override is needed.";
+pub(crate) const SPAWN_AGENT_MODEL_CATALOG_OMITTED_GUIDANCE: &str = "Explicit model overrides remain supported; the model catalog is intentionally omitted here to avoid duplicating the native V2 spawn tool description.";
 const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
     "Service tier override for the new agent. Omit unless explicitly requested.";
 const MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT_DESCRIPTION: usize = 5;
@@ -24,7 +26,24 @@ pub struct SpawnAgentToolOptions {
     pub available_models: Vec<ModelPreset>,
     pub agent_type_description: String,
     pub hide_agent_type_model_reasoning: bool,
+    pub model_catalog_display: SpawnAgentModelCatalogDisplay,
     pub usage_hint_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub enum SpawnAgentModelCatalogDisplay {
+    #[default]
+    ListAvailable,
+    OmitForProjection,
+}
+
+impl SpawnAgentModelCatalogDisplay {
+    fn description(self, available_models: &[ModelPreset]) -> String {
+        match self {
+            Self::ListAvailable => spawn_agent_models_description(available_models),
+            Self::OmitForProjection => SPAWN_AGENT_MODEL_CATALOG_OMITTED_GUIDANCE.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,8 +64,11 @@ impl Default for WaitAgentTimeoutOptions {
 }
 
 pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
-    let available_models_description = (!options.hide_agent_type_model_reasoning)
-        .then(|| spawn_agent_models_description(&options.available_models));
+    let available_models_description = (!options.hide_agent_type_model_reasoning).then(|| {
+        options
+            .model_catalog_display
+            .description(&options.available_models)
+    });
     let inherited_model_guidance =
         (!options.hide_agent_type_model_reasoning).then_some(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE);
     let return_value_description =
@@ -76,8 +98,11 @@ pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
 }
 
 pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
-    let available_models_description = (!options.hide_agent_type_model_reasoning)
-        .then(|| spawn_agent_models_description(&options.available_models));
+    let available_models_description = (!options.hide_agent_type_model_reasoning).then(|| {
+        options
+            .model_catalog_display
+            .description(&options.available_models)
+    });
     let inherited_model_guidance =
         (!options.hide_agent_type_model_reasoning).then_some(SPAWN_AGENT_INHERITED_MODEL_GUIDANCE);
     let mut properties = spawn_agent_common_properties_v2(&options.agent_type_description);
@@ -234,6 +259,25 @@ pub fn create_resume_agent_tool() -> ToolSpec {
 }
 
 pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
+    create_wait_agent_tool_v1_with_target_description(
+        options,
+        "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first.",
+    )
+}
+
+pub fn create_projected_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
+    create_wait_agent_tool_v1_with_target_description(
+        options,
+        &format!(
+            "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first. At most {MAX_WAIT_AGENT_TARGETS} targets are accepted; duplicates are ignored."
+        ),
+    )
+}
+
+fn create_wait_agent_tool_v1_with_target_description(
+    options: WaitAgentTimeoutOptions,
+    target_description: &str,
+) -> ToolSpec {
     ToolSpec::Namespace(ResponsesApiNamespace {
         name: MULTI_AGENT_V1_NAMESPACE.to_string(),
         description: MULTI_AGENT_V1_NAMESPACE_DESCRIPTION.to_string(),
@@ -243,7 +287,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
                 .to_string(),
             strict: false,
             defer_loading: None,
-            parameters: wait_agent_tool_parameters_v1(options),
+            parameters: wait_agent_tool_parameters_v1(options, target_description),
             output_schema: Some(wait_output_schema_v1()),
         })],
     })
@@ -803,16 +847,16 @@ fn spawn_agent_models_description(models: &[ModelPreset]) -> String {
     )
 }
 
-fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema {
+fn wait_agent_tool_parameters_v1(
+    options: WaitAgentTimeoutOptions,
+    target_description: &str,
+) -> JsonSchema {
     let properties = BTreeMap::from([
         (
             "targets".to_string(),
             JsonSchema::array(
                 JsonSchema::string(/*description*/ None),
-                Some(
-                    "Agent ids to wait on. Pass multiple ids to wait for whichever finishes first."
-                        .to_string(),
-                ),
+                Some(target_description.to_string()),
             ),
         ),
         (

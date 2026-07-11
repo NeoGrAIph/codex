@@ -246,6 +246,30 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(async move { live_writer::create_thread(self, params).await })
     }
 
+    fn reserve_pending_thread_spawn_edge(
+        &self,
+        parent_thread_id: ThreadId,
+        child_thread_id: ThreadId,
+    ) -> ThreadStoreFuture<'_, ()> {
+        Box::pin(async move {
+            let Some(state_db) = self.state_db().await else {
+                return Err(ThreadStoreError::Internal {
+                    message: format!(
+                        "sqlite state db unavailable before pending lifecycle reservation for {child_thread_id}"
+                    ),
+                });
+            };
+            state_db
+                .reserve_pending_thread_spawn_edge(parent_thread_id, child_thread_id)
+                .await
+                .map_err(|err| ThreadStoreError::Internal {
+                    message: format!(
+                        "failed to reserve pending lifecycle state for {child_thread_id}: {err}"
+                    ),
+                })
+        })
+    }
+
     fn resume_thread(&self, params: ResumeThreadParams) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move { live_writer::resume_thread(self, params).await })
     }
@@ -308,6 +332,15 @@ impl ThreadStore for LocalThreadStore {
         Box::pin(async move { update_thread_metadata::update_thread_metadata(self, params).await })
     }
 
+    fn update_new_thread_metadata(
+        &self,
+        params: UpdateThreadMetadataParams,
+    ) -> ThreadStoreFuture<'_, StoredThread> {
+        Box::pin(
+            async move { update_thread_metadata::update_new_thread_metadata(self, params).await },
+        )
+    }
+
     fn archive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move { archive_thread::archive_thread(self, params).await })
     }
@@ -323,7 +356,9 @@ impl ThreadStore for LocalThreadStore {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
     use std::sync::Arc;
+    use std::task::Poll;
 
     use codex_protocol::ThreadId;
     use codex_protocol::models::BaseInstructions;
@@ -332,8 +367,10 @@ mod tests {
     use codex_protocol::models::ResponseItem;
     use codex_protocol::protocol::AgentMessageEvent;
     use codex_protocol::protocol::EventMsg;
+    use codex_protocol::protocol::MultiAgentVersion;
     use codex_protocol::protocol::RolloutItem;
     use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentSource;
     use codex_protocol::protocol::ThreadHistoryMode;
     use codex_protocol::protocol::ThreadMemoryMode;
     use codex_protocol::protocol::TurnCompleteEvent;
@@ -468,6 +505,233 @@ mod tests {
         );
         assert_eq!(metadata.preview.as_deref(), Some("observed append"));
         assert_eq!(metadata.title, "observed append");
+    }
+
+    #[tokio::test]
+    async fn pending_thread_spawn_is_reserved_before_rollout_materialization() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite_home.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = Arc::new(LocalThreadStore::new(config, Some(runtime.clone())));
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let mut params = create_thread_params(child_thread_id);
+        params.parent_thread_id = Some(parent_thread_id);
+        params.source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        });
+        params.multi_agent_version = Some(MultiAgentVersion::V2);
+
+        let live_thread = LiveThread::create_pending_activation(store.clone(), params)
+            .await
+            .expect("pending live thread should be created");
+        let rollout_path = store
+            .live_rollout_path(child_thread_id)
+            .await
+            .expect("live rollout path");
+        assert!(
+            !tokio::fs::try_exists(rollout_path.as_path())
+                .await
+                .expect("rollout path should be checkable")
+        );
+        assert_eq!(
+            runtime
+                .get_thread(child_thread_id)
+                .await
+                .expect("thread lookup should succeed"),
+            None,
+            "the lifecycle reservation must not create an orphan metadata row"
+        );
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(child_thread_id)
+                .await
+                .expect("pending edge should load"),
+            Some((
+                parent_thread_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::PendingActivation,
+            ))
+        );
+
+        live_thread
+            .persist()
+            .await
+            .expect("pending thread should materialize");
+        assert!(
+            tokio::fs::try_exists(rollout_path.as_path())
+                .await
+                .expect("rollout path should be checkable")
+        );
+        assert!(
+            runtime
+                .get_thread(child_thread_id)
+                .await
+                .expect("thread lookup should succeed")
+                .is_some()
+        );
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(child_thread_id)
+                .await
+                .expect("materialized edge should load"),
+            Some((
+                parent_thread_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::PendingActivation,
+            )),
+            "materialization must not promote the activation edge"
+        );
+    }
+
+    #[tokio::test]
+    async fn discard_removes_only_unmaterialized_pending_reservation() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite_home.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = Arc::new(LocalThreadStore::new(config, Some(runtime.clone())));
+        let parent_thread_id = ThreadId::new();
+
+        let make_params = |child_thread_id| {
+            let mut params = create_thread_params(child_thread_id);
+            params.parent_thread_id = Some(parent_thread_id);
+            params.source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            });
+            params.multi_agent_version = Some(MultiAgentVersion::V2);
+            params
+        };
+
+        let unmaterialized_child_id = ThreadId::new();
+        let unmaterialized = LiveThread::create_pending_activation(
+            store.clone(),
+            make_params(unmaterialized_child_id),
+        )
+        .await
+        .expect("unmaterialized pending thread should be created");
+        unmaterialized
+            .discard()
+            .await
+            .expect("unmaterialized pending thread should be discarded");
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(unmaterialized_child_id)
+                .await
+                .expect("discarded edge lookup should succeed"),
+            None
+        );
+
+        let materialized_child_id = ThreadId::new();
+        let materialized =
+            LiveThread::create_pending_activation(store, make_params(materialized_child_id))
+                .await
+                .expect("materialized pending thread should be created");
+        materialized
+            .persist()
+            .await
+            .expect("pending thread should materialize");
+        materialized
+            .discard()
+            .await
+            .expect("materialized pending writer should be discarded");
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(materialized_child_id)
+                .await
+                .expect("materialized edge lookup should succeed"),
+            Some((
+                parent_thread_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::PendingActivation,
+            )),
+            "discard must retain durable pending quarantine"
+        );
+    }
+
+    #[tokio::test]
+    async fn discard_waits_for_queued_persist_before_pending_cleanup() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite_home.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = Arc::new(LocalThreadStore::new(config, Some(runtime.clone())));
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let mut params = create_thread_params(child_thread_id);
+        params.parent_thread_id = Some(parent_thread_id);
+        params.source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        });
+        params.multi_agent_version = Some(MultiAgentVersion::V2);
+        let live_thread = LiveThread::create_pending_activation(store.clone(), params)
+            .await
+            .expect("pending live thread should be created");
+        let recorder = store
+            .live_recorder(child_thread_id)
+            .await
+            .expect("live recorder should exist");
+        let rollout_path = recorder.rollout_path().to_path_buf();
+
+        let mut persist = Box::pin(recorder.persist());
+        let queued_without_ack = std::future::poll_fn(|cx| match persist.as_mut().poll(cx) {
+            Poll::Pending => Poll::Ready(true),
+            Poll::Ready(result) => {
+                result.expect("unexpected immediate persist should still succeed");
+                Poll::Ready(false)
+            }
+        })
+        .await;
+        assert!(
+            queued_without_ack,
+            "persist must be queued before the current-thread writer can acknowledge it"
+        );
+        drop(persist);
+
+        live_thread
+            .discard()
+            .await
+            .expect("discard should drain queued writer commands");
+
+        assert!(
+            tokio::fs::try_exists(rollout_path.as_path())
+                .await
+                .expect("rollout path should be checkable"),
+            "the queued persist must finish before discard returns"
+        );
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(child_thread_id)
+                .await
+                .expect("pending edge should load"),
+            Some((
+                parent_thread_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::PendingActivation,
+            )),
+            "materialized history must never outlive its pending lifecycle edge"
+        );
     }
 
     #[tokio::test]

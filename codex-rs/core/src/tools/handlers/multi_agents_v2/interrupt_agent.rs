@@ -63,7 +63,7 @@ async fn handle_interrupt_agent(
     let result = match session
         .services
         .agent_control
-        .interrupt_agent(agent_id)
+        .interrupt_agent_transactional(agent_id)
         .await
     {
         Ok(_) | Err(CodexErr::ThreadNotFound(_)) | Err(CodexErr::InternalAgentDied) => Ok(()),

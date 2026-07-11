@@ -1,6 +1,8 @@
 use super::residency::is_v2_resident_session_source;
 use super::*;
+use crate::session::SubmissionLoopActivation;
 use codex_extension_api::ExtensionDataInit;
+use codex_thread_store::ReadThreadParams;
 
 const AGENT_NAMES: &str = include_str!("../agent_names.txt");
 
@@ -147,86 +149,6 @@ impl AgentControl {
         .await
     }
 
-    pub(crate) async fn ensure_v2_agent_loaded(
-        &self,
-        config: Config,
-        thread_id: ThreadId,
-    ) -> CodexResult<()> {
-        let state = self.upgrade()?;
-        if state.get_thread(thread_id).await.is_ok() {
-            self.touch_loaded_v2_residency(&state, thread_id).await;
-            return Ok(());
-        }
-        if self.state.agent_metadata_for_thread(thread_id).is_none() {
-            return Err(CodexErr::ThreadNotFound(thread_id));
-        }
-
-        let stored_thread = state
-            .read_stored_thread(ReadThreadParams {
-                thread_id,
-                include_archived: true,
-                include_history: true,
-            })
-            .await?;
-        let stored_source = stored_thread.source.clone();
-        let stored_parent_thread_id = stored_thread.parent_thread_id;
-        let history = stored_thread
-            .history
-            .ok_or(CodexErr::ThreadNotFound(thread_id))?
-            .items;
-        let initial_history = InitialHistory::Resumed(ResumedHistory {
-            conversation_id: thread_id,
-            history: Arc::new(history),
-            rollout_path: stored_thread.rollout_path,
-        });
-        if initial_history.get_multi_agent_version() != Some(MultiAgentVersion::V2) {
-            return Err(CodexErr::ThreadNotFound(thread_id));
-        }
-        let residency_slot = self
-            .reserve_v2_residency_slot(&state, &config, Some(thread_id))
-            .await?;
-
-        let (session_source, _) = initial_history
-            .get_resumed_session_sources()
-            .unwrap_or((stored_source, None));
-        let parent_thread_id = initial_history
-            .get_resumed_parent_thread_id()
-            .or(stored_parent_thread_id);
-        let inherited_environments = self
-            .inherited_environments_for_source(&state, Some(&session_source))
-            .await;
-        let inherited_exec_policy = self
-            .inherited_exec_policy_for_source(&state, Some(&session_source), &config)
-            .await;
-
-        match state
-            .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
-                config,
-                initial_history,
-                agent_control: self.clone(),
-                session_source,
-                parent_thread_id,
-                inherited_environments,
-                inherited_exec_policy,
-            })
-            .await
-        {
-            Ok(reloaded_thread) => {
-                residency_slot.commit(reloaded_thread.thread_id);
-                state.notify_thread_created(reloaded_thread.thread_id);
-                Ok(())
-            }
-            Err(err) => {
-                if state.get_thread(thread_id).await.is_ok() {
-                    drop(residency_slot);
-                    self.touch_loaded_v2_residency(&state, thread_id).await;
-                    return Ok(());
-                }
-                Err(err)
-            }
-        }
-    }
-
     async fn spawn_agent_internal(
         &self,
         config: Config,
@@ -244,6 +166,39 @@ impl AgentControl {
                 &config,
             )
             .await;
+        let uses_transactional_activation = multi_agent_version == MultiAgentVersion::V2
+            && matches!(
+                session_source.as_ref(),
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
+            );
+        let _lifecycle_guard = if uses_transactional_activation {
+            Some(self.acquire_lifecycle_gate().await)
+        } else {
+            None
+        };
+        if uses_transactional_activation && state.agent_graph_store().is_none() {
+            return Err(CodexErr::Fatal(
+                "authoritative agent graph is unavailable; refusing V2 agent spawn".to_string(),
+            ));
+        }
+        if uses_transactional_activation
+            && let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth,
+                ..
+            })) = session_source.as_ref()
+        {
+            self.ensure_no_pending_lifecycle_cleanup(*parent_thread_id)?;
+            state.get_thread(*parent_thread_id).await?;
+            if *depth > 1
+                && self
+                    .state
+                    .agent_metadata_for_thread(*parent_thread_id)
+                    .is_none()
+            {
+                return Err(CodexErr::ThreadNotFound(*parent_thread_id));
+            }
+        }
         if let Some(session_source) = session_source.as_ref() {
             self.ensure_execution_capacity(multi_agent_version, session_source)?;
         }
@@ -252,7 +207,7 @@ impl AgentControl {
             && session_source
                 .as_ref()
                 .is_some_and(is_v2_resident_session_source);
-        let residency_slot = if spawn_uses_v2_residency {
+        let mut residency_slot = if spawn_uses_v2_residency {
             Some(
                 self.reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
                     .await?,
@@ -265,7 +220,7 @@ impl AgentControl {
         } else {
             agent_max_threads
         };
-        let mut reservation = self.state.reserve_spawn_slot(reservation_max_threads)?;
+        let mut reservation = Some(self.state.reserve_spawn_slot(reservation_max_threads)?);
         let inheritance = SpawnAgentThreadInheritance {
             environments: self
                 .inherited_environments_for_source(&state, session_source.as_ref())
@@ -282,8 +237,14 @@ impl AgentControl {
                 agent_role,
                 ..
             })) => {
+                let Some(reservation) = reservation.as_mut() else {
+                    return Err(CodexErr::Fatal(
+                        "spawn reservation unavailable before child identity preparation"
+                            .to_string(),
+                    ));
+                };
                 let (session_source, agent_metadata) = self.prepare_thread_spawn(
-                    &mut reservation,
+                    reservation,
                     &config,
                     parent_thread_id,
                     depth,
@@ -296,6 +257,13 @@ impl AgentControl {
             other => (other, AgentMetadata::default()),
         };
         let notification_source = session_source.clone();
+        let (mut submission_loop_activation_tx, mut submission_loop_activation_rx) =
+            if uses_transactional_activation {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                (Some(tx), Some(rx))
+            } else {
+                (None, None)
+            };
 
         // The same `AgentControl` is sent to spawn the thread.
         let new_thread = match (session_source, options.fork_mode.as_ref(), inheritance) {
@@ -307,6 +275,7 @@ impl AgentControl {
                     &options,
                     inheritance,
                     multi_agent_version,
+                    submission_loop_activation_rx.take(),
                 ))
                 .await?
             }
@@ -322,89 +291,56 @@ impl AgentControl {
                     inheritance.environments,
                     inheritance.exec_policy,
                     options.environments.clone(),
+                    submission_loop_activation_rx.take(),
                 ))
                 .await?
             }
             (None, _, _) => Box::pin(state.spawn_new_thread(config.clone(), self.clone())).await?,
         };
         agent_metadata.agent_id = Some(new_thread.thread_id);
-        reservation.commit(agent_metadata.clone());
-        if let Some(residency_slot) = residency_slot {
-            residency_slot.commit(new_thread.thread_id);
-        }
-
-        if let Some(SessionSource::SubAgent(
-            subagent_source @ SubAgentSource::ThreadSpawn {
-                parent_thread_id, ..
-            },
-        )) = notification_source.as_ref()
-        {
-            let client_metadata = match state.get_thread(*parent_thread_id).await {
-                Ok(parent_thread) => {
-                    parent_thread
-                        .codex
-                        .session
-                        .app_server_client_metadata()
-                        .await
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        parent_thread_id = %parent_thread_id,
-                        "skipping subagent thread analytics: failed to load parent thread metadata"
-                    );
-                    crate::session::session::AppServerClientMetadata {
-                        client_name: None,
-                        client_version: None,
-                    }
-                }
+        if !uses_transactional_activation {
+            let Some(reservation) = reservation.take() else {
+                return Err(CodexErr::Fatal(
+                    "spawn reservation unavailable before compatibility publication".to_string(),
+                ));
             };
-            let thread_config = new_thread.thread.codex.thread_config_snapshot().await;
-            let parent_thread_id = thread_config.parent_thread_id;
-            emit_subagent_session_started(
-                &new_thread
-                    .thread
-                    .codex
-                    .session
-                    .services
-                    .analytics_events_client,
-                client_metadata,
-                new_thread.thread.codex.session.session_id(),
-                new_thread.thread_id,
-                parent_thread_id,
-                thread_config,
-                subagent_source.clone(),
-            );
-        }
-
-        // Notify a new thread has been created. This notification will be processed by clients
-        // to subscribe or drain this newly created thread.
-        // TODO(jif) add helper for drain
-        state.notify_thread_created(new_thread.thread_id);
-
-        self.persist_thread_spawn_edge_for_source(
-            new_thread.thread.as_ref(),
-            new_thread.thread_id,
-            notification_source.as_ref(),
-        )
-        .await;
-
-        match initial_input {
-            SpawnInitialInput::UserInput(input) => {
-                self.send_input_after_capacity_check(new_thread.thread_id, &state, input)
-                    .await?;
+            reservation.commit(agent_metadata.clone());
+            if let Some(residency_slot) = residency_slot.take() {
+                residency_slot.commit(new_thread.thread_id);
             }
-            SpawnInitialInput::InterAgentCommunication(communication, context) => {
-                self.send_inter_agent_communication_after_capacity_check(
+            self.emit_spawn_started_analytics(&state, &new_thread, notification_source.as_ref())
+                .await;
+            state.notify_thread_created(new_thread.thread_id);
+            if let Err(err) = self
+                .persist_thread_spawn_edge_for_source(
+                    new_thread.thread.as_ref(),
                     new_thread.thread_id,
-                    &state,
-                    communication,
-                    context,
+                    notification_source.as_ref(),
+                    codex_agent_graph_store::ThreadSpawnEdgeStatus::Open,
                 )
-                .await?;
+                .await
+            {
+                warn!(
+                    %err,
+                    thread_id = %new_thread.thread_id,
+                    "failed to persist compatibility thread-spawn edge"
+                );
             }
-        }
-        if multi_agent_version != MultiAgentVersion::V2 {
+            match initial_input {
+                SpawnInitialInput::UserInput(input) => {
+                    self.send_input_after_capacity_check(new_thread.thread_id, &state, input)
+                        .await?;
+                }
+                SpawnInitialInput::InterAgentCommunication(communication, context) => {
+                    self.send_inter_agent_communication_after_capacity_check(
+                        new_thread.thread_id,
+                        &state,
+                        communication,
+                        context,
+                    )
+                    .await?;
+                }
+            }
             let child_reference = agent_metadata
                 .agent_path
                 .as_ref()
@@ -416,7 +352,236 @@ impl AgentControl {
                 child_reference,
                 agent_metadata.agent_path.clone(),
             );
+            return Ok(LiveAgent {
+                thread_id: new_thread.thread_id,
+                metadata: agent_metadata,
+                status: self.get_status(new_thread.thread_id).await,
+            });
         }
+        if let Err(persist_err) = self
+            .persist_thread_spawn_edge_for_source(
+                new_thread.thread.as_ref(),
+                new_thread.thread_id,
+                notification_source.as_ref(),
+                codex_agent_graph_store::ThreadSpawnEdgeStatus::PendingActivation,
+            )
+            .await
+        {
+            if let Some(activation_tx) = submission_loop_activation_tx.take() {
+                let _ = activation_tx.send(SubmissionLoopActivation::Abort);
+            }
+            if let Err(shutdown_err) = self
+                .shutdown_thread_for_lifecycle(
+                    &state,
+                    Arc::clone(&new_thread.thread),
+                    TerminatedThreadCleanup::FailedSpawnRollback,
+                )
+                .await
+            {
+                if let Some(reservation) = reservation.take() {
+                    reservation.commit(agent_metadata.clone());
+                }
+                if let Some(residency_slot) = residency_slot.take() {
+                    residency_slot.commit(new_thread.thread_id);
+                }
+                warn!(
+                    %shutdown_err,
+                    thread_id = %new_thread.thread_id,
+                    "failed to stop agent after lifecycle persistence failure"
+                );
+                return Err(CodexErr::Fatal(
+                    "failed to persist agent lifecycle state and could not confirm agent shutdown"
+                        .to_string(),
+                ));
+            }
+            if let Err(err) = finalize_rejected_spawn_edge(&state, new_thread.thread_id).await {
+                if let Some(reservation) = reservation.take() {
+                    reservation.commit(agent_metadata.clone());
+                }
+                if let Some(residency_slot) = residency_slot.take() {
+                    residency_slot.commit(new_thread.thread_id);
+                }
+                self.start_late_termination_cleanup(
+                    Arc::clone(&state),
+                    Arc::clone(&new_thread.thread),
+                    TerminatedThreadCleanup::FailedSpawnRollback,
+                );
+                warn!(
+                    %err,
+                    thread_id = %new_thread.thread_id,
+                    "failed to finalize provisional edge after lifecycle persistence failure"
+                );
+                return Err(CodexErr::Fatal(
+                    "failed to persist agent lifecycle state and graph repair is required"
+                        .to_string(),
+                ));
+            }
+            let _ = state
+                .remove_thread_if_same_or_missing(&new_thread.thread_id, &new_thread.thread)
+                .await;
+            return Err(persist_err);
+        }
+        #[cfg(test)]
+        let reject_initial_input = self
+            .fail_next_initial_input
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        #[cfg(not(test))]
+        let reject_initial_input = false;
+        let initial_task_message = match &initial_input {
+            SpawnInitialInput::UserInput(input) => {
+                non_empty_task_message(render_input_preview(input))
+            }
+            SpawnInitialInput::InterAgentCommunication(communication, _) => {
+                last_task_message_from_communication(communication)
+            }
+        };
+        let initial_input_result = if reject_initial_input {
+            Err(CodexErr::Fatal(
+                "injected initial input failure".to_string(),
+            ))
+        } else {
+            match initial_input {
+                SpawnInitialInput::UserInput(input) => {
+                    self.send_input_after_capacity_check(new_thread.thread_id, &state, input)
+                        .await
+                }
+                SpawnInitialInput::InterAgentCommunication(communication, context) => {
+                    self.send_inter_agent_communication_after_capacity_check(
+                        new_thread.thread_id,
+                        &state,
+                        communication,
+                        context,
+                    )
+                    .await
+                }
+            }
+        };
+        if initial_input_result.is_ok() {
+            agent_metadata.last_task_message = initial_task_message;
+        }
+        let mut submission_loop_aborted = false;
+        let mut activation_result = match initial_input_result {
+            Ok(_) => {
+                self.persist_thread_spawn_edge_for_source(
+                    new_thread.thread.as_ref(),
+                    new_thread.thread_id,
+                    notification_source.as_ref(),
+                    codex_agent_graph_store::ThreadSpawnEdgeStatus::Open,
+                )
+                .await
+            }
+            Err(err) => Err(err),
+        };
+        if activation_result.is_ok() {
+            if let Some(reservation) = reservation.take() {
+                reservation.commit(agent_metadata.clone());
+            }
+            if let Some(residency_slot) = residency_slot.take() {
+                residency_slot.commit(new_thread.thread_id);
+            }
+            #[cfg(test)]
+            let force_commit_failure = self.pause_before_submission_loop_commit_for_test().await;
+            #[cfg(not(test))]
+            let force_commit_failure = false;
+            if let Some(activation_tx) = submission_loop_activation_tx.take()
+                && (force_commit_failure
+                    || activation_tx
+                        .send(SubmissionLoopActivation::Commit)
+                        .is_err())
+            {
+                activation_result = Err(CodexErr::InternalAgentDied);
+                submission_loop_aborted = true;
+            }
+        } else if let Some(activation_tx) = submission_loop_activation_tx.take() {
+            let _ = activation_tx.send(SubmissionLoopActivation::Abort);
+            submission_loop_aborted = true;
+        }
+        if let Err(input_err) = activation_result {
+            let rollback_result = if submission_loop_aborted {
+                self.wait_for_thread_termination_for_lifecycle(
+                    &state,
+                    Arc::clone(&new_thread.thread),
+                    TerminatedThreadCleanup::FailedSpawnRollback,
+                )
+                .await
+            } else {
+                self.shutdown_live_agent_with_cleanup(
+                    new_thread.thread_id,
+                    TerminatedThreadCleanup::FailedSpawnRollback,
+                )
+                .await
+                .map(|_| ())
+            };
+            if let Err(err) = rollback_result {
+                if let Some(reservation) = reservation.take() {
+                    reservation.commit(agent_metadata.clone());
+                }
+                if let Some(residency_slot) = residency_slot.take() {
+                    residency_slot.commit(new_thread.thread_id);
+                }
+                warn!(%err, thread_id = %new_thread.thread_id, "failed to stop rejected agent");
+                if let Err(quarantine_err) =
+                    quarantine_rejected_spawn_edge(&state, new_thread.thread_id).await
+                {
+                    warn!(
+                        %quarantine_err,
+                        thread_id = %new_thread.thread_id,
+                        "failed to quarantine rejected agent lifecycle edge"
+                    );
+                    return Err(CodexErr::Fatal(
+                        "agent rejected its initial input; runtime shutdown was not confirmed and lifecycle graph repair is required"
+                            .to_string(),
+                    ));
+                }
+                return Err(CodexErr::Fatal(
+                    "agent rejected its initial input and lifecycle rollback was incomplete"
+                        .to_string(),
+                ));
+            }
+            if let Err(err) = finalize_rejected_spawn_edge(&state, new_thread.thread_id).await {
+                if let Some(reservation) = reservation.take() {
+                    reservation.commit(agent_metadata.clone());
+                }
+                if let Some(residency_slot) = residency_slot.take() {
+                    residency_slot.commit(new_thread.thread_id);
+                }
+                warn!(%err, thread_id = %new_thread.thread_id, "failed to finalize rejected agent edge");
+                self.start_late_termination_cleanup(
+                    Arc::clone(&state),
+                    Arc::clone(&new_thread.thread),
+                    TerminatedThreadCleanup::FailedSpawnRollback,
+                );
+                return Err(CodexErr::Fatal(
+                    "agent rejected its initial input and lifecycle graph repair is required"
+                        .to_string(),
+                ));
+            }
+            if !state
+                .remove_thread_if_same_or_missing(&new_thread.thread_id, &new_thread.thread)
+                .await
+            {
+                if let Some(reservation) = reservation.take() {
+                    reservation.commit(agent_metadata.clone());
+                }
+                if let Some(residency_slot) = residency_slot.take() {
+                    residency_slot.commit(new_thread.thread_id);
+                }
+                return Err(CodexErr::Fatal(
+                    "agent rejected its initial input but its runtime was replaced during cleanup"
+                        .to_string(),
+                ));
+            }
+            self.forget_v2_residency(new_thread.thread_id);
+            self.state.release_spawned_thread(new_thread.thread_id);
+            self.lifecycle.finish_late_cleanup(new_thread.thread_id);
+            return Err(input_err);
+        }
+        new_thread.thread.publish_initial_task();
+        self.emit_spawn_started_analytics(&state, &new_thread, notification_source.as_ref())
+            .await;
+
+        // Notify clients only after the initial task is queued and the graph edge is durably open.
+        state.notify_thread_created(new_thread.thread_id);
 
         Ok(LiveAgent {
             thread_id: new_thread.thread_id,
@@ -425,6 +590,59 @@ impl AgentControl {
         })
     }
 
+    async fn emit_spawn_started_analytics(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        new_thread: &crate::thread_manager::NewThread,
+        notification_source: Option<&SessionSource>,
+    ) {
+        let Some(SessionSource::SubAgent(
+            subagent_source @ SubAgentSource::ThreadSpawn {
+                parent_thread_id, ..
+            },
+        )) = notification_source
+        else {
+            return;
+        };
+        let client_metadata = match state.get_thread(*parent_thread_id).await {
+            Ok(parent_thread) => {
+                parent_thread
+                    .codex
+                    .session
+                    .app_server_client_metadata()
+                    .await
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    parent_thread_id = %parent_thread_id,
+                    "skipping subagent thread analytics: failed to load parent thread metadata"
+                );
+                crate::session::session::AppServerClientMetadata {
+                    client_name: None,
+                    client_version: None,
+                }
+            }
+        };
+        let thread_config = new_thread.thread.codex.thread_config_snapshot().await;
+        let parent_thread_id = thread_config.parent_thread_id;
+        emit_subagent_session_started(
+            &new_thread
+                .thread
+                .codex
+                .session
+                .services
+                .analytics_events_client,
+            client_metadata,
+            new_thread.thread.codex.session.session_id(),
+            new_thread.thread_id,
+            parent_thread_id,
+            thread_config,
+            subagent_source.clone(),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_forked_thread(
         &self,
         state: &Arc<ThreadManagerState>,
@@ -433,6 +651,9 @@ impl AgentControl {
         options: &SpawnAgentOptions,
         inheritance: SpawnAgentThreadInheritance,
         multi_agent_version: MultiAgentVersion,
+        submission_loop_activation: Option<
+            tokio::sync::oneshot::Receiver<SubmissionLoopActivation>,
+        >,
     ) -> CodexResult<crate::thread_manager::NewThread> {
         let SpawnAgentThreadInheritance {
             environments: inherited_environments,
@@ -577,192 +798,8 @@ impl AgentControl {
                 inherited_exec_policy,
                 options.environments.clone(),
                 thread_extension_init,
+                submission_loop_activation,
             )
             .await
-    }
-
-    /// Resume an existing agent thread from a recorded rollout file.
-    pub(crate) async fn resume_agent_from_rollout(
-        &self,
-        config: Config,
-        thread_id: ThreadId,
-        session_source: SessionSource,
-    ) -> CodexResult<ThreadId> {
-        let root_depth = thread_spawn_depth(&session_source).unwrap_or(0);
-        let (resumed_thread_id, resumed_multi_agent_version) = Box::pin(
-            self.resume_single_agent_from_rollout(config.clone(), thread_id, session_source),
-        )
-        .await?;
-        let state = self.upgrade()?;
-        if config.multi_agent_version_from_features() == MultiAgentVersion::V2
-            || resumed_multi_agent_version == MultiAgentVersion::V2
-        {
-            return Ok(resumed_thread_id);
-        }
-        let Some(agent_graph_store) = state.agent_graph_store() else {
-            return Ok(resumed_thread_id);
-        };
-
-        let mut resume_queue = VecDeque::from([(thread_id, root_depth)]);
-        while let Some((parent_thread_id, parent_depth)) = resume_queue.pop_front() {
-            let child_ids = match agent_graph_store
-                .list_thread_spawn_children(
-                    parent_thread_id,
-                    Some(codex_agent_graph_store::ThreadSpawnEdgeStatus::Open),
-                )
-                .await
-            {
-                Ok(child_ids) => child_ids,
-                Err(err) => {
-                    warn!(
-                        "failed to load persisted thread-spawn children for {parent_thread_id}: {err}"
-                    );
-                    continue;
-                }
-            };
-
-            for child_thread_id in child_ids {
-                let child_depth = parent_depth + 1;
-                let child_resumed = if state.get_thread(child_thread_id).await.is_ok() {
-                    true
-                } else {
-                    let child_session_source =
-                        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                            parent_thread_id,
-                            depth: child_depth,
-                            agent_path: None,
-                            agent_nickname: None,
-                            agent_role: None,
-                        });
-                    match Box::pin(self.resume_single_agent_from_rollout(
-                        config.clone(),
-                        child_thread_id,
-                        child_session_source,
-                    ))
-                    .await
-                    {
-                        Ok((_, _)) => true,
-                        Err(err) => {
-                            warn!("failed to resume descendant thread {child_thread_id}: {err}");
-                            false
-                        }
-                    }
-                };
-                if child_resumed {
-                    resume_queue.push_back((child_thread_id, child_depth));
-                }
-            }
-        }
-
-        Ok(resumed_thread_id)
-    }
-
-    async fn resume_single_agent_from_rollout(
-        &self,
-        config: Config,
-        thread_id: ThreadId,
-        session_source: SessionSource,
-    ) -> CodexResult<(ThreadId, MultiAgentVersion)> {
-        let state = self.upgrade()?;
-        let stored_thread = state
-            .read_stored_thread(ReadThreadParams {
-                thread_id,
-                include_archived: true,
-                include_history: true,
-            })
-            .await?;
-        let resumed_agent_path = stored_thread
-            .agent_path
-            .as_deref()
-            .map(AgentPath::try_from)
-            .transpose()
-            .map_err(|err| CodexErr::InvalidRequest(format!("invalid stored agent path: {err}")))?;
-        let resumed_agent_nickname = stored_thread.agent_nickname.clone();
-        let resumed_agent_role = stored_thread.agent_role.clone();
-        let history = stored_thread
-            .history
-            .ok_or_else(|| CodexErr::ThreadNotFound(thread_id))?
-            .items;
-        let initial_history = InitialHistory::Resumed(ResumedHistory {
-            conversation_id: thread_id,
-            history: Arc::new(history),
-            rollout_path: stored_thread.rollout_path,
-        });
-        let parent_thread_id = stored_thread.parent_thread_id;
-        let multi_agent_version = state
-            .effective_multi_agent_version_for_spawn(
-                &initial_history,
-                Some(&session_source),
-                parent_thread_id,
-                /*forked_from_thread_id*/ None,
-                &config,
-            )
-            .await;
-        let agent_max_threads = config.effective_agent_max_threads(multi_agent_version);
-        let mut reservation = self.state.reserve_spawn_slot(agent_max_threads)?;
-        let (session_source, agent_metadata) = match session_source {
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id,
-                depth,
-                agent_path,
-                agent_role: _,
-                agent_nickname: _,
-            }) => self.prepare_thread_spawn(
-                &mut reservation,
-                &config,
-                parent_thread_id,
-                depth,
-                agent_path.or(resumed_agent_path),
-                resumed_agent_role,
-                resumed_agent_nickname,
-            )?,
-            other => (other, AgentMetadata::default()),
-        };
-        let notification_source = session_source.clone();
-        let inherited_environments = self
-            .inherited_environments_for_source(&state, Some(&session_source))
-            .await;
-        let inherited_exec_policy = self
-            .inherited_exec_policy_for_source(&state, Some(&session_source), &config)
-            .await;
-
-        let resumed_thread = state
-            .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
-                config: config.clone(),
-                initial_history,
-                agent_control: self.clone(),
-                session_source,
-                parent_thread_id,
-                inherited_environments,
-                inherited_exec_policy,
-            })
-            .await?;
-        let mut agent_metadata = agent_metadata;
-        agent_metadata.agent_id = Some(resumed_thread.thread_id);
-        reservation.commit(agent_metadata.clone());
-        // Resumed threads are re-registered in-memory and need the same listener
-        // attachment path as freshly spawned threads.
-        state.notify_thread_created(resumed_thread.thread_id);
-        if multi_agent_version != MultiAgentVersion::V2 {
-            let child_reference = agent_metadata
-                .agent_path
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| resumed_thread.thread_id.to_string());
-            self.maybe_start_completion_watcher(
-                resumed_thread.thread_id,
-                Some(notification_source.clone()),
-                child_reference,
-                agent_metadata.agent_path.clone(),
-            );
-        }
-        self.persist_thread_spawn_edge_for_source(
-            resumed_thread.thread.as_ref(),
-            resumed_thread.thread_id,
-            Some(&notification_source),
-        )
-        .await;
-
-        Ok((resumed_thread.thread_id, multi_agent_version))
     }
 }

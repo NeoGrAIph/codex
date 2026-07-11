@@ -67,6 +67,20 @@ fn has_namespaced_tool(tools: &[Value], namespace: &str, tool_name: &str) -> boo
     })
 }
 
+fn namespaced_tool_names<'a>(tools: &'a [Value], namespace: &str) -> Vec<&'a str> {
+    tools
+        .iter()
+        .find(|tool| {
+            tool.get("type").and_then(Value::as_str) == Some("namespace")
+                && tool.get("name").and_then(Value::as_str) == Some(namespace)
+        })
+        .and_then(|tool| tool.get("tools").and_then(Value::as_array))
+        .into_iter()
+        .flatten()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect()
+}
+
 fn additional_tools(body: &Value) -> Result<&[Value]> {
     body["input"]
         .as_array()
@@ -127,6 +141,58 @@ async fn responses_lite_uses_input_items_for_instructions_and_tools() -> Result<
 
     let tools = additional_tools(&body)?;
     assert!(!tools.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_lite_exposes_native_v2_and_projected_v1_namespaces() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let response_mock = responses::mount_sse_once(
+        &server,
+        responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let mut builder = test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.use_responses_lite = true;
+        })
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow multi-agent V2");
+        });
+    let test = builder.build(&server).await?;
+
+    test.submit_turn("delegate if useful").await?;
+
+    let body = response_mock.single_request().body_json();
+    let tools = additional_tools(&body)?;
+    assert_eq!(
+        namespaced_tool_names(tools, "collaboration"),
+        vec![
+            "followup_task",
+            "interrupt_agent",
+            "list_agents",
+            "send_message",
+            "spawn_agent",
+            "wait_agent",
+        ]
+    );
+    assert_eq!(
+        namespaced_tool_names(tools, "multi_agent_v1"),
+        vec![
+            "close_agent",
+            "resume_agent",
+            "send_input",
+            "spawn_agent",
+            "wait_agent",
+        ]
+    );
 
     Ok(())
 }

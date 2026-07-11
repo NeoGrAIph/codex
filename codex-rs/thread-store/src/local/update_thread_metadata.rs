@@ -36,9 +36,31 @@ struct ResolvedRolloutPath {
     archived: bool,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum MissingRowLifecycle {
+    CompatibleOpen,
+    PendingActivation,
+}
+
 pub(super) async fn update_thread_metadata(
     store: &LocalThreadStore,
     params: UpdateThreadMetadataParams,
+) -> ThreadStoreResult<StoredThread> {
+    update_thread_metadata_with_lifecycle(store, params, MissingRowLifecycle::CompatibleOpen).await
+}
+
+pub(super) async fn update_new_thread_metadata(
+    store: &LocalThreadStore,
+    params: UpdateThreadMetadataParams,
+) -> ThreadStoreResult<StoredThread> {
+    update_thread_metadata_with_lifecycle(store, params, MissingRowLifecycle::PendingActivation)
+        .await
+}
+
+async fn update_thread_metadata_with_lifecycle(
+    store: &LocalThreadStore,
+    params: UpdateThreadMetadataParams,
+    missing_row_lifecycle: MissingRowLifecycle,
 ) -> ThreadStoreResult<StoredThread> {
     let thread_id = params.thread_id;
     let patch = params.patch;
@@ -76,6 +98,7 @@ pub(super) async fn update_thread_metadata(
         patch.clone(),
         params.include_archived,
         require_sqlite_write,
+        missing_row_lifecycle,
     )
     .await?;
     if !needs_rollout_compat {
@@ -203,6 +226,7 @@ async fn apply_metadata_update(
     patch: ThreadMetadataPatch,
     include_archived: bool,
     require_sqlite_write: bool,
+    missing_row_lifecycle: MissingRowLifecycle,
 ) -> ThreadStoreResult<StoredThread> {
     let live_rollout_path = live_writer::rollout_path(store, thread_id).await.ok();
     let mut rollout_path = patch.rollout_path.clone().or(live_rollout_path);
@@ -323,12 +347,25 @@ async fn apply_metadata_update(
                 metadata.git_branch = branch;
                 metadata.git_origin_url = origin_url;
             }
-            state_db
-                .upsert_thread(&metadata)
-                .await
-                .map_err(|err| ThreadStoreError::Internal {
-                    message: format!("failed to update thread metadata for {thread_id}: {err}"),
+            let inserted = if missing_row_lifecycle == MissingRowLifecycle::PendingActivation {
+                state_db
+                    .insert_thread_if_absent(&metadata)
+                    .await
+                    .map_err(|err| ThreadStoreError::Internal {
+                        message: format!(
+                            "failed to create live thread metadata for {thread_id}: {err}"
+                        ),
+                    })?
+            } else {
+                false
+            };
+            if !inserted {
+                state_db.upsert_thread(&metadata).await.map_err(|err| {
+                    ThreadStoreError::Internal {
+                        message: format!("failed to update thread metadata for {thread_id}: {err}"),
+                    }
                 })?;
+            }
             if existing.is_some()
                 && let Some(recency_at) = advance_recency_at
             {
@@ -362,6 +399,13 @@ async fn apply_metadata_update(
         }
         (true, Err(err)) => {
             warn!("state db update_thread_metadata failed for {thread_id}: {err}");
+        }
+        (false, Ok(())) if require_sqlite_write => {
+            return Err(ThreadStoreError::Internal {
+                message: format!(
+                    "sqlite state db unavailable for durable metadata update on thread {thread_id}"
+                ),
+            });
         }
         (false, Ok(())) => {}
         (false, Err(err)) if require_sqlite_write || !sqlite_write_error_is_best_effort(&err) => {
@@ -471,7 +515,34 @@ fn sqlite_write_failure_should_block(patch: &ThreadMetadataPatch) -> bool {
     // failure isolation so a corrupted optional state DB does not make JSONL transcript durability
     // look broken. Explicit git-only updates still require SQLite because partial git patches need
     // the existing SQLite value to preserve unspecified fields.
-    patch.git_info.is_some() && !has_observed_metadata_facts(patch)
+    (patch.git_info.is_some() && !has_observed_metadata_facts(patch))
+        || is_agent_identity_backfill(patch)
+}
+
+fn is_agent_identity_backfill(patch: &ThreadMetadataPatch) -> bool {
+    patch.source.is_some()
+        && patch.agent_path.is_some()
+        && patch.name.is_none()
+        && patch.rollout_path.is_none()
+        && patch.preview.is_none()
+        && patch.title.is_none()
+        && patch.model_provider.is_none()
+        && patch.model.is_none()
+        && patch.reasoning_effort.is_none()
+        && patch.created_at.is_none()
+        && patch.updated_at.is_none()
+        && patch.advance_recency_at.is_none()
+        && patch.thread_source.is_none()
+        && patch.agent_nickname.is_none()
+        && patch.agent_role.is_none()
+        && patch.cwd.is_none()
+        && patch.cli_version.is_none()
+        && patch.approval_mode.is_none()
+        && patch.permission_profile.is_none()
+        && patch.token_usage.is_none()
+        && patch.first_user_message.is_none()
+        && patch.git_info.is_none()
+        && patch.memory_mode.is_none()
 }
 
 fn sqlite_write_error_is_best_effort(err: &ThreadStoreError) -> bool {
@@ -764,6 +835,199 @@ mod tests {
             .await
             .expect("find thread name");
         assert_eq!(latest_name.as_deref(), Some("A sharper name"));
+    }
+
+    #[tokio::test]
+    async fn agent_identity_backfill_requires_durable_state_metadata() {
+        let home = TempDir::new().expect("temp dir");
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let uuid = Uuid::from_u128(319);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        write_session_file(home.path(), "2025-01-03T14-15-00", uuid).expect("session file");
+        let parent_thread_id = ThreadId::new();
+        let agent_path =
+            codex_protocol::AgentPath::try_from("/root/backfilled").expect("valid agent path");
+        let source =
+            SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: Some(agent_path.clone()),
+                agent_nickname: None,
+                agent_role: None,
+            });
+
+        let err = store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    source: Some(source),
+                    agent_path: Some(Some(agent_path.to_string())),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect_err("identity backfill without durable state must fail closed");
+
+        assert!(matches!(
+            err,
+            ThreadStoreError::Internal { message }
+                if message.contains("sqlite state db unavailable for durable metadata update")
+        ));
+    }
+
+    #[tokio::test]
+    async fn live_thread_spawn_metadata_creation_uses_pending_activation() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let uuid = Uuid::from_u128(320);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        write_session_file(home.path(), "2025-01-03T14-20-00", uuid).expect("session file");
+        let runtime = codex_state::StateRuntime::init(
+            home.path().to_path_buf(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = LocalThreadStore::new(config, Some(runtime.clone()));
+        let parent_thread_id = ThreadId::new();
+        let agent_path =
+            codex_protocol::AgentPath::try_from("/root/live_pending").expect("valid agent path");
+
+        store
+            .update_new_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    source: Some(SessionSource::SubAgent(
+                        codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+                            parent_thread_id,
+                            depth: 1,
+                            agent_path: Some(agent_path.clone()),
+                            agent_nickname: None,
+                            agent_role: None,
+                        },
+                    )),
+                    agent_path: Some(Some(agent_path.to_string())),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("live metadata creation should succeed");
+
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(thread_id)
+                .await
+                .expect("live spawn edge should load"),
+            Some((
+                parent_thread_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::PendingActivation,
+            ))
+        );
+        runtime
+            .set_thread_spawn_edge_status(
+                thread_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("live edge promotion should succeed");
+        store
+            .update_new_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    preview: Some("activated task".to_string()),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("post-activation live metadata update should succeed");
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(thread_id)
+                .await
+                .expect("activated edge should load"),
+            Some((
+                parent_thread_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+            )),
+            "live metadata must not downgrade an activated edge"
+        );
+        runtime
+            .remove_thread_spawn_edge(thread_id)
+            .await
+            .expect("test should remove the live edge");
+        store
+            .update_new_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    preview: Some("retried task".to_string()),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("live metadata retry should restore lifecycle state");
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(thread_id)
+                .await
+                .expect("restored edge should load"),
+            Some((
+                parent_thread_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::PendingActivation,
+            )),
+            "missing live lifecycle state must be restored fail-closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn historical_thread_spawn_metadata_creation_uses_open_compatibility() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let uuid = Uuid::from_u128(321);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        write_session_file(home.path(), "2025-01-03T14-25-00", uuid).expect("session file");
+        let runtime = codex_state::StateRuntime::init(
+            home.path().to_path_buf(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db should initialize");
+        let store = LocalThreadStore::new(config, Some(runtime.clone()));
+        let parent_thread_id = ThreadId::new();
+
+        store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                patch: ThreadMetadataPatch {
+                    source: Some(SessionSource::SubAgent(
+                        codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+                            parent_thread_id,
+                            depth: 1,
+                            agent_path: None,
+                            agent_nickname: None,
+                            agent_role: None,
+                        },
+                    )),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect("historical metadata creation should succeed");
+
+        assert_eq!(
+            runtime
+                .get_thread_spawn_edge(thread_id)
+                .await
+                .expect("historical spawn edge should load"),
+            Some((
+                parent_thread_id,
+                codex_state::DirectionalThreadSpawnEdgeStatus::Open,
+            ))
+        );
     }
 
     #[tokio::test]

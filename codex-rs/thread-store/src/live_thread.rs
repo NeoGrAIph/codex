@@ -21,6 +21,7 @@ use crate::StoredThread;
 use crate::StoredThreadHistory;
 use crate::ThreadMetadataPatch;
 use crate::ThreadStore;
+use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 use crate::UpdateThreadMetadataParams;
 use crate::thread_metadata_sync::ThreadMetadataSync;
@@ -36,7 +37,15 @@ pub struct LiveThread {
     history_mode: ThreadHistoryMode,
     thread_store: Arc<dyn ThreadStore>,
     metadata_sync: Arc<Mutex<ThreadMetadataSync>>,
+    metadata_lifecycle: LiveThreadMetadataLifecycle,
     persistence_telemetry: RolloutPersistenceTelemetry,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum LiveThreadMetadataLifecycle {
+    CreatedCompatibleOpen,
+    CreatedPendingActivation,
+    Resumed,
 }
 
 /// Owns a live thread while session initialization is still fallible.
@@ -93,17 +102,70 @@ impl LiveThread {
         thread_store: Arc<dyn ThreadStore>,
         params: CreateThreadParams,
     ) -> ThreadStoreResult<Self> {
+        Self::create_with_metadata_lifecycle(
+            thread_store,
+            params,
+            LiveThreadMetadataLifecycle::CreatedCompatibleOpen,
+        )
+        .await
+    }
+
+    /// Creates a fresh thread whose initial task must not become externally visible before its
+    /// durable lifecycle edge is activated.
+    pub async fn create_pending_activation(
+        thread_store: Arc<dyn ThreadStore>,
+        params: CreateThreadParams,
+    ) -> ThreadStoreResult<Self> {
+        Self::create_with_metadata_lifecycle(
+            thread_store,
+            params,
+            LiveThreadMetadataLifecycle::CreatedPendingActivation,
+        )
+        .await
+    }
+
+    async fn create_with_metadata_lifecycle(
+        thread_store: Arc<dyn ThreadStore>,
+        params: CreateThreadParams,
+        metadata_lifecycle: LiveThreadMetadataLifecycle,
+    ) -> ThreadStoreResult<Self> {
         let thread_id = params.thread_id;
         let history_mode = params.history_mode;
+        let pending_parent_thread_id = match metadata_lifecycle {
+            LiveThreadMetadataLifecycle::CreatedPendingActivation => {
+                Some(params.source.parent_thread_id().ok_or_else(|| {
+                    ThreadStoreError::InvalidRequest {
+                        message: "pending thread creation requires a spawned-thread parent"
+                            .to_string(),
+                    }
+                })?)
+            }
+            LiveThreadMetadataLifecycle::CreatedCompatibleOpen
+            | LiveThreadMetadataLifecycle::Resumed => None,
+        };
         let metadata_sync = ThreadMetadataSync::for_create(&params).await;
         thread_store.create_thread(params).await?;
-        Ok(Self {
+        if let Some(parent_thread_id) = pending_parent_thread_id
+            && let Err(err) = thread_store
+                .reserve_pending_thread_spawn_edge(parent_thread_id, thread_id)
+                .await
+        {
+            if let Err(discard_err) = thread_store.discard_thread(thread_id).await {
+                warn!(
+                    "failed to discard thread persistence after pending lifecycle reservation failed: {discard_err}"
+                );
+            }
+            return Err(err);
+        }
+        let live_thread = Self {
             thread_id,
             history_mode,
             thread_store,
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
+            metadata_lifecycle,
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
-        })
+        };
+        Ok(live_thread)
     }
 
     pub async fn resume(
@@ -140,6 +202,7 @@ impl LiveThread {
             history_mode,
             thread_store,
             metadata_sync: Arc::new(Mutex::new(metadata_sync)),
+            metadata_lifecycle: LiveThreadMetadataLifecycle::Resumed,
             persistence_telemetry: RolloutPersistenceTelemetry::new(thread_id),
         })
     }
@@ -180,13 +243,12 @@ impl LiveThread {
             .await
             .observe_appended_items(items.as_slice());
         if let Some(update) = update {
-            self.thread_store
-                .update_thread_metadata(UpdateThreadMetadataParams {
-                    thread_id: self.thread_id,
-                    patch: update.patch.clone(),
-                    include_archived: true,
-                })
-                .await?;
+            self.update_lifecycle_metadata(UpdateThreadMetadataParams {
+                thread_id: self.thread_id,
+                patch: update.patch.clone(),
+                include_archived: true,
+            })
+            .await?;
             self.metadata_sync
                 .lock()
                 .await
@@ -293,6 +355,21 @@ impl LiveThread {
             .map(Some)
     }
 
+    async fn update_lifecycle_metadata(
+        &self,
+        params: UpdateThreadMetadataParams,
+    ) -> ThreadStoreResult<StoredThread> {
+        match self.metadata_lifecycle {
+            LiveThreadMetadataLifecycle::CreatedPendingActivation => {
+                self.thread_store.update_new_thread_metadata(params).await
+            }
+            LiveThreadMetadataLifecycle::CreatedCompatibleOpen
+            | LiveThreadMetadataLifecycle::Resumed => {
+                self.thread_store.update_thread_metadata(params).await
+            }
+        }
+    }
+
     async fn flush_pending_metadata_update(&self) -> ThreadStoreResult<()> {
         let update = self.metadata_sync.lock().await.take_pending_update();
         self.apply_pending_metadata_update(update).await
@@ -314,13 +391,12 @@ impl LiveThread {
         let Some(update) = update else {
             return Ok(());
         };
-        self.thread_store
-            .update_thread_metadata(UpdateThreadMetadataParams {
-                thread_id: self.thread_id,
-                patch: update.patch.clone(),
-                include_archived: true,
-            })
-            .await?;
+        self.update_lifecycle_metadata(UpdateThreadMetadataParams {
+            thread_id: self.thread_id,
+            patch: update.patch.clone(),
+            include_archived: true,
+        })
+        .await?;
         self.metadata_sync
             .lock()
             .await

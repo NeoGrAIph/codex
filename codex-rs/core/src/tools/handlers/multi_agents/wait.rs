@@ -2,6 +2,7 @@ use super::*;
 use crate::agent::status::is_final;
 use crate::session::session::Session;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
+use crate::tools::handlers::multi_agents_spec::create_projected_wait_agent_tool_v1;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v1;
 use codex_protocol::error::CodexErr;
 use codex_tools::ToolSpec;
@@ -16,14 +17,33 @@ use tokio::time::Instant;
 
 use tokio::time::timeout_at;
 
+pub(crate) const MAX_PROJECTED_WAIT_RESULT_BYTES: usize = 32 * 1_024;
+const MAX_PROJECTED_WAIT_STATUS_BYTES: usize = 8 * 1_024;
+const PROJECTED_WAIT_TRUNCATION_MARKER: &str = "\n...[truncated]";
+
 #[derive(Default)]
 pub(crate) struct Handler {
     options: WaitAgentTimeoutOptions,
+    target_policy: WaitTargetPolicy,
+}
+
+#[derive(Clone, Copy, Default)]
+enum WaitTargetPolicy {
+    #[default]
+    Legacy,
+    ProjectedV2,
 }
 
 impl Handler {
-    pub(crate) fn new(options: WaitAgentTimeoutOptions) -> Self {
-        Self { options }
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn new_projected(options: WaitAgentTimeoutOptions) -> Self {
+        Self {
+            options,
+            target_policy: WaitTargetPolicy::ProjectedV2,
+        }
     }
 }
 
@@ -33,7 +53,12 @@ impl ToolExecutor<ToolInvocation> for Handler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_wait_agent_tool_v1(self.options)
+        match self.target_policy {
+            WaitTargetPolicy::Legacy => {
+                create_wait_agent_tool_v1(WaitAgentTimeoutOptions::default())
+            }
+            WaitTargetPolicy::ProjectedV2 => create_projected_wait_agent_tool_v1(self.options),
+        }
     }
 
     fn search_info(&self) -> Option<ToolSearchInfo> {
@@ -62,23 +87,20 @@ impl Handler {
         } = invocation;
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
-        let receiver_thread_ids = parse_agent_id_targets(args.targets)?;
+        let receiver_thread_ids = match self.target_policy {
+            WaitTargetPolicy::Legacy => parse_agent_id_targets(args.targets)?,
+            WaitTargetPolicy::ProjectedV2 => parse_projected_agent_id_targets(args.targets)?,
+        };
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
         let mut target_by_thread_id = HashMap::with_capacity(receiver_thread_ids.len());
         for receiver_thread_id in &receiver_thread_ids {
+            authorize_live_v1_agent_target(&session, &turn, *receiver_thread_id)?;
             let agent_metadata = session
                 .services
                 .agent_control
                 .get_agent_metadata(*receiver_thread_id)
                 .unwrap_or_default();
-            target_by_thread_id.insert(
-                *receiver_thread_id,
-                agent_metadata
-                    .agent_path
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| receiver_thread_id.to_string()),
-            );
+            target_by_thread_id.insert(*receiver_thread_id, receiver_thread_id.to_string());
             receiver_agents.push(CollabAgentRef {
                 thread_id: *receiver_thread_id,
                 agent_nickname: agent_metadata.agent_nickname,
@@ -86,14 +108,23 @@ impl Handler {
             });
         }
 
-        let timeout_ms = args.timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
+        let timeout_options = match self.target_policy {
+            WaitTargetPolicy::Legacy => WaitAgentTimeoutOptions::default(),
+            WaitTargetPolicy::ProjectedV2 => self.options,
+        };
+        let timeout_ms = args
+            .timeout_ms
+            .unwrap_or(timeout_options.default_timeout_ms);
         let timeout_ms = match timeout_ms {
-            ms if ms <= 0 => {
+            ms if ms < 0 || (ms == 0 && timeout_options.min_timeout_ms > 0) => {
                 return Err(FunctionCallError::RespondToModel(
                     "timeout_ms must be greater than zero".to_owned(),
                 ));
             }
-            ms => ms.clamp(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
+            ms => ms.clamp(
+                timeout_options.min_timeout_ms,
+                timeout_options.max_timeout_ms,
+            ),
         };
 
         session
@@ -126,7 +157,8 @@ impl Handler {
                     status_rxs.push((*id, rx));
                 }
                 Err(CodexErr::ThreadNotFound(_)) => {
-                    initial_final_statuses.push((*id, AgentStatus::NotFound));
+                    initial_final_statuses
+                        .push((*id, session.services.agent_control.get_status(*id).await));
                 }
                 Err(err) => {
                     let mut statuses = HashMap::with_capacity(1);
@@ -185,6 +217,10 @@ impl Handler {
             results
         };
 
+        let statuses = match self.target_policy {
+            WaitTargetPolicy::Legacy => statuses,
+            WaitTargetPolicy::ProjectedV2 => bound_projected_wait_statuses(statuses),
+        };
         let timed_out = statuses.is_empty();
         let statuses_by_id = statuses.clone().into_iter().collect::<HashMap<_, _>>();
         let result = WaitAgentResult {
@@ -219,6 +255,120 @@ impl Handler {
             .await;
 
         Ok(boxed_tool_output(result))
+    }
+}
+
+pub(crate) fn bound_projected_wait_statuses(
+    statuses: Vec<(ThreadId, AgentStatus)>,
+) -> Vec<(ThreadId, AgentStatus)> {
+    let mut bounded = statuses
+        .iter()
+        .map(|(thread_id, status)| (*thread_id, status_without_text(status)))
+        .collect::<Vec<_>>();
+    let base_result = WaitAgentResult {
+        status: bounded
+            .iter()
+            .cloned()
+            .map(|(thread_id, status)| (thread_id.to_string(), status))
+            .collect(),
+        timed_out: bounded.is_empty(),
+    };
+    let base_len = serde_json::to_vec(&base_result)
+        .map(|serialized| serialized.len())
+        .unwrap_or(MAX_PROJECTED_WAIT_RESULT_BYTES);
+    let mut remaining = MAX_PROJECTED_WAIT_RESULT_BYTES.saturating_sub(base_len);
+    let mut text_statuses_remaining = statuses
+        .iter()
+        .filter(|(_, status)| status_text(status).is_some())
+        .count();
+
+    for ((_, original), (_, target)) in statuses.iter().zip(&mut bounded) {
+        let Some(text) = status_text(original) else {
+            continue;
+        };
+        let base_status_len = serde_json::to_vec(target)
+            .map(|serialized| serialized.len())
+            .unwrap_or(MAX_PROJECTED_WAIT_STATUS_BYTES);
+        let per_status_budget = MAX_PROJECTED_WAIT_STATUS_BYTES.saturating_sub(base_status_len);
+        let fair_share = remaining / text_statuses_remaining.max(1);
+        let text_budget = per_status_budget.min(fair_share);
+        let bounded_text = truncate_json_string_content(text, text_budget);
+        let replacement = match original {
+            AgentStatus::Completed(_) => AgentStatus::Completed(Some(bounded_text)),
+            AgentStatus::Errored(_) => AgentStatus::Errored(bounded_text),
+            AgentStatus::PendingInit
+            | AgentStatus::Running
+            | AgentStatus::Interrupted
+            | AgentStatus::Shutdown
+            | AgentStatus::NotFound => unreachable!("status_text returned text for unit variant"),
+        };
+        let replacement_len = serde_json::to_vec(&replacement)
+            .map(|serialized| serialized.len())
+            .unwrap_or(base_status_len);
+        remaining = remaining.saturating_sub(replacement_len.saturating_sub(base_status_len));
+        text_statuses_remaining = text_statuses_remaining.saturating_sub(1);
+        *target = replacement;
+    }
+
+    bounded
+}
+
+fn status_without_text(status: &AgentStatus) -> AgentStatus {
+    match status {
+        AgentStatus::Completed(Some(_)) => AgentStatus::Completed(Some(String::new())),
+        AgentStatus::Errored(_) => AgentStatus::Errored(String::new()),
+        status => status.clone(),
+    }
+}
+
+fn status_text(status: &AgentStatus) -> Option<&str> {
+    match status {
+        AgentStatus::Completed(Some(text)) | AgentStatus::Errored(text) => Some(text),
+        AgentStatus::PendingInit
+        | AgentStatus::Running
+        | AgentStatus::Interrupted
+        | AgentStatus::Completed(None)
+        | AgentStatus::Shutdown
+        | AgentStatus::NotFound => None,
+    }
+}
+
+fn truncate_json_string_content(value: &str, escaped_budget: usize) -> String {
+    let value_len = escaped_json_string_content_len(value);
+    if value_len <= escaped_budget {
+        return value.to_string();
+    }
+
+    let marker_len = escaped_json_string_content_len(PROJECTED_WAIT_TRUNCATION_MARKER);
+    if marker_len > escaped_budget {
+        return String::new();
+    }
+    let prefix_budget = escaped_budget - marker_len;
+    let mut prefix_end = 0;
+    let mut prefix_len = 0;
+    for (index, character) in value.char_indices() {
+        let character_len = escaped_json_character_len(character);
+        if prefix_len + character_len > prefix_budget {
+            break;
+        }
+        prefix_len += character_len;
+        prefix_end = index + character.len_utf8();
+    }
+
+    let mut truncated = value[..prefix_end].to_string();
+    truncated.push_str(PROJECTED_WAIT_TRUNCATION_MARKER);
+    truncated
+}
+
+fn escaped_json_string_content_len(value: &str) -> usize {
+    value.chars().map(escaped_json_character_len).sum()
+}
+
+fn escaped_json_character_len(character: char) -> usize {
+    match character {
+        '"' | '\\' | '\u{0008}' | '\u{000C}' | '\n' | '\r' | '\t' => 2,
+        '\u{0000}'..='\u{001F}' => 6,
+        character => character.len_utf8(),
     }
 }
 

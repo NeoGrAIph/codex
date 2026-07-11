@@ -962,6 +962,53 @@ model_reasoning_effort = "high"
 }
 
 #[tokio::test]
+async fn thread_start_rejects_reserved_multi_agent_v1_namespace_from_project_config() -> Result<()>
+{
+    let codex_home = TempDir::new()?;
+    let workspace = TempDir::new()?;
+    let project_config_dir = workspace.path().join(".codex");
+    std::fs::create_dir_all(&project_config_dir)?;
+    std::fs::write(
+        project_config_dir.join("config.toml"),
+        r#"
+[features.multi_agent_v2]
+enabled = true
+tool_namespace = "multi_agent_v1"
+"#,
+    )?;
+    set_project_trust_level(codex_home.path(), workspace.path(), TrustLevel::Trusted)?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_managed_config()
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            cwd: Some(workspace.path().to_string_lossy().into_owned()),
+            ..Default::default()
+        })
+        .await?;
+    let error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+
+    assert_eq!(error.id, RequestId::Integer(request_id));
+    assert_eq!(error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        error.error.message,
+        "features.multi_agent_v2.tool_namespace collides with the active projected namespace: multi_agent_v1"
+    );
+    assert_eq!(error.error.data, None);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn thread_start_drops_unsupported_service_tier_id() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
 

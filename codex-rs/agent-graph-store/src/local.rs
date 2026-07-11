@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::AgentGraphStore;
 use crate::AgentGraphStoreError;
 use crate::AgentGraphStoreFuture;
+use crate::ThreadSpawnEdge;
 use crate::ThreadSpawnEdgeStatus;
 
 /// SQLite-backed implementation of [`AgentGraphStore`] using an existing state runtime.
@@ -42,6 +43,45 @@ impl AgentGraphStore for LocalAgentGraphStore {
                     child_thread_id,
                     to_state_status(status),
                 )
+                .await
+                .map_err(internal_error)
+        })
+    }
+
+    fn get_thread_spawn_parent(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> AgentGraphStoreFuture<'_, Option<ThreadId>> {
+        Box::pin(async move {
+            self.state_db
+                .get_thread_spawn_parent(child_thread_id)
+                .await
+                .map_err(internal_error)
+        })
+    }
+
+    fn get_thread_spawn_edge(
+        &self,
+        child_thread_id: ThreadId,
+    ) -> AgentGraphStoreFuture<'_, Option<ThreadSpawnEdge>> {
+        Box::pin(async move {
+            self.state_db
+                .get_thread_spawn_edge(child_thread_id)
+                .await
+                .map(|edge| {
+                    edge.map(|(parent_thread_id, status)| ThreadSpawnEdge {
+                        parent_thread_id,
+                        status: from_state_status(status),
+                    })
+                })
+                .map_err(internal_error)
+        })
+    }
+
+    fn remove_thread_spawn_edge(&self, child_thread_id: ThreadId) -> AgentGraphStoreFuture<'_, ()> {
+        Box::pin(async move {
+            self.state_db
+                .remove_thread_spawn_edge(child_thread_id)
                 .await
                 .map_err(internal_error)
         })
@@ -111,8 +151,23 @@ impl AgentGraphStore for LocalAgentGraphStore {
 
 fn to_state_status(status: ThreadSpawnEdgeStatus) -> codex_state::DirectionalThreadSpawnEdgeStatus {
     match status {
+        ThreadSpawnEdgeStatus::PendingActivation => {
+            codex_state::DirectionalThreadSpawnEdgeStatus::PendingActivation
+        }
         ThreadSpawnEdgeStatus::Open => codex_state::DirectionalThreadSpawnEdgeStatus::Open,
         ThreadSpawnEdgeStatus::Closed => codex_state::DirectionalThreadSpawnEdgeStatus::Closed,
+    }
+}
+
+fn from_state_status(
+    status: codex_state::DirectionalThreadSpawnEdgeStatus,
+) -> ThreadSpawnEdgeStatus {
+    match status {
+        codex_state::DirectionalThreadSpawnEdgeStatus::PendingActivation => {
+            ThreadSpawnEdgeStatus::PendingActivation
+        }
+        codex_state::DirectionalThreadSpawnEdgeStatus::Open => ThreadSpawnEdgeStatus::Open,
+        codex_state::DirectionalThreadSpawnEdgeStatus::Closed => ThreadSpawnEdgeStatus::Closed,
     }
 }
 
@@ -205,6 +260,46 @@ mod tests {
             .await
             .expect("closed children should load");
         assert_eq!(closed_children, vec![second_child_thread_id]);
+
+        assert_eq!(
+            store
+                .get_thread_spawn_parent(second_child_thread_id)
+                .await
+                .expect("parent should load"),
+            Some(parent_thread_id)
+        );
+        assert_eq!(
+            store
+                .get_thread_spawn_edge(second_child_thread_id)
+                .await
+                .expect("edge should load"),
+            Some(ThreadSpawnEdge {
+                parent_thread_id,
+                status: ThreadSpawnEdgeStatus::Closed,
+            })
+        );
+        store
+            .remove_thread_spawn_edge(second_child_thread_id)
+            .await
+            .expect("edge should be removed");
+        assert_eq!(
+            store
+                .get_thread_spawn_parent(second_child_thread_id)
+                .await
+                .expect("removed parent lookup should succeed"),
+            None
+        );
+        assert_eq!(
+            store
+                .get_thread_spawn_edge(second_child_thread_id)
+                .await
+                .expect("removed edge lookup should succeed"),
+            None
+        );
+        store
+            .set_thread_spawn_edge_status(second_child_thread_id, ThreadSpawnEdgeStatus::Closed)
+            .await
+            .expect_err("missing edge status update should fail");
     }
 
     #[tokio::test]

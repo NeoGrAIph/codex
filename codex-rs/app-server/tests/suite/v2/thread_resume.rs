@@ -35,6 +35,7 @@ use codex_app_server_protocol::ThreadGoalClearResponse;
 use codex_app_server_protocol::ThreadGoalSetResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadListParams;
 use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadMetadataGitInfoUpdateParams;
 use codex_app_server_protocol::ThreadMetadataUpdateParams;
@@ -43,9 +44,12 @@ use codex_app_server_protocol::ThreadReadResponse;
 use codex_app_server_protocol::ThreadResumeInitialTurnsPageParams;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
+use codex_app_server_protocol::ThreadSearchParams;
+use codex_app_server_protocol::ThreadSearchResponse;
 use codex_app_server_protocol::ThreadSettingsUpdateParams;
 use codex_app_server_protocol::ThreadSettingsUpdateResponse;
 use codex_app_server_protocol::ThreadSource;
+use codex_app_server_protocol::ThreadSourceKind;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::ThreadStatus;
@@ -58,11 +62,14 @@ use codex_app_server_protocol::UserInput;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_core::ARCHIVED_SESSIONS_SUBDIR;
 use codex_login::REFRESH_TOKEN_URL_OVERRIDE_ENV_VAR;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::Personality;
+use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AgentMessageEvent;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ImageGenerationEndEvent;
@@ -73,6 +80,7 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource as RolloutSessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TokenCountEvent;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
@@ -83,6 +91,7 @@ use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::TextElement;
 use codex_rollout::append_rollout_item_to_path;
 use codex_rollout::read_session_meta_line;
+use codex_state::DirectionalThreadSpawnEdgeStatus;
 use codex_state::StateRuntime;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
@@ -92,6 +101,7 @@ use core_test_support::skip_if_remote;
 use core_test_support::skip_if_wine_exec;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::collections::HashMap;
 use std::fs::FileTimes;
 use std::io::Write;
 use std::path::Path;
@@ -118,6 +128,7 @@ use super::analytics::wait_for_matching_analytics_event;
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
 #[cfg(not(windows))]
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 const CODEX_5_2_INSTRUCTIONS_TEMPLATE_DEFAULT: &str = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
 
 fn normalized_existing_path(path: impl AsRef<Path>) -> Result<PathBuf> {
@@ -4131,6 +4142,508 @@ async fn start_materialized_thread_and_restart(
         rollout_file_path: rollout_file_path.to_path_buf(),
         updated_at,
     })
+}
+
+#[tokio::test]
+async fn thread_resume_rejects_loaded_v2_agent_with_pending_activation() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"model = "gpt-5.4"
+model_provider = "mock_provider"
+
+[features.multi_agent_v2]
+enabled = true
+
+[model_providers.mock_provider]
+name = "Mock provider for test"
+base_url = "{server_uri}/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+"#,
+            server_uri = server.uri(),
+        ),
+    )?;
+    let thread_id = ThreadId::new();
+    let parent_thread_id = ThreadId::new();
+    let agent_path = AgentPath::try_from("/root/pending_agent").map_err(anyhow::Error::msg)?;
+    let rollout_path = rollout_path(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        thread_id.to_string().as_str(),
+    );
+    std::fs::create_dir_all(rollout_path.parent().expect("rollout parent directory"))?;
+    let session_meta = SessionMeta {
+        session_id: thread_id.into(),
+        id: thread_id,
+        forked_from_id: None,
+        parent_thread_id: Some(parent_thread_id),
+        timestamp: "2025-01-05T12:00:00Z".to_string(),
+        cwd: codex_home.path().to_path_buf(),
+        originator: "codex".to_string(),
+        cli_version: "0.144.1".to_string(),
+        source: RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id,
+            depth: 1,
+            agent_path: Some(agent_path.clone()),
+            agent_nickname: Some("Pending Agent".to_string()),
+            agent_role: None,
+        }),
+        thread_source: None,
+        agent_path: Some(agent_path.to_string()),
+        agent_nickname: Some("Pending Agent".to_string()),
+        agent_role: None,
+        model_provider: Some("mock_provider".to_string()),
+        base_instructions: None,
+        dynamic_tools: None,
+        selected_capability_roots: Vec::new(),
+        memory_mode: None,
+        history_mode: Default::default(),
+        multi_agent_version: Some(MultiAgentVersion::V2),
+        context_window: None,
+    };
+    std::fs::write(
+        &rollout_path,
+        [
+            json!({
+                "timestamp": "2025-01-05T12:00:00Z",
+                "type": "session_meta",
+                "payload": serde_json::to_value(SessionMetaLine {
+                    meta: session_meta,
+                    git: None,
+                })?,
+            })
+            .to_string(),
+            json!({
+                "timestamp": "2025-01-05T12:00:00Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Saved task"}]
+                }
+            })
+            .to_string(),
+        ]
+        .join("\n")
+            + "\n",
+    )?;
+    let state_db =
+        StateRuntime::init(codex_home.path().to_path_buf(), "mock_provider".into()).await?;
+    state_db
+        .upsert_thread_spawn_edge(
+            parent_thread_id,
+            thread_id,
+            DirectionalThreadSpawnEdgeStatus::Open,
+        )
+        .await?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let first_resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread_id.to_string(),
+            ..Default::default()
+        })
+        .await?;
+    let first_resume: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(first_resume_id)),
+    )
+    .await??;
+    let _: ThreadResumeResponse = to_response(first_resume)?;
+
+    let open_resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread_id.to_string(),
+            ..Default::default()
+        })
+        .await?;
+    let open_resume: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(open_resume_id)),
+    )
+    .await??;
+    let _: ThreadResumeResponse = to_response(open_resume)?;
+    timeout(DEFAULT_READ_TIMEOUT, async {
+        loop {
+            if state_db.get_thread(thread_id).await?.is_some() {
+                state_db
+                    .set_thread_preview_if_empty(thread_id, "Saved task")
+                    .await?;
+                break Ok::<(), anyhow::Error>(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await??;
+    let list_params = ThreadListParams {
+        cursor: None,
+        limit: None,
+        sort_key: None,
+        sort_direction: None,
+        model_providers: None,
+        source_kinds: None,
+        archived: None,
+        cwd: None,
+        use_state_db_only: true,
+        search_term: None,
+        parent_thread_id: Some(parent_thread_id.to_string()),
+        ancestor_thread_id: None,
+    };
+    let open_list_id = mcp.send_thread_list_request(list_params.clone()).await?;
+    let open_list: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(open_list_id)),
+    )
+    .await??;
+    let open_list: ThreadListResponse = to_response(open_list)?;
+    assert!(
+        open_list
+            .data
+            .iter()
+            .any(|thread| thread.id == thread_id.to_string())
+    );
+
+    state_db
+        .set_thread_spawn_edge_status(
+            thread_id,
+            DirectionalThreadSpawnEdgeStatus::PendingActivation,
+        )
+        .await?;
+    let pending_list_id = mcp.send_thread_list_request(list_params).await?;
+    let pending_list: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(pending_list_id)),
+    )
+    .await??;
+    let pending_list: ThreadListResponse = to_response(pending_list)?;
+    assert!(
+        !pending_list
+            .data
+            .iter()
+            .any(|thread| thread.id == thread_id.to_string())
+    );
+    let pending_read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: thread_id.to_string(),
+            include_turns: false,
+        })
+        .await?;
+    let pending_read_error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(pending_read_id)),
+    )
+    .await??;
+    assert_eq!(pending_read_error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        pending_read_error.error.message,
+        format!("thread not loaded: {thread_id}")
+    );
+    let pending_resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread_id.to_string(),
+            ..Default::default()
+        })
+        .await?;
+    let pending_error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(pending_resume_id)),
+    )
+    .await??;
+    assert_eq!(pending_error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        pending_error.error.message,
+        "cannot resume an agent whose initial task was not durably activated"
+    );
+
+    state_db
+        .set_thread_spawn_edge_status(thread_id, DirectionalThreadSpawnEdgeStatus::Open)
+        .await?;
+    let external_list_params = ThreadListParams {
+        cursor: None,
+        limit: None,
+        sort_key: None,
+        sort_direction: None,
+        model_providers: Some(vec!["mock_provider".to_string()]),
+        source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+        archived: None,
+        cwd: None,
+        use_state_db_only: true,
+        search_term: None,
+        parent_thread_id: None,
+        ancestor_thread_id: None,
+    };
+    let open_external_list_id = mcp
+        .send_thread_list_request(external_list_params.clone())
+        .await?;
+    let open_external_list: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(open_external_list_id)),
+    )
+    .await??;
+    let open_external_list: ThreadListResponse = to_response(open_external_list)?;
+    let stored_thread_metadata = state_db
+        .get_thread(thread_id)
+        .await?
+        .expect("resumed thread metadata should exist");
+    assert!(
+        open_external_list
+            .data
+            .iter()
+            .any(|thread| thread.id == thread_id.to_string()),
+        "open thread should be listable; stored metadata: {stored_thread_metadata:?}"
+    );
+    let search_params = ThreadSearchParams {
+        cursor: None,
+        limit: None,
+        sort_key: None,
+        sort_direction: None,
+        source_kinds: Some(vec![ThreadSourceKind::SubAgentThreadSpawn]),
+        archived: None,
+        search_term: "Saved task".to_string(),
+    };
+    let open_search_id = mcp
+        .send_thread_search_request(search_params.clone())
+        .await?;
+    let open_search: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(open_search_id)),
+    )
+    .await??;
+    let open_search: ThreadSearchResponse = to_response(open_search)?;
+    assert!(
+        open_search
+            .data
+            .iter()
+            .any(|result| result.thread.id == thread_id.to_string())
+    );
+
+    state_db.remove_thread_spawn_edge(thread_id).await?;
+    let missing_list_id = mcp.send_thread_list_request(external_list_params).await?;
+    let missing_list: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(missing_list_id)),
+    )
+    .await??;
+    let missing_list: ThreadListResponse = to_response(missing_list)?;
+    assert!(
+        !missing_list
+            .data
+            .iter()
+            .any(|thread| thread.id == thread_id.to_string())
+    );
+    let missing_search_id = mcp.send_thread_search_request(search_params).await?;
+    let missing_search: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(missing_search_id)),
+    )
+    .await??;
+    let missing_search: ThreadSearchResponse = to_response(missing_search)?;
+    assert!(
+        !missing_search
+            .data
+            .iter()
+            .any(|result| result.thread.id == thread_id.to_string())
+    );
+    let missing_read_id = mcp
+        .send_thread_read_request(ThreadReadParams {
+            thread_id: thread_id.to_string(),
+            include_turns: false,
+        })
+        .await?;
+    let missing_read_error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(missing_read_id)),
+    )
+    .await??;
+    assert_eq!(missing_read_error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        missing_read_error.error.message,
+        format!("thread not loaded: {thread_id}")
+    );
+    let missing_resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread_id.to_string(),
+            ..Default::default()
+        })
+        .await?;
+    let missing_resume_error: JSONRPCError = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(missing_resume_id)),
+    )
+    .await??;
+    assert_eq!(missing_resume_error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        missing_resume_error.error.message,
+        "cannot resume a V2 agent without authoritative lifecycle state"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_resume_explicit_overrides_win_over_persisted_v2_role() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join("resume-role.toml"),
+        r#"model = "role-model"
+model_provider = "role_provider"
+service_tier = "flex"
+model_reasoning_effort = "high"
+developer_instructions = "role instructions must not survive"
+personality = "pragmatic"
+"#,
+    )?;
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            r#"model = "gpt-5.4"
+approval_policy = "never"
+sandbox_mode = "read-only"
+model_provider = "mock_provider"
+
+[features]
+personality = true
+
+[features.multi_agent_v2]
+enabled = true
+
+[model_providers.mock_provider]
+name = "Mock provider for test"
+base_url = "{server_uri}/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+
+[model_providers.role_provider]
+name = "Role provider for test"
+base_url = "{server_uri}/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+
+[agents.resume_role]
+description = "Persisted resume role"
+config_file = "resume-role.toml"
+"#,
+            server_uri = server.uri(),
+        ),
+    )?;
+
+    let thread_id = ThreadId::new();
+    let parent_thread_id = ThreadId::new();
+    let agent_path = AgentPath::try_from("/root/resumed_agent").map_err(anyhow::Error::msg)?;
+    let session_source = RolloutSessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id,
+        depth: 1,
+        agent_path: Some(agent_path.clone()),
+        agent_nickname: Some("Resume Agent".to_string()),
+        agent_role: Some("resume_role".to_string()),
+    });
+    let rollout_path = rollout_path(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        thread_id.to_string().as_str(),
+    );
+    std::fs::create_dir_all(rollout_path.parent().expect("rollout parent directory"))?;
+    let session_meta = SessionMeta {
+        session_id: thread_id.into(),
+        id: thread_id,
+        forked_from_id: None,
+        parent_thread_id: Some(parent_thread_id),
+        timestamp: "2025-01-05T12:00:00Z".to_string(),
+        cwd: codex_home.path().to_path_buf(),
+        originator: "codex".to_string(),
+        cli_version: "0.144.1".to_string(),
+        source: session_source,
+        thread_source: None,
+        agent_path: Some(agent_path.to_string()),
+        agent_nickname: Some("Resume Agent".to_string()),
+        agent_role: Some("resume_role".to_string()),
+        model_provider: Some("role_provider".to_string()),
+        base_instructions: None,
+        dynamic_tools: None,
+        selected_capability_roots: Vec::new(),
+        memory_mode: None,
+        history_mode: Default::default(),
+        multi_agent_version: Some(MultiAgentVersion::V2),
+        context_window: None,
+    };
+    std::fs::write(
+        &rollout_path,
+        [
+            json!({
+                "timestamp": "2025-01-05T12:00:00Z",
+                "type": "session_meta",
+                "payload": serde_json::to_value(SessionMetaLine {
+                    meta: session_meta,
+                    git: None,
+                })?,
+            })
+            .to_string(),
+            json!({
+                "timestamp": "2025-01-05T12:00:00Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Saved user message"}]
+                }
+            })
+            .to_string(),
+        ]
+        .join("\n")
+            + "\n",
+    )?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+    let resume_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: thread_id.to_string(),
+            model: Some("request-model".to_string()),
+            service_tier: Some(None),
+            config: Some(HashMap::from([
+                (
+                    "model_provider".to_string(),
+                    serde_json::Value::String("mock_provider".to_string()),
+                ),
+                (
+                    "model_reasoning_effort".to_string(),
+                    serde_json::Value::String("low".to_string()),
+                ),
+            ])),
+            developer_instructions: Some("request instructions survive".to_string()),
+            personality: Some(Personality::Friendly),
+            ..Default::default()
+        })
+        .await?;
+    let resume_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(resume_id)),
+    )
+    .await??;
+    let resume: ThreadResumeResponse = to_response(resume_resp)?;
+    assert_eq!(resume.model, "request-model");
+    assert_eq!(resume.model_provider, "mock_provider");
+    assert_eq!(
+        resume.service_tier.as_deref(),
+        Some(SERVICE_TIER_DEFAULT_REQUEST_VALUE)
+    );
+    assert_eq!(resume.reasoning_effort, Some(ReasoningEffort::Low));
+
+    Ok(())
 }
 
 #[tokio::test]

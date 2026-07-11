@@ -9,7 +9,7 @@
 use crate::config::AgentRoleConfig;
 use crate::config::Config;
 use crate::config::ConfigOverrides;
-use crate::config::agent_roles::parse_agent_role_file_contents;
+use crate::config::agent_roles::agent_role_locked_settings_note;
 use crate::config::deserialize_config_toml_with_base;
 use anyhow::anyhow;
 use codex_config::ConfigLayerEntry;
@@ -19,8 +19,9 @@ use codex_config::ConfigLayerStackOrdering;
 use codex_config::config_toml::ConfigToml;
 use codex_config::loader::resolve_relative_paths_in_config_toml;
 use codex_exec_server::LOCAL_FS;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::LazyLock;
 use toml::Value as TomlValue;
@@ -28,6 +29,12 @@ use toml::Value as TomlValue;
 /// The role name used when a caller omits `agent_type`.
 pub const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResumeRoleOverridePolicy {
+    RoleWins,
+    ExplicitSessionFlagsWin,
+}
 
 /// Applies a named role layer to `config` while preserving caller-owned provider settings.
 ///
@@ -53,6 +60,111 @@ pub(crate) async fn apply_role_to_config(
         })
 }
 
+/// Reapply the current trusted role definition when a persisted thread-spawn agent is resumed.
+///
+/// Rollouts persist the role name, not an effective `Config` snapshot. Re-resolving that name
+/// avoids trusting stale persisted permissions while preserving role-owned model and instruction
+/// settings. Runtime-owned permissions, workspace roots, cwd, and base-instruction values remain
+/// those selected by the current resume caller.
+pub(crate) async fn reapply_role_to_resumed_agent_config(
+    config: &mut Config,
+    session_source: &SessionSource,
+    override_policy: ResumeRoleOverridePolicy,
+) -> Result<(), String> {
+    let SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. }) = session_source
+    else {
+        return Ok(());
+    };
+    let Some(agent_role) = agent_role.as_deref() else {
+        // Historical full-history forks did not persist an effective role. Guessing `default`
+        // here would replace their inherited configuration during resume.
+        return Ok(());
+    };
+
+    let permissions = config.permissions.clone();
+    let explicit_permission_profile_mode = config.explicit_permission_profile_mode;
+    let custom_permission_profiles = config.custom_permission_profiles.clone();
+    let approvals_reviewer = config.approvals_reviewer;
+    let cwd = config.cwd.clone();
+    let workspace_roots = config.workspace_roots.clone();
+    let workspace_roots_explicit = config.workspace_roots_explicit;
+    let base_instructions = config.base_instructions.clone();
+    let preserve_explicit_session_flags =
+        override_policy == ResumeRoleOverridePolicy::ExplicitSessionFlagsWin;
+    let explicit_model = preserve_explicit_session_flags && session_flags_contain(config, "model");
+    let explicit_model_provider =
+        preserve_explicit_session_flags && session_flags_contain(config, "model_provider");
+    let explicit_reasoning_effort =
+        preserve_explicit_session_flags && session_flags_contain(config, "model_reasoning_effort");
+    let explicit_reasoning_summary =
+        preserve_explicit_session_flags && session_flags_contain(config, "model_reasoning_summary");
+    let explicit_service_tier =
+        preserve_explicit_session_flags && session_flags_contain(config, "service_tier");
+    let explicit_developer_instructions =
+        preserve_explicit_session_flags && session_flags_contain(config, "developer_instructions");
+    let explicit_personality =
+        preserve_explicit_session_flags && session_flags_contain(config, "personality");
+    let model = config.model.clone();
+    let model_provider_id = config.model_provider_id.clone();
+    let model_provider = config.model_provider.clone();
+    let model_reasoning_effort = config.model_reasoning_effort.clone();
+    let model_reasoning_summary = config.model_reasoning_summary;
+    let service_tier = config.service_tier.clone();
+    let developer_instructions = config.developer_instructions.clone();
+    let personality = config.personality;
+
+    apply_role_to_config(config, Some(agent_role)).await?;
+
+    config.permissions = permissions;
+    config.explicit_permission_profile_mode = explicit_permission_profile_mode;
+    config.custom_permission_profiles = custom_permission_profiles;
+    config.approvals_reviewer = approvals_reviewer;
+    config.cwd = cwd;
+    config.workspace_roots = workspace_roots;
+    config.workspace_roots_explicit = workspace_roots_explicit;
+    config.base_instructions = base_instructions;
+    if explicit_model {
+        config.model = model;
+    }
+    if explicit_model_provider {
+        config.model_provider_id = model_provider_id;
+        config.model_provider = model_provider;
+    }
+    if explicit_reasoning_effort {
+        config.model_reasoning_effort = model_reasoning_effort;
+    }
+    if explicit_reasoning_summary {
+        config.model_reasoning_summary = model_reasoning_summary;
+    }
+    if explicit_service_tier {
+        config.service_tier = service_tier;
+    }
+    if explicit_developer_instructions {
+        config.developer_instructions = developer_instructions;
+    }
+    if explicit_personality {
+        config.personality = personality;
+    }
+    Ok(())
+}
+
+fn session_flags_contain(config: &Config, key: &str) -> bool {
+    config
+        .config_layer_stack
+        .get_layers(
+            ConfigLayerStackOrdering::HighestPrecedenceFirst,
+            /*include_disabled*/ false,
+        )
+        .into_iter()
+        .filter(|layer| matches!(layer.name, ConfigLayerSource::SessionFlags))
+        .any(|layer| {
+            layer
+                .config
+                .as_table()
+                .is_some_and(|table| table.contains_key(key))
+        })
+}
+
 async fn apply_role_to_config_inner(
     config: &mut Config,
     role_name: &str,
@@ -71,14 +183,42 @@ async fn apply_role_to_config_inner(
     }
     let preserve_current_provider = role_layer_toml.get("model_provider").is_none();
     let preserve_current_service_tier = role_layer_toml.get("service_tier").is_none();
+    let preserve_current_model = role_layer_toml.get("model").is_none();
+    let preserve_current_reasoning_effort = role_layer_toml.get("model_reasoning_effort").is_none();
+    let preserve_current_reasoning_summary =
+        role_layer_toml.get("model_reasoning_summary").is_none();
+    let preserve_current_base_instructions = role_layer_toml.get("base_instructions").is_none();
+    let preserve_current_developer_instructions =
+        role_layer_toml.get("developer_instructions").is_none();
+    let current_model = config.model.clone();
+    let current_reasoning_effort = config.model_reasoning_effort.clone();
+    let current_reasoning_summary = config.model_reasoning_summary;
+    let current_base_instructions = config.base_instructions.clone();
+    let current_developer_instructions = config.developer_instructions.clone();
 
-    *config = reload::build_next_config(
+    let mut next_config = reload::build_next_config(
         config,
         role_layer_toml,
         preserve_current_provider,
         preserve_current_service_tier,
     )
     .await?;
+    if preserve_current_model {
+        next_config.model = current_model;
+    }
+    if preserve_current_reasoning_effort {
+        next_config.model_reasoning_effort = current_reasoning_effort;
+    }
+    if preserve_current_reasoning_summary {
+        next_config.model_reasoning_summary = current_reasoning_summary;
+    }
+    if preserve_current_base_instructions {
+        next_config.base_instructions = current_base_instructions;
+    }
+    if preserve_current_developer_instructions {
+        next_config.developer_instructions = current_developer_instructions;
+    }
+    *config = next_config;
     Ok(())
 }
 
@@ -93,26 +233,19 @@ async fn load_role_layer_toml(
             .map(str::to_owned)
             .ok_or(anyhow!("No corresponding config content"))?;
         let role_config_toml: TomlValue = toml::from_str(&role_config_contents)?;
-        (role_config_toml, config.codex_home.as_path())
+        (role_config_toml, config.codex_home.to_path_buf())
     } else {
-        let role_config_contents = tokio::fs::read_to_string(config_file).await?;
-        let role_config_base = config_file
-            .parent()
-            .ok_or(anyhow!("No corresponding config content"))?;
-        let role_config_toml = parse_agent_role_file_contents(
-            &role_config_contents,
-            config_file,
-            role_config_base,
-            Some(role_name),
-        )?
-        .config;
-        (role_config_toml, role_config_base)
+        let layer = config
+            .materialized_agent_role_layers
+            .get(role_name)
+            .ok_or(anyhow!("No materialized role content"))?;
+        (layer.config.clone(), layer.base_dir.clone())
     };
 
-    deserialize_config_toml_with_base(role_config_toml.clone(), role_config_base)?;
+    deserialize_config_toml_with_base(role_config_toml.clone(), &role_config_base)?;
     Ok(resolve_relative_paths_in_config_toml(
         role_config_toml,
-        role_config_base,
+        &role_config_base,
     )?)
 }
 
@@ -137,8 +270,9 @@ mod reload {
     ) -> anyhow::Result<Config> {
         let config_layer_stack = build_config_layer_stack(config, &role_layer_toml)?;
         let merged_config = deserialize_effective_config(config, &config_layer_stack)?;
+        let loading_layer_stack = without_agent_role_declarations(&config_layer_stack)?;
 
-        let next_config = Config::load_config_with_layer_stack(
+        let mut next_config = Config::load_config_with_layer_stack(
             LOCAL_FS.as_ref(),
             merged_config,
             reload_overrides(
@@ -147,10 +281,38 @@ mod reload {
                 preserve_current_service_tier,
             ),
             config.codex_home.clone(),
-            config_layer_stack,
+            loading_layer_stack,
         )
         .await?;
+        next_config.config_layer_stack = config_layer_stack;
+        next_config.agent_roles.clone_from(&config.agent_roles);
+        next_config
+            .materialized_agent_role_layers
+            .clone_from(&config.materialized_agent_role_layers);
         Ok(next_config)
+    }
+
+    fn without_agent_role_declarations(
+        config_layer_stack: &ConfigLayerStack,
+    ) -> anyhow::Result<ConfigLayerStack> {
+        let mut layers = config_layer_stack
+            .get_layers(
+                ConfigLayerStackOrdering::LowestPrecedenceFirst,
+                /*include_disabled*/ true,
+            )
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        for layer in &mut layers {
+            if let Some(table) = layer.config.as_table_mut() {
+                table.remove("agents");
+            }
+        }
+        Ok(ConfigLayerStack::new(
+            layers,
+            config_layer_stack.requirements().clone(),
+            config_layer_stack.requirements_toml().clone(),
+        )?)
     }
 
     fn build_config_layer_stack(
@@ -214,93 +376,8 @@ mod reload {
     }
 }
 
-pub(crate) mod spawn_tool_spec {
-    use super::*;
-
-    /// Builds the spawn-agent tool description text from built-in and configured roles.
-    pub(crate) fn build(user_defined_agent_roles: &BTreeMap<String, AgentRoleConfig>) -> String {
-        let built_in_roles = built_in::configs();
-        build_from_configs(built_in_roles, user_defined_agent_roles)
-    }
-
-    // This function is not inlined for testing purpose.
-    fn build_from_configs(
-        built_in_roles: &BTreeMap<String, AgentRoleConfig>,
-        user_defined_roles: &BTreeMap<String, AgentRoleConfig>,
-    ) -> String {
-        let mut seen = BTreeSet::new();
-        let mut formatted_roles = Vec::new();
-        for (name, declaration) in user_defined_roles {
-            if seen.insert(name.as_str()) {
-                formatted_roles.push(format_role(name, declaration));
-            }
-        }
-        for (name, declaration) in built_in_roles {
-            if seen.insert(name.as_str()) {
-                formatted_roles.push(format_role(name, declaration));
-            }
-        }
-
-        format!(
-            "Optional type name for the new agent. If omitted, `{DEFAULT_ROLE_NAME}` is used.\nAvailable roles:\n{}",
-            formatted_roles.join("\n"),
-        )
-    }
-
-    fn format_role(name: &str, declaration: &AgentRoleConfig) -> String {
-        if let Some(description) = &declaration.description {
-            let locked_settings_note = declaration
-                .config_file
-                .as_ref()
-                .and_then(|config_file| {
-                    built_in::config_file_contents(config_file)
-                        .map(str::to_owned)
-                        .or_else(|| std::fs::read_to_string(config_file).ok())
-                })
-                .and_then(|contents| toml::from_str::<TomlValue>(&contents).ok())
-                .map(|role_toml| {
-                    let model = role_toml
-                        .get("model")
-                        .and_then(TomlValue::as_str);
-                    let reasoning_effort = role_toml
-                        .get("model_reasoning_effort")
-                        .and_then(TomlValue::as_str);
-                    let service_tier = role_toml
-                        .get("service_tier")
-                        .and_then(TomlValue::as_str);
-
-                    let model_and_reasoning_note = match (model, reasoning_effort) {
-                        (Some(model), Some(reasoning_effort)) => format!(
-                            "\n- This role's model is set to `{model}` and its reasoning effort is set to `{reasoning_effort}`. These settings cannot be changed."
-                        ),
-                        (Some(model), None) => {
-                            format!(
-                                "\n- This role's model is set to `{model}` and cannot be changed."
-                            )
-                        }
-                        (None, Some(reasoning_effort)) => {
-                            format!(
-                                "\n- This role's reasoning effort is set to `{reasoning_effort}` and cannot be changed."
-                            )
-                        }
-                        (None, None) => String::new(),
-                    };
-                    let service_tier_note = service_tier
-                        .map(|service_tier| {
-                            format!(
-                                "\n- This role's service tier is set to `{service_tier}`. If it is supported by the resolved model, it takes precedence over a valid spawn request service tier."
-                            )
-                        })
-                        .unwrap_or_default();
-                    format!("{model_and_reasoning_note}{service_tier_note}")
-                })
-                .unwrap_or_default();
-            format!("{name}: {{\n{description}{locked_settings_note}\n}}")
-        } else {
-            format!("{name}: no description")
-        }
-    }
-}
+#[path = "role/spawn_tool_spec.rs"]
+pub(crate) mod spawn_tool_spec;
 
 mod built_in {
     use super::*;

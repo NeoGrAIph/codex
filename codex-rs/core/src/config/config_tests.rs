@@ -7452,7 +7452,12 @@ nickname_candidates = ["Noether"]
         .agent_roles
         .get("researcher")
         .expect("researcher role should load");
-    assert_eq!(role.description.as_deref(), Some("Role metadata from file"));
+    assert_eq!(
+        role.description.as_deref(),
+        Some(
+            "Role metadata from file\n- This role's model is set to `gpt-5.2` and cannot be changed."
+        )
+    );
     assert_eq!(role.config_file.as_ref(), Some(&role_config_path));
     assert_eq!(
         role.nickname_candidates
@@ -7520,7 +7525,7 @@ model = "gpt-5.2"
             .agent_roles
             .get("reviewer")
             .and_then(|role| role.description.as_deref()),
-        Some("Review role")
+        Some("Review role\n- This role's model is set to `gpt-5.2` and cannot be changed.")
     );
     assert!(
         config
@@ -7529,6 +7534,90 @@ model = "gpt-5.2"
             .any(|warning| warning.contains("must define `developer_instructions`"))
     );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn oversized_agent_role_developer_instructions_are_dropped_with_warning()
+-> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let repo_root = TempDir::new()?;
+    let nested_cwd = repo_root.path().join("packages").join("app");
+    std::fs::create_dir_all(repo_root.path().join(".git"))?;
+    std::fs::create_dir_all(&nested_cwd)?;
+    let workspace_key = repo_root.path().to_string_lossy().replace('\\', "\\\\");
+    tokio::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        format!(
+            r#"[projects."{workspace_key}"]
+trust_level = "trusted"
+"#
+        ),
+    )
+    .await?;
+    let standalone_agents_dir = repo_root.path().join(".codex").join("agents");
+    tokio::fs::create_dir_all(&standalone_agents_dir).await?;
+    tokio::fs::write(
+        standalone_agents_dir.join("oversized.toml"),
+        format!(
+            "name = \"oversized\"\ndescription = \"Oversized role\"\ndeveloper_instructions = \"{}\"\n",
+            "x".repeat(8 * 1_024 + 1)
+        ),
+    )
+    .await?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .harness_overrides(ConfigOverrides {
+            cwd: Some(nested_cwd),
+            ..Default::default()
+        })
+        .build()
+        .await?;
+
+    assert!(!config.agent_roles.contains_key("oversized"));
+    assert!(
+        config.startup_warnings.iter().any(|warning| {
+            warning.contains("developer_instructions must be at most 8192 bytes")
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn oversized_agent_role_file_is_dropped_before_parsing() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let role_config_path = codex_home.path().join("oversized-role.toml");
+    tokio::fs::write(
+        &role_config_path,
+        format!(
+            "developer_instructions = \"bounded\"\n#{}",
+            "x".repeat(64 * 1_024)
+        ),
+    )
+    .await?;
+    tokio::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        format!(
+            "[agents.oversized]\ndescription = \"Oversized role\"\nconfig_file = \"{}\"\n",
+            role_config_path.display()
+        ),
+    )
+    .await?;
+
+    let config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await?;
+
+    assert!(!config.agent_roles.contains_key("oversized"));
+    assert!(
+        config
+            .startup_warnings
+            .iter()
+            .any(|warning| warning.contains("no larger than 65536 bytes"))
+    );
     Ok(())
 }
 
@@ -7570,7 +7659,9 @@ config_file = "./agents/researcher.toml"
             .agent_roles
             .get("researcher")
             .and_then(|role| role.description.as_deref()),
-        Some("Research role from config")
+        Some(
+            "Research role from config\n- This role's model is set to `gpt-5.2` and its reasoning effort is set to `high`. These settings cannot be changed."
+        )
     );
     assert_eq!(
         config
@@ -7740,7 +7831,12 @@ config_file = "./agents/researcher.toml"
         .agent_roles
         .get("archivist")
         .expect("role should use file-provided name");
-    assert_eq!(role.description.as_deref(), Some("Role metadata from file"));
+    assert_eq!(
+        role.description.as_deref(),
+        Some(
+            "Role metadata from file\n- This role's model is set to `gpt-5.2` and cannot be changed."
+        )
+    );
     assert_eq!(role.config_file.as_ref(), Some(&role_config_path));
 
     Ok(())
@@ -7793,7 +7889,7 @@ nickname_candidates = ["Atlas"]
             .agent_roles
             .get("researcher")
             .and_then(|role| role.description.as_deref()),
-        Some("Research role")
+        Some("Research role\n- This role's model is set to `gpt-5` and cannot be changed.")
     );
     assert_eq!(
         config
@@ -7815,7 +7911,7 @@ nickname_candidates = ["Atlas"]
             .agent_roles
             .get("reviewer")
             .and_then(|role| role.description.as_deref()),
-        Some("Review role")
+        Some("Review role\n- This role's model is set to `gpt-4.1` and cannot be changed.")
     );
     assert_eq!(
         config
@@ -8054,7 +8150,9 @@ model = "gpt-5.2"
             .agent_roles
             .get("researcher")
             .and_then(|role| role.description.as_deref()),
-        Some("Research role from file")
+        Some(
+            "Research role from file\n- This role's model is set to `gpt-5-mini` and cannot be changed."
+        )
     );
     assert_eq!(
         config
@@ -8076,7 +8174,9 @@ model = "gpt-5.2"
             .agent_roles
             .get("critic")
             .and_then(|role| role.description.as_deref()),
-        Some("Critic role from config")
+        Some(
+            "Critic role from config\n- This role's model is set to `gpt-4.1` and cannot be changed."
+        )
     );
     assert_eq!(
         config
@@ -8098,7 +8198,9 @@ model = "gpt-5.2"
             .agent_roles
             .get("writer")
             .and_then(|role| role.description.as_deref()),
-        Some("Writer role from file")
+        Some(
+            "Writer role from file\n- This role's model is set to `gpt-5.2` and cannot be changed."
+        )
     );
     assert_eq!(
         config
@@ -8174,7 +8276,9 @@ model = "gpt-5-mini"
             .agent_roles
             .get("researcher")
             .and_then(|role| role.description.as_deref()),
-        Some("Research role from config")
+        Some(
+            "Research role from config\n- This role's model is set to `gpt-5-mini` and cannot be changed."
+        )
     );
     assert_eq!(
         config
@@ -10748,6 +10852,21 @@ tool_namespace = "{namespace}"
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
         assert_eq!(err.to_string(), expected_message);
     }
+
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"[features.multi_agent_v2]
+enabled = true
+tool_namespace = "multi_agent_v1"
+"#,
+    )?;
+    ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(codex_home.path().to_path_buf())
+        .fallback_cwd(Some(codex_home.path().to_path_buf()))
+        .build()
+        .await
+        .expect("historical namespace should remain loadable until runtime resolution");
 
     Ok(())
 }

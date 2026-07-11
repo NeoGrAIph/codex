@@ -18,6 +18,7 @@ use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::attestation::AttestationProvider;
 use crate::build_available_skills;
+use crate::codex_thread::InitialTaskPublication;
 use crate::compact;
 use crate::config::ManagedFeatures;
 use crate::config::resolve_tool_suggest_config_from_layer_stack;
@@ -44,6 +45,7 @@ use crate::session::turn_context::TurnEnvironment;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::skills::SkillRenderSideEffects;
 use crate::skills_load_input_from_config;
+use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::turn_metadata::TurnMetadataState;
 use crate::turn_timing::now_unix_timestamp_ms;
 use async_channel::Receiver;
@@ -403,6 +405,13 @@ pub(crate) type SessionLoopTermination = Shared<BoxFuture<'static, ()>>;
 pub struct CodexSpawnOk {
     pub codex: Codex,
     pub thread_id: ThreadId,
+    pub(crate) initial_task_publication: InitialTaskPublication,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SubmissionLoopActivation {
+    Commit,
+    Abort,
 }
 
 pub(crate) struct CodexSpawnArgs {
@@ -445,6 +454,7 @@ pub(crate) struct CodexSpawnArgs {
     pub(crate) attestation_provider: Option<Arc<dyn AttestationProvider>>,
     pub(crate) external_time_provider: Option<Arc<dyn TimeProvider>>,
     pub(crate) inherited_multi_agent_version: Option<MultiAgentVersion>,
+    pub(crate) submission_loop_activation: Option<oneshot::Receiver<SubmissionLoopActivation>>,
 }
 
 pub(crate) fn resolve_multi_agent_version(
@@ -533,7 +543,13 @@ impl Codex {
             attestation_provider,
             external_time_provider,
             inherited_multi_agent_version,
+            submission_loop_activation,
         } = args;
+        let initial_task_publication = if submission_loop_activation.is_some() {
+            InitialTaskPublication::Pending
+        } else {
+            InitialTaskPublication::Published
+        };
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
 
@@ -623,6 +639,30 @@ impl Codex {
         } else {
             dynamic_tools
         };
+        let effective_multi_agent_version = multi_agent_version.unwrap_or_else(|| {
+            model_info
+                .multi_agent_version
+                .unwrap_or_else(|| config.multi_agent_version_from_features())
+        });
+        let mut active_multi_agent_namespaces = Vec::new();
+        if effective_multi_agent_version != MultiAgentVersion::Disabled {
+            active_multi_agent_namespaces.push(MULTI_AGENT_V1_NAMESPACE);
+        }
+        if effective_multi_agent_version == MultiAgentVersion::V2
+            && let Some(configured_namespace) = config.multi_agent_v2.tool_namespace.as_deref()
+        {
+            if configured_namespace == MULTI_AGENT_V1_NAMESPACE {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "features.multi_agent_v2.tool_namespace collides with the active projected namespace: {MULTI_AGENT_V1_NAMESPACE}"
+                )));
+            }
+            active_multi_agent_namespaces.push(configured_namespace);
+        }
+        codex_tools::validate_reserved_dynamic_tool_namespaces(
+            &dynamic_tools,
+            &active_multi_agent_namespaces,
+        )
+        .map_err(CodexErr::InvalidRequest)?;
         // TODO (aibrahim): Consolidate config.model and config.model_reasoning_effort into config.collaboration_mode
         // to avoid extracting these fields separately and constructing CollaborationMode here.
         let collaboration_mode = CollaborationMode {
@@ -707,6 +747,7 @@ impl Codex {
             attestation_provider,
             external_time_provider,
             multi_agent_version,
+            initial_task_publication,
         ))
         .await
         .map_err(|e| {
@@ -726,6 +767,12 @@ impl Codex {
         // This task will run until Op::Shutdown is received.
         let session_for_loop = Arc::clone(&session);
         let session_loop_handle = tokio::spawn(async move {
+            if let Some(activation) = submission_loop_activation
+                && !matches!(activation.await, Ok(SubmissionLoopActivation::Commit))
+            {
+                rx_sub.close();
+                while rx_sub.try_recv().is_ok() {}
+            }
             submission_loop(session_for_loop, config, rx_sub)
                 .instrument(info_span!("session_loop", thread_id = %thread_id))
                 .await;
@@ -738,7 +785,11 @@ impl Codex {
             session_loop_termination: session_loop_termination_from_handle(session_loop_handle),
         };
 
-        Ok(CodexSpawnOk { codex, thread_id })
+        Ok(CodexSpawnOk {
+            codex,
+            thread_id,
+            initial_task_publication,
+        })
     }
 
     /// Submit the `op` wrapped in a `Submission` with a unique ID.

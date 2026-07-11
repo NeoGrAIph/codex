@@ -4,6 +4,8 @@ use crate::config::ConfigBuilder;
 use crate::skills_load_input_from_config;
 use codex_config::ConfigLayerStackOrdering;
 use codex_core_plugins::PluginsManager;
+use codex_protocol::config_types::Personality;
+use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::test_support::PathExt;
@@ -165,6 +167,9 @@ model = "role-model"
         },
     );
 
+    crate::config::agent_roles::materialize_agent_role_for_test(&mut config, "custom")
+        .await
+        .expect("custom role should materialize");
     apply_role_to_config(&mut config, Some("custom"))
         .await
         .expect("custom role should apply");
@@ -196,6 +201,9 @@ async fn apply_role_preserves_unspecified_keys() {
         },
     );
 
+    crate::config::agent_roles::materialize_agent_role_for_test(&mut config, "custom")
+        .await
+        .expect("custom role should materialize");
     apply_role_to_config(&mut config, Some("custom"))
         .await
         .expect("custom role should apply");
@@ -210,6 +218,298 @@ async fn apply_role_preserves_unspecified_keys() {
         config.main_execve_wrapper_exe,
         Some(PathBuf::from("/tmp/codex-execve-wrapper"))
     );
+}
+
+#[tokio::test]
+async fn apply_role_preserves_unspecified_runtime_model_and_instructions() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    config.model = Some("runtime-model".to_string());
+    config.model_reasoning_effort = Some(ReasoningEffort::High);
+    config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
+    config.base_instructions = Some("Runtime base instructions".to_string());
+    config.developer_instructions = Some("Runtime developer instructions".to_string());
+    let role_path = write_role_config(
+        &home,
+        "unrelated-setting-role.toml",
+        "show_raw_agent_reasoning = true",
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+
+    crate::config::agent_roles::materialize_agent_role_for_test(&mut config, "custom")
+        .await
+        .expect("custom role should materialize");
+    apply_role_to_config(&mut config, Some("custom"))
+        .await
+        .expect("custom role should apply");
+
+    assert_eq!(
+        (
+            config.model.as_deref(),
+            config.model_reasoning_effort,
+            config.model_reasoning_summary,
+            config.base_instructions.as_deref(),
+            config.developer_instructions.as_deref(),
+        ),
+        (
+            Some("runtime-model"),
+            Some(ReasoningEffort::High),
+            Some(ReasoningSummary::Detailed),
+            Some("Runtime base instructions"),
+            Some("Runtime developer instructions"),
+        )
+    );
+    assert!(config.show_raw_agent_reasoning);
+}
+
+#[tokio::test]
+async fn reapply_role_on_resume_preserves_runtime_owned_security_context() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    let role_path = write_role_config(
+        &home,
+        "resumed-role.toml",
+        r#"
+model = "current-role-model"
+developer_instructions = "Current trusted role instructions"
+approval_policy = "never"
+approvals_reviewer = "user"
+sandbox_mode = "danger-full-access"
+allow_login_shell = false
+
+[shell_environment_policy]
+inherit = "none"
+ignore_default_excludes = false
+"#,
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+
+    crate::config::agent_roles::materialize_agent_role_for_test(&mut config, "custom")
+        .await
+        .expect("custom role should materialize");
+
+    let runtime_cwd = home.path().join("runtime-cwd");
+    let runtime_workspace_root = home.path().join("runtime-root").abs();
+    config.cwd = runtime_cwd.clone().abs();
+    config.workspace_roots = vec![runtime_workspace_root.clone()];
+    config.workspace_roots_explicit = true;
+    config
+        .permissions
+        .set_workspace_roots(vec![runtime_workspace_root.clone()]);
+    config.base_instructions = Some("Runtime base instructions".to_string());
+    config
+        .permissions
+        .approval_policy
+        .set(codex_protocol::protocol::AskForApproval::OnRequest)
+        .expect("runtime approval policy should be accepted");
+    config.approvals_reviewer = codex_protocol::config_types::ApprovalsReviewer::AutoReview;
+    let runtime_permissions = config.permissions.clone();
+    let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: codex_protocol::ThreadId::new(),
+        depth: 1,
+        agent_path: Some(
+            codex_protocol::AgentPath::try_from("/root/custom").expect("valid agent path"),
+        ),
+        agent_nickname: None,
+        agent_role: Some("custom".to_string()),
+    });
+
+    reapply_role_to_resumed_agent_config(&mut config, &source, ResumeRoleOverridePolicy::RoleWins)
+        .await
+        .expect("current trusted role should be reapplied");
+
+    assert_eq!(config.model.as_deref(), Some("current-role-model"));
+    assert_eq!(
+        config.developer_instructions.as_deref(),
+        Some("Current trusted role instructions")
+    );
+    assert_eq!(
+        config.base_instructions.as_deref(),
+        Some("Runtime base instructions")
+    );
+    assert_eq!(config.cwd, runtime_cwd.abs());
+    assert_eq!(config.permissions, runtime_permissions);
+    assert_eq!(
+        config.approvals_reviewer,
+        codex_protocol::config_types::ApprovalsReviewer::AutoReview
+    );
+    assert_eq!(config.workspace_roots, vec![runtime_workspace_root]);
+    assert!(config.workspace_roots_explicit);
+}
+
+#[tokio::test]
+async fn reapply_role_on_resume_preserves_explicit_session_overrides() {
+    let (home, mut config) = test_config_with_cli_overrides(vec![
+        (
+            "model".to_string(),
+            TomlValue::String("request-model".to_string()),
+        ),
+        (
+            "model_reasoning_effort".to_string(),
+            TomlValue::String("high".to_string()),
+        ),
+        (
+            "developer_instructions".to_string(),
+            TomlValue::String("Request instructions".to_string()),
+        ),
+        (
+            "service_tier".to_string(),
+            TomlValue::String("priority".to_string()),
+        ),
+        (
+            "personality".to_string(),
+            TomlValue::String("friendly".to_string()),
+        ),
+    ])
+    .await;
+    let role_path = write_role_config(
+        &home,
+        "override-role.toml",
+        r#"
+model = "role-model"
+model_reasoning_effort = "low"
+developer_instructions = "Role instructions"
+service_tier = "flex"
+personality = "pragmatic"
+"#,
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+    crate::config::agent_roles::materialize_agent_role_for_test(&mut config, "custom")
+        .await
+        .expect("custom role should materialize");
+    let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: codex_protocol::ThreadId::new(),
+        depth: 1,
+        agent_path: Some(
+            codex_protocol::AgentPath::try_from("/root/custom").expect("valid agent path"),
+        ),
+        agent_nickname: None,
+        agent_role: Some("custom".to_string()),
+    });
+
+    reapply_role_to_resumed_agent_config(
+        &mut config,
+        &source,
+        ResumeRoleOverridePolicy::ExplicitSessionFlagsWin,
+    )
+    .await
+    .expect("current trusted role should apply beneath explicit session flags");
+
+    assert_eq!(
+        (
+            config.model.as_deref(),
+            config.model_reasoning_effort,
+            config.developer_instructions.as_deref(),
+            config.service_tier.as_deref(),
+            config.personality,
+        ),
+        (
+            Some("request-model"),
+            Some(ReasoningEffort::High),
+            Some("Request instructions"),
+            Some("priority"),
+            Some(Personality::Friendly),
+        )
+    );
+}
+
+#[tokio::test]
+async fn reapply_role_on_resume_does_not_treat_persisted_reasoning_as_explicit() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    config.model_reasoning_effort = Some(ReasoningEffort::High);
+    let role_path = write_role_config(
+        &home,
+        "persisted-reasoning-role.toml",
+        "model_reasoning_effort = \"low\"",
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+    crate::config::agent_roles::materialize_agent_role_for_test(&mut config, "custom")
+        .await
+        .expect("custom role should materialize");
+    let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: codex_protocol::ThreadId::new(),
+        depth: 1,
+        agent_path: Some(
+            codex_protocol::AgentPath::try_from("/root/custom").expect("valid agent path"),
+        ),
+        agent_nickname: None,
+        agent_role: Some("custom".to_string()),
+    });
+
+    reapply_role_to_resumed_agent_config(
+        &mut config,
+        &source,
+        ResumeRoleOverridePolicy::ExplicitSessionFlagsWin,
+    )
+    .await
+    .expect("trusted role should override unmarked persisted reasoning");
+
+    assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Low));
+}
+
+#[tokio::test]
+async fn resume_without_persisted_role_does_not_guess_default_role() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    let default_role_path = write_role_config(
+        &home,
+        "default-role.toml",
+        "model = \"unexpected-default-model\"",
+    )
+    .await;
+    config.agent_roles.insert(
+        DEFAULT_ROLE_NAME.to_string(),
+        AgentRoleConfig {
+            description: Some("Configured default role".to_string()),
+            config_file: Some(default_role_path),
+            nickname_candidates: None,
+        },
+    );
+    let before = config.clone();
+    let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: codex_protocol::ThreadId::new(),
+        depth: 1,
+        agent_path: Some(
+            codex_protocol::AgentPath::try_from("/root/full_history").expect("valid agent path"),
+        ),
+        agent_nickname: None,
+        agent_role: None,
+    });
+
+    reapply_role_to_resumed_agent_config(&mut config, &source, ResumeRoleOverridePolicy::RoleWins)
+        .await
+        .expect("historical role-less resume should remain compatible");
+
+    assert_eq!(config, before);
 }
 
 #[tokio::test]
@@ -232,6 +532,9 @@ service_tier = "priority"
         },
     );
 
+    crate::config::agent_roles::materialize_agent_role_for_test(&mut config, "custom")
+        .await
+        .expect("custom role should materialize");
     apply_role_to_config(&mut config, Some("custom"))
         .await
         .expect("custom role should apply");
@@ -262,6 +565,9 @@ async fn apply_role_preserves_existing_service_tier_without_override() {
         },
     );
 
+    crate::config::agent_roles::materialize_agent_role_for_test(&mut config, "custom")
+        .await
+        .expect("custom role should materialize");
     apply_role_to_config(&mut config, Some("custom"))
         .await
         .expect("custom role should apply");
@@ -306,6 +612,9 @@ writable_roots = ["./sandbox-root"]
         },
     );
 
+    crate::config::agent_roles::materialize_agent_role_for_test(&mut config, "custom")
+        .await
+        .expect("custom role should materialize");
     apply_role_to_config(&mut config, Some("custom"))
         .await
         .expect("custom role should apply");
@@ -368,6 +677,9 @@ async fn apply_role_takes_precedence_over_existing_session_flags_for_same_key() 
         },
     );
 
+    crate::config::agent_roles::materialize_agent_role_for_test(&mut config, "custom")
+        .await
+        .expect("custom role should materialize");
     apply_role_to_config(&mut config, Some("custom"))
         .await
         .expect("custom role should apply");
@@ -411,6 +723,9 @@ enabled = false
         },
     );
 
+    crate::config::agent_roles::materialize_agent_role_for_test(&mut config, "custom")
+        .await
+        .expect("custom role should materialize");
     apply_role_to_config(&mut config, Some("custom"))
         .await
         .expect("custom role should apply");
@@ -483,78 +798,59 @@ fn spawn_tool_spec_lists_user_defined_roles_before_built_ins() {
 }
 
 #[test]
-fn spawn_tool_spec_marks_role_locked_model_and_reasoning_effort() {
-    let tempdir = TempDir::new().expect("create temp dir");
-    let role_path = tempdir.path().join("researcher.toml");
-    fs::write(
-            &role_path,
-            "developer_instructions = \"Research carefully\"\nmodel = \"gpt-5\"\nmodel_reasoning_effort = \"high\"\n",
-        )
-        .expect("write role config");
+fn legacy_v1_spawn_tool_spec_preserves_role_locked_setting_guidance() {
+    let role_config: TomlValue = toml::from_str(
+        "model = \"gpt-5\"\nmodel_reasoning_effort = \"high\"\nservice_tier = \"priority\"\n",
+    )
+    .expect("parse materialized role config");
     let user_defined_roles = BTreeMap::from([(
         "researcher".to_string(),
         AgentRoleConfig {
-            description: Some("Research carefully.".to_string()),
-            config_file: Some(role_path),
+            description: Some(format!(
+                "Research carefully.{}",
+                crate::config::agent_roles::agent_role_locked_settings_note(&role_config)
+            )),
+            config_file: None,
             nickname_candidates: None,
         },
     )]);
 
-    let spec = spawn_tool_spec::build(&user_defined_roles);
+    let spec = spawn_tool_spec::build_legacy_v1(&user_defined_roles);
 
     assert!(spec.contains(
-            "Research carefully.\n- This role's model is set to `gpt-5` and its reasoning effort is set to `high`. These settings cannot be changed."
-        ));
-}
-
-#[test]
-fn spawn_tool_spec_marks_role_locked_reasoning_effort_only() {
-    let tempdir = TempDir::new().expect("create temp dir");
-    let role_path = tempdir.path().join("reviewer.toml");
-    fs::write(
-        &role_path,
-        "developer_instructions = \"Review carefully\"\nmodel_reasoning_effort = \"medium\"\n",
-    )
-    .expect("write role config");
-    let user_defined_roles = BTreeMap::from([(
-        "reviewer".to_string(),
-        AgentRoleConfig {
-            description: Some("Review carefully.".to_string()),
-            config_file: Some(role_path),
-            nickname_candidates: None,
-        },
-    )]);
-
-    let spec = spawn_tool_spec::build(&user_defined_roles);
-
-    assert!(spec.contains(
-            "Review carefully.\n- This role's reasoning effort is set to `medium` and cannot be changed."
-        ));
-}
-
-#[test]
-fn spawn_tool_spec_marks_role_locked_service_tier() {
-    let tempdir = TempDir::new().expect("create temp dir");
-    let role_path = tempdir.path().join("tiered.toml");
-    fs::write(
-        &role_path,
-        "developer_instructions = \"Stay fast\"\nservice_tier = \"priority\"\n",
-    )
-    .expect("write role config");
-    let user_defined_roles = BTreeMap::from([(
-        "tiered".to_string(),
-        AgentRoleConfig {
-            description: Some("Stay fast.".to_string()),
-            config_file: Some(role_path),
-            nickname_candidates: None,
-        },
-    )]);
-
-    let spec = spawn_tool_spec::build(&user_defined_roles);
-
-    assert!(spec.contains(
-        "Stay fast.\n- This role's service tier is set to `priority`. If it is supported by the resolved model, it takes precedence over a valid spawn request service tier."
+        "Research carefully.\n- This role's model is set to `gpt-5` and its reasoning effort is set to `high`. These settings cannot be changed."
     ));
+    assert!(spec.contains(
+        "This role's service tier is set to `priority`. If it is supported by the resolved model, it takes precedence over a valid spawn request service tier."
+    ));
+}
+
+#[test]
+fn spawn_tool_spec_bounds_role_catalog_and_preserves_default_role() {
+    let user_defined_roles = (0..40)
+        .map(|index| {
+            (
+                format!("role_{index:02}"),
+                AgentRoleConfig {
+                    description: Some("界".repeat(2_000)),
+                    config_file: None,
+                    nickname_candidates: None,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let spec = spawn_tool_spec::build(&user_defined_roles);
+
+    assert!(
+        serde_json::to_string(&spec)
+            .expect("serialize role catalog")
+            .len()
+            <= spawn_tool_spec::MAX_AGENT_ROLE_CATALOG_JSON_BYTES
+    );
+    assert!(spec.contains("[role metadata truncated]"));
+    assert!(spec.contains("additional role(s) omitted"));
+    assert!(spec.contains("default: {\nDefault agent.\n}"));
 }
 
 #[test]

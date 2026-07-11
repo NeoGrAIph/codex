@@ -1,3 +1,4 @@
+use crate::agent::AgentStatus;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
@@ -39,6 +40,7 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_nickname: Option<String>,
     pub(crate) agent_role: Option<String>,
     pub(crate) last_task_message: Option<String>,
+    pub(crate) last_status: Option<AgentStatus>,
 }
 
 fn format_agent_nickname(name: &str, nickname_reset_count: usize) -> String {
@@ -191,6 +193,34 @@ impl AgentRegistry {
             .find(|metadata| metadata.agent_id == Some(thread_id))
         {
             metadata.last_task_message = None;
+        }
+    }
+
+    pub(crate) fn set_last_status(&self, thread_id: ThreadId, status: AgentStatus) {
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(metadata) = active_agents
+            .agent_tree
+            .values_mut()
+            .find(|metadata| metadata.agent_id == Some(thread_id))
+        {
+            metadata.last_status = Some(status);
+        }
+    }
+
+    pub(crate) fn clear_last_status(&self, thread_id: ThreadId) {
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(metadata) = active_agents
+            .agent_tree
+            .values_mut()
+            .find(|metadata| metadata.agent_id == Some(thread_id))
+        {
+            metadata.last_status = None;
         }
     }
 
