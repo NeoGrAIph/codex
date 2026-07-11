@@ -10,6 +10,7 @@ if [ -z "$REPO" ]; then
 fi
 
 SOURCE="$REPO/codex-rs/target/release/codex"
+READELF_BIN="${READELF:-readelf}"
 CLI_CODEX="$(command -v codex 2>/dev/null || true)"
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 MANAGED_CODEX="$CODEX_HOME/packages/standalone/current/codex"
@@ -68,6 +69,18 @@ fi
 
 if [ ! -x "$SOURCE" ]; then
   echo "Built fork binary is not executable: $SOURCE" >&2
+  exit 1
+fi
+
+if ! command -v "$READELF_BIN" >/dev/null 2>&1; then
+  echo "Required readelf executable not found: $READELF_BIN" >&2
+  exit 1
+fi
+
+SOURCE_SECTIONS="$("$READELF_BIN" --sections --wide "$SOURCE")"
+if grep -Eq '(^|[[:space:]])\.(debug_info|symtab)[[:space:]]' <<<"$SOURCE_SECTIONS"; then
+  echo "Built fork binary still contains debug or symbol tables: $SOURCE" >&2
+  echo "Run scripts/codex-fork-build.sh to strip it before installation." >&2
   exit 1
 fi
 

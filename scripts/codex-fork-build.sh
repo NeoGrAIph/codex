@@ -15,10 +15,39 @@ if [ ! -d "$CODEX_RS_DIR" ]; then
   exit 1
 fi
 
+STRIP_BIN="${STRIP:-strip}"
+if ! command -v "$STRIP_BIN" >/dev/null 2>&1; then
+  echo "Required strip executable not found: $STRIP_BIN" >&2
+  exit 1
+fi
+
+READELF_BIN="${READELF:-readelf}"
+if ! command -v "$READELF_BIN" >/dev/null 2>&1; then
+  echo "Required readelf executable not found: $READELF_BIN" >&2
+  exit 1
+fi
+
 cd "$CODEX_RS_DIR"
 
 # Build release binary for fast local runs.
 cargo build -p codex-cli --release
+
+# The release profile keeps symbols for upstream packaging. Local fork builds do
+# not publish a symbols archive, so remove them before the binary is installed.
+RELEASE_BINARY="$CODEX_RS_DIR/target/release/codex"
+STRIPPED_BINARY="$(mktemp "$CODEX_RS_DIR/target/release/.codex-stripped.XXXXXX")"
+trap 'rm -f "$STRIPPED_BINARY"' EXIT
+"$STRIP_BIN" --strip-debug --strip-unneeded -o "$STRIPPED_BINARY" "$RELEASE_BINARY"
+chmod --reference="$RELEASE_BINARY" "$STRIPPED_BINARY"
+
+STRIPPED_SECTIONS="$("$READELF_BIN" --sections --wide "$STRIPPED_BINARY")"
+if grep -Eq '(^|[[:space:]])\.(debug_info|symtab)[[:space:]]' <<<"$STRIPPED_SECTIONS"; then
+  echo "Temporary release binary still contains debug or symbol tables after strip: $STRIPPED_BINARY" >&2
+  exit 1
+fi
+
+mv -f "$STRIPPED_BINARY" "$RELEASE_BINARY"
+trap - EXIT
 
 # Record build hash to detect stale binaries.
 BUILD_HASH_FILE="$REPO/scripts/.codex-build-hash"
@@ -67,5 +96,5 @@ PY
 
 echo "$(compute_workspace_hash)" > "$BUILD_HASH_FILE"
 
-echo "Built: $REPO/codex-rs/target/release/codex"
+echo "Built and stripped: $RELEASE_BINARY"
 echo "Build hash recorded: $BUILD_HASH_FILE"
