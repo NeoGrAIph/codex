@@ -18,7 +18,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use toml::Value as TomlValue;
 
-const MAX_AGENT_ROLE_DEVELOPER_INSTRUCTIONS_BYTES: usize = 8 * 1_024;
+const MAX_AGENT_ROLE_DEVELOPER_INSTRUCTIONS_BYTES: usize = 32 * 1_024;
 const MAX_AGENT_ROLE_FILE_BYTES: u64 = 64 * 1_024;
 const MAX_DISCOVERED_AGENT_ROLE_FILES: usize = 256;
 

@@ -7561,7 +7561,7 @@ trust_level = "trusted"
         standalone_agents_dir.join("oversized.toml"),
         format!(
             "name = \"oversized\"\ndescription = \"Oversized role\"\ndeveloper_instructions = \"{}\"\n",
-            "x".repeat(8 * 1_024 + 1)
+            "x".repeat(32 * 1_024 + 1)
         ),
     )
     .await?;
@@ -7578,7 +7578,7 @@ trust_level = "trusted"
     assert!(!config.agent_roles.contains_key("oversized"));
     assert!(
         config.startup_warnings.iter().any(|warning| {
-            warning.contains("developer_instructions must be at most 8192 bytes")
+            warning.contains("developer_instructions must be at most 32768 bytes")
         })
     );
     Ok(())
