@@ -25,8 +25,10 @@ const MAX_DISCOVERED_AGENT_ROLE_FILES: usize = 256;
 #[derive(Debug, Clone, PartialEq)]
 #[doc(hidden)]
 pub struct MaterializedAgentRoleLayer {
+    /// Validated role config, or an empty table for metadata-only role declarations.
     pub(crate) config: TomlValue,
     pub(crate) base_dir: PathBuf,
+    pub(crate) catalog_priority: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -39,6 +41,7 @@ pub(crate) struct LoadedAgentRoles {
 struct LoadedAgentRole {
     declaration: AgentRoleConfig,
     layer: Option<MaterializedAgentRoleLayer>,
+    catalog_priority: usize,
 }
 
 #[derive(Debug)]
@@ -62,7 +65,7 @@ pub(crate) async fn load_agent_roles(
     }
 
     let mut roles: BTreeMap<String, LoadedAgentRole> = BTreeMap::new();
-    for layer in layers {
+    for (catalog_priority, layer) in layers.into_iter().enumerate() {
         let mut layer_roles: BTreeMap<String, LoadedAgentRole> = BTreeMap::new();
         let mut declared_role_files = BTreeSet::new();
         let config_folder = layer.config_folder();
@@ -129,6 +132,7 @@ pub(crate) async fn load_agent_roles(
 
         for (role_name, role) in layer_roles {
             let mut merged_role = role;
+            merged_role.catalog_priority = catalog_priority;
             if let Some(existing_role) = roles.get(&role_name) {
                 merge_missing_role_fields(&mut merged_role.declaration, &existing_role.declaration);
                 if merged_role.layer.is_none() {
@@ -182,6 +186,13 @@ async fn load_agent_roles_without_layers(
 
 fn finish_loaded_agent_roles(roles: BTreeMap<String, LoadedAgentRole>) -> LoadedAgentRoles {
     let mut loaded = LoadedAgentRoles::default();
+    let mut roles = roles.into_iter().collect::<Vec<_>>();
+    roles.sort_by(|(left_name, left), (right_name, right)| {
+        right
+            .catalog_priority
+            .cmp(&left.catalog_priority)
+            .then_with(|| left_name.cmp(right_name))
+    });
     for (role_name, mut role) in roles {
         if let (Some(description), Some(layer)) =
             (role.declaration.description.as_mut(), role.layer.as_ref())
@@ -194,11 +205,30 @@ fn finish_loaded_agent_roles(roles: BTreeMap<String, LoadedAgentRole>) -> Loaded
         loaded
             .declarations
             .insert(role_name.clone(), role.declaration);
-        if let Some(layer) = role.layer {
-            loaded.layers.insert(role_name, layer);
-        }
+        let mut layer = role.layer.unwrap_or_else(|| MaterializedAgentRoleLayer {
+            config: TomlValue::Table(Default::default()),
+            base_dir: PathBuf::new(),
+            catalog_priority: role.catalog_priority,
+        });
+        layer.catalog_priority = role.catalog_priority;
+        loaded.layers.insert(role_name, layer);
     }
     loaded
+}
+
+pub(crate) fn catalog_order(
+    declarations: &BTreeMap<String, AgentRoleConfig>,
+    layers: &BTreeMap<String, MaterializedAgentRoleLayer>,
+) -> Vec<String> {
+    let mut names = declarations.keys().cloned().collect::<Vec<_>>();
+    names.sort_by(|left, right| {
+        layers
+            .get(right)
+            .map_or(0, |layer| layer.catalog_priority)
+            .cmp(&layers.get(left).map_or(0, |layer| layer.catalog_priority))
+            .then_with(|| left.cmp(right))
+    });
+    names
 }
 
 async fn read_declared_role(
@@ -227,6 +257,7 @@ async fn read_declared_role(
         LoadedAgentRole {
             declaration: role,
             layer,
+            catalog_priority: 0,
         },
     ))
 }
@@ -442,6 +473,7 @@ async fn read_materialized_agent_role_file(
         layer: MaterializedAgentRoleLayer {
             config: resolved.config.clone(),
             base_dir: config_base_dir.into_path_buf(),
+            catalog_priority: 0,
         },
         resolved,
     })
@@ -694,6 +726,7 @@ async fn discover_agent_roles_in_dir(
                     nickname_candidates: materialized.resolved.nickname_candidates,
                 },
                 layer: Some(materialized.layer),
+                catalog_priority: 0,
             },
         );
     }

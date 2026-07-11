@@ -38,16 +38,15 @@ fn model_preset(id: &str, show_in_picker: bool) -> ModelPreset {
 
 #[test]
 fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
-    let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions {
-        available_models: vec![
+    let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions::configurable(
+        vec![
             model_preset("visible", /*show_in_picker*/ true),
             model_preset("hidden", /*show_in_picker*/ false),
         ],
-        agent_type_description: "role help".to_string(),
-        hide_agent_type_model_reasoning: false,
-        model_catalog_display: SpawnAgentModelCatalogDisplay::ListAvailable,
-        usage_hint_text: None,
-    });
+        "role help".to_string(),
+        SpawnAgentModelCatalogDisplay::ListAvailable,
+        None,
+    ));
 
     let ToolSpec::Function(ResponsesApiTool {
         description,
@@ -117,13 +116,12 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
 
 #[test]
 fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
-    let tool = create_spawn_agent_tool_v1(SpawnAgentToolOptions {
-        available_models: Vec::new(),
-        agent_type_description: "role help".to_string(),
-        hide_agent_type_model_reasoning: false,
-        model_catalog_display: SpawnAgentModelCatalogDisplay::ListAvailable,
-        usage_hint_text: None,
-    });
+    let tool = create_spawn_agent_tool_v1(SpawnAgentToolOptions::configurable(
+        Vec::new(),
+        "role help".to_string(),
+        SpawnAgentModelCatalogDisplay::ListAvailable,
+        None,
+    ));
 
     let ToolSpec::Namespace(namespace) = tool else {
         panic!("spawn_agent v1 should be a namespace tool");
@@ -167,8 +165,8 @@ fn spawn_agent_tool_v1_keeps_legacy_fork_context_field() {
 
 #[test]
 fn spawn_agent_tool_caps_visible_model_summaries() {
-    let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions {
-        available_models: vec![
+    let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions::configurable(
+        vec![
             model_preset("first", /*show_in_picker*/ true),
             model_preset("second", /*show_in_picker*/ true),
             model_preset("third", /*show_in_picker*/ true),
@@ -176,11 +174,10 @@ fn spawn_agent_tool_caps_visible_model_summaries() {
             model_preset("fifth", /*show_in_picker*/ true),
             model_preset("sixth", /*show_in_picker*/ true),
         ],
-        agent_type_description: "role help".to_string(),
-        hide_agent_type_model_reasoning: false,
-        model_catalog_display: SpawnAgentModelCatalogDisplay::ListAvailable,
-        usage_hint_text: None,
-    });
+        "role help".to_string(),
+        SpawnAgentModelCatalogDisplay::ListAvailable,
+        None,
+    ));
 
     let ToolSpec::Function(ResponsesApiTool { description, .. }) = tool else {
         panic!("spawn_agent should be a function tool");
@@ -218,13 +215,7 @@ fn spawn_agent_tool_caps_reasoning_effort_value_length() {
 
 #[test]
 fn spawn_agent_tool_hides_service_tier_with_spawn_metadata() {
-    let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions {
-        available_models: vec![model_preset("visible", /*show_in_picker*/ true)],
-        agent_type_description: "role help".to_string(),
-        hide_agent_type_model_reasoning: true,
-        model_catalog_display: SpawnAgentModelCatalogDisplay::ListAvailable,
-        usage_hint_text: None,
-    });
+    let tool = create_spawn_agent_tool_v2(SpawnAgentToolOptions::hidden());
 
     let ToolSpec::Function(ResponsesApiTool {
         description,

@@ -8087,6 +8087,9 @@ nickname_candidates = ["Noether"]
 description = "Critic role from config"
 config_file = "./agents/critic.toml"
 nickname_candidates = ["Ada"]
+
+[agents.a-global-metadata]
+description = "Global metadata-only role"
 "#
         ),
     )
@@ -8110,9 +8113,25 @@ model = "gpt-4.1"
 "#,
     )
     .await?;
+    tokio::fs::write(
+        home_agents_dir.join("global-only.toml"),
+        r#"
+name = "global-only"
+description = "Global standalone role"
+developer_instructions = "Work globally"
+"#,
+    )
+    .await?;
 
     let standalone_agents_dir = repo_root.path().join(".codex").join("agents");
     tokio::fs::create_dir_all(&standalone_agents_dir).await?;
+    tokio::fs::write(
+        repo_root.path().join(".codex").join(CONFIG_TOML_FILE),
+        r#"[agents.z-local-metadata]
+description = "Project metadata-only role"
+"#,
+    )
+    .await?;
     tokio::fs::write(
         standalone_agents_dir.join("researcher.toml"),
         r#"
@@ -8209,6 +8228,27 @@ model = "gpt-5.2"
             .and_then(|role| role.nickname_candidates.as_ref())
             .map(|candidates| candidates.iter().map(String::as_str).collect::<Vec<_>>()),
         Some(vec!["Sagan"])
+    );
+    assert_eq!(
+        config
+            .agent_roles
+            .get("global-only")
+            .and_then(|role| role.description.as_deref()),
+        Some("Global standalone role")
+    );
+    assert_eq!(
+        super::agent_roles::catalog_order(
+            &config.agent_roles,
+            &config.materialized_agent_role_layers,
+        ),
+        vec![
+            "researcher",
+            "writer",
+            "z-local-metadata",
+            "a-global-metadata",
+            "critic",
+            "global-only",
+        ]
     );
 
     Ok(())

@@ -1,15 +1,18 @@
 use super::*;
 use std::collections::BTreeSet;
 
-pub(crate) const MAX_AGENT_ROLE_CATALOG_JSON_BYTES: usize = 2_048;
+pub(crate) const MAX_AGENT_ROLE_CATALOG_JSON_BYTES: usize = 8 * 1_024;
 const MAX_AGENT_ROLE_CATALOG_ENTRIES: usize = 32;
 const MAX_AGENT_ROLE_ENTRY_JSON_BYTES: usize = 768;
 const TRUNCATED_ROLE_ENTRY_MARKER: &str = "\n[role metadata truncated]";
 
 /// Builds the spawn-agent tool description text from built-in and configured roles.
-pub(crate) fn build(user_defined_agent_roles: &BTreeMap<String, AgentRoleConfig>) -> String {
+pub(crate) fn build(
+    user_defined_agent_roles: &BTreeMap<String, AgentRoleConfig>,
+    catalog_order: &[String],
+) -> String {
     let built_in_roles = built_in::configs();
-    build_from_configs(built_in_roles, user_defined_agent_roles)
+    build_from_configs(built_in_roles, user_defined_agent_roles, catalog_order)
 }
 
 /// Builds the historical unbounded V1-only description, including role-locked settings.
@@ -39,25 +42,46 @@ pub(crate) fn build_legacy_v1(
 fn build_from_configs(
     built_in_roles: &BTreeMap<String, AgentRoleConfig>,
     user_defined_roles: &BTreeMap<String, AgentRoleConfig>,
+    catalog_order: &[String],
 ) -> String {
     let mut seen = BTreeSet::new();
     let mut selected_roles = Vec::new();
     let mut default_role = None;
     let mut role_count = 0;
-    for roles in [user_defined_roles, built_in_roles] {
-        for (name, declaration) in roles {
-            if !seen.insert(name.as_str()) {
-                continue;
-            }
-            let order = role_count;
-            role_count += 1;
-            let role = (order, name.as_str(), declaration);
-            if name == DEFAULT_ROLE_NAME {
-                default_role = Some(role);
-            }
-            if selected_roles.len() < MAX_AGENT_ROLE_CATALOG_ENTRIES {
-                selected_roles.push(role);
-            }
+    for name in catalog_order {
+        let Some(declaration) = user_defined_roles.get(name) else {
+            continue;
+        };
+        if seen.insert(name.as_str()) {
+            push_role(
+                name,
+                declaration,
+                &mut role_count,
+                &mut selected_roles,
+                &mut default_role,
+            );
+        }
+    }
+    for (name, declaration) in user_defined_roles {
+        if seen.insert(name.as_str()) {
+            push_role(
+                name,
+                declaration,
+                &mut role_count,
+                &mut selected_roles,
+                &mut default_role,
+            );
+        }
+    }
+    for (name, declaration) in built_in_roles {
+        if seen.insert(name.as_str()) {
+            push_role(
+                name,
+                declaration,
+                &mut role_count,
+                &mut selected_roles,
+                &mut default_role,
+            );
         }
     }
     if let Some(default_role) = default_role
@@ -75,6 +99,24 @@ fn build_from_configs(
         .collect();
 
     bounded_catalog(formatted_roles, role_count)
+}
+
+fn push_role<'a>(
+    name: &'a str,
+    declaration: &'a AgentRoleConfig,
+    role_count: &mut usize,
+    selected_roles: &mut Vec<(usize, &'a str, &'a AgentRoleConfig)>,
+    default_role: &mut Option<(usize, &'a str, &'a AgentRoleConfig)>,
+) {
+    let order = *role_count;
+    *role_count += 1;
+    let role = (order, name, declaration);
+    if name == DEFAULT_ROLE_NAME {
+        *default_role = Some(role);
+    }
+    if selected_roles.len() < MAX_AGENT_ROLE_CATALOG_ENTRIES {
+        selected_roles.push(role);
+    }
 }
 
 fn bounded_catalog(formatted_roles: Vec<(&str, String)>, role_count: usize) -> String {

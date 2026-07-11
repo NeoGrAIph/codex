@@ -87,6 +87,9 @@ pub struct MultiAgentV2ConfigToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "multi_agent_v2_tool_namespace_schema")]
     pub tool_namespace: Option<String>,
+    /// Hides dynamic role and model metadata only from configurable, non-reserved V2 spawn tools.
+    /// The reserved `collaboration.spawn_agent` schema remains canonical, while projected V1 tools
+    /// continue to expose their role catalog.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hide_spawn_agent_metadata: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]

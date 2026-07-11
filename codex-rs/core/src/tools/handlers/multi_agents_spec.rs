@@ -20,14 +20,63 @@ const SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION: &str =
     "Service tier override for the new agent. Omit unless explicitly requested.";
 const MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT_DESCRIPTION: usize = 5;
 const MAX_REASONING_EFFORT_CHARS_IN_SPAWN_AGENT_DESCRIPTION: usize = 64;
+const HIDDEN_AGENT_TYPE_DESCRIPTION: &str =
+    "Optional agent type. Omit it to use the runtime-selected default role.";
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SpawnAgentToolOptions {
-    pub available_models: Vec<ModelPreset>,
-    pub agent_type_description: String,
-    pub hide_agent_type_model_reasoning: bool,
-    pub model_catalog_display: SpawnAgentModelCatalogDisplay,
-    pub usage_hint_text: Option<String>,
+    available_models: Vec<ModelPreset>,
+    agent_type_description: String,
+    hide_agent_type_model_reasoning: bool,
+    model_catalog_display: SpawnAgentModelCatalogDisplay,
+    usage_hint_text: Option<String>,
+}
+
+impl SpawnAgentToolOptions {
+    pub(crate) fn configurable(
+        available_models: Vec<ModelPreset>,
+        agent_type_description: String,
+        model_catalog_display: SpawnAgentModelCatalogDisplay,
+        usage_hint_text: Option<String>,
+    ) -> Self {
+        Self {
+            available_models,
+            agent_type_description,
+            hide_agent_type_model_reasoning: false,
+            model_catalog_display,
+            usage_hint_text,
+        }
+    }
+
+    pub(crate) fn hidden() -> Self {
+        Self {
+            available_models: Vec::new(),
+            agent_type_description: HIDDEN_AGENT_TYPE_DESCRIPTION.to_string(),
+            hide_agent_type_model_reasoning: true,
+            model_catalog_display: SpawnAgentModelCatalogDisplay::ListAvailable,
+            usage_hint_text: None,
+        }
+    }
+
+    pub(crate) fn reserved_collaboration() -> Self {
+        Self {
+            available_models: Vec::new(),
+            agent_type_description: HIDDEN_AGENT_TYPE_DESCRIPTION.to_string(),
+            hide_agent_type_model_reasoning: true,
+            model_catalog_display: SpawnAgentModelCatalogDisplay::ListAvailable,
+            usage_hint_text: None,
+        }
+    }
+
+    pub(crate) fn hides_agent_metadata(&self) -> bool {
+        self.hide_agent_type_model_reasoning
+    }
+}
+
+impl Default for SpawnAgentToolOptions {
+    fn default() -> Self {
+        Self::hidden()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]

@@ -1,5 +1,6 @@
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::agent::next_thread_spawn_depth;
+use crate::config::DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::tools::code_mode::execute_spec::create_code_mode_tool;
@@ -97,8 +98,6 @@ use tracing::warn;
 
 const MULTI_AGENT_V2_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 const MULTI_AGENT_V1_PROJECTION_USAGE_HINT: &str = "Use these legacy id-based lifecycle tools only when the V1 contract is required; otherwise prefer the native V2 collaboration tools.";
-const HIDDEN_AGENT_TYPE_DESCRIPTION: &str =
-    "Optional agent type. Omit it to use the runtime-selected default role.";
 const IMAGE_GEN_NAMESPACE: &str = "image_gen";
 const IMAGEGEN_TOOL_NAME: &str = "imagegen";
 
@@ -185,7 +184,7 @@ fn build_tool_specs_and_registry(
         dynamic_tools,
     } = params;
     let default_agent_type_description =
-        crate::agent::role::spawn_tool_spec::build(&std::collections::BTreeMap::new());
+        crate::agent::role::spawn_tool_spec::build(&std::collections::BTreeMap::new(), &[]);
     let context = CoreToolPlanContext {
         step_context,
         mcp_tools: mcp_tools.as_deref(),
@@ -340,6 +339,10 @@ fn namespace_tools_enabled(turn_context: &TurnContext) -> bool {
     turn_context.provider.capabilities().namespace_tools
 }
 
+fn uses_reserved_native_spawn_agent_schema(tool_namespace: Option<&str>) -> bool {
+    tool_namespace == Some(DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE)
+}
+
 fn multi_agent_v2_enabled(turn_context: &TurnContext) -> bool {
     turn_context.multi_agent_version == MultiAgentVersion::V2
 }
@@ -423,7 +426,11 @@ fn agent_type_description(
     default_agent_type_description: &str,
 ) -> String {
     let agent_type_description = if multi_agent_v2_enabled(turn_context) {
-        crate::agent::role::spawn_tool_spec::build(&turn_context.config.agent_roles)
+        let catalog_order = crate::config::agent_roles::catalog_order(
+            &turn_context.config.agent_roles,
+            &turn_context.config.materialized_agent_role_layers,
+        );
+        crate::agent::role::spawn_tool_spec::build(&turn_context.config.agent_roles, &catalog_order)
     } else {
         crate::agent::role::spawn_tool_spec::build_legacy_v1(&turn_context.config.agent_roles)
     };
@@ -807,15 +814,22 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
             let tool_namespace = namespace_tools_enabled(turn_context)
                 .then_some(turn_context.config.multi_agent_v2.tool_namespace.as_deref())
                 .flatten();
+            let native_spawn_agent_options =
+                if uses_reserved_native_spawn_agent_schema(tool_namespace) {
+                    SpawnAgentToolOptions::reserved_collaboration()
+                } else if hide_spawn_agent_metadata {
+                    SpawnAgentToolOptions::hidden()
+                } else {
+                    SpawnAgentToolOptions::configurable(
+                        turn_context.available_models.clone(),
+                        agent_type_description.clone(),
+                        SpawnAgentModelCatalogDisplay::ListAvailable,
+                        turn_context.config.multi_agent_v2.usage_hint_text.clone(),
+                    )
+                };
             planned_tools.add_arc(override_tool_exposure(
                 multi_agent_v2_handler(
-                    SpawnAgentHandlerV2::new(SpawnAgentToolOptions {
-                        available_models: turn_context.available_models.clone(),
-                        agent_type_description: agent_type_description.clone(),
-                        hide_agent_type_model_reasoning: hide_spawn_agent_metadata,
-                        model_catalog_display: SpawnAgentModelCatalogDisplay::ListAvailable,
-                        usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
-                    }),
+                    SpawnAgentHandlerV2::new(native_spawn_agent_options),
                     tool_namespace,
                 ),
                 exposure,
@@ -845,17 +859,12 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
             ));
             add_multi_agent_v1_tools(
                 planned_tools,
-                SpawnAgentToolOptions {
-                    available_models: Vec::new(),
-                    agent_type_description: if hide_spawn_agent_metadata {
-                        HIDDEN_AGENT_TYPE_DESCRIPTION.to_string()
-                    } else {
-                        agent_type_description
-                    },
-                    hide_agent_type_model_reasoning: false,
-                    model_catalog_display: SpawnAgentModelCatalogDisplay::OmitForProjection,
-                    usage_hint_text: Some(MULTI_AGENT_V1_PROJECTION_USAGE_HINT.to_string()),
-                },
+                SpawnAgentToolOptions::configurable(
+                    Vec::new(),
+                    agent_type_description,
+                    SpawnAgentModelCatalogDisplay::OmitForProjection,
+                    Some(MULTI_AGENT_V1_PROJECTION_USAGE_HINT.to_string()),
+                ),
                 WaitAgentHandler::new_projected(context.wait_agent_timeouts),
                 ToolExposure::DirectModelOnly,
             );
@@ -867,13 +876,12 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
             };
             add_multi_agent_v1_tools(
                 planned_tools,
-                SpawnAgentToolOptions {
-                    available_models: turn_context.available_models.clone(),
+                SpawnAgentToolOptions::configurable(
+                    turn_context.available_models.clone(),
                     agent_type_description,
-                    hide_agent_type_model_reasoning: false,
-                    model_catalog_display: SpawnAgentModelCatalogDisplay::ListAvailable,
-                    usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
-                },
+                    SpawnAgentModelCatalogDisplay::ListAvailable,
+                    turn_context.config.multi_agent_v2.usage_hint_text.clone(),
+                ),
                 WaitAgentHandler::new(),
                 exposure,
             );

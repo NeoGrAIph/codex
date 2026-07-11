@@ -2,6 +2,7 @@
 #![allow(clippy::unwrap_used)]
 
 use anyhow::Result;
+use codex_core::config::AgentRoleConfig;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_models_manager::manager::RefreshStrategy;
@@ -30,11 +31,21 @@ use std::time::Instant;
 use tokio::time::sleep;
 
 const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
+const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
 const SPAWN_AGENT_TOOL_NAME: &str = "spawn_agent";
 
 fn spawn_agent_description(body: &Value) -> Option<String> {
     namespace_child_tool(body, MULTI_AGENT_V1_NAMESPACE, SPAWN_AGENT_TOOL_NAME)
         .and_then(|tool| tool.get("description"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn tool_parameter_description(tool: &Value, parameter_name: &str) -> Option<String> {
+    tool.get("parameters")
+        .and_then(|parameters| parameters.get("properties"))
+        .and_then(|properties| properties.get(parameter_name))
+        .and_then(|parameter| parameter.get("description"))
         .and_then(Value::as_str)
         .map(str::to_string)
 }
@@ -108,6 +119,114 @@ async fn wait_for_model_available(manager: &SharedModelsManager, slug: &str) {
         }
         sleep(Duration::from_millis(25)).await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_first_request_keeps_reserved_spawn_agent_canonical_while_v1_projects_roles()
+-> Result<()> {
+    const CUSTOM_ROLE_NAME: &str = "custom";
+    const CUSTOM_ROLE_DESCRIPTION: &str = "Custom role description";
+    const CUSTOM_USAGE_HINT: &str = "custom native tool usage hint";
+
+    let server = start_mock_server().await;
+    mount_models_once(
+        &server,
+        ModelsResponse {
+            models: vec![test_model_info(
+                "visible-model",
+                "Visible Model",
+                "Visible model description",
+                ModelVisibility::List,
+                ReasoningEffort::Medium,
+                vec![ReasoningEffortPreset {
+                    effort: ReasoningEffort::Medium,
+                    description: "Balanced".to_string(),
+                }],
+                Vec::new(),
+            )],
+        },
+    )
+    .await;
+    let resp_mock = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
+    )
+    .await;
+
+    let mut builder = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_model("visible-model")
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::Collab)
+                .expect("test config should allow feature update");
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test config should allow feature update");
+            config.multi_agent_v2.hide_spawn_agent_metadata = false;
+            config.multi_agent_v2.usage_hint_text = Some(CUSTOM_USAGE_HINT.to_string());
+            config.agent_roles.insert(
+                CUSTOM_ROLE_NAME.to_string(),
+                AgentRoleConfig {
+                    description: Some(CUSTOM_ROLE_DESCRIPTION.to_string()),
+                    ..Default::default()
+                },
+            );
+        });
+    let test = builder.build(&server).await?;
+    wait_for_model_available(&test.thread_manager.get_models_manager(), "visible-model").await;
+
+    test.submit_turn("hello").await?;
+
+    let body = resp_mock.single_request().body_json();
+    let native_spawn_agent =
+        namespace_child_tool(&body, MULTI_AGENT_V2_NAMESPACE, SPAWN_AGENT_TOOL_NAME)
+            .expect("V2 request should expose native collaboration.spawn_agent");
+    let native_properties = native_spawn_agent
+        .get("parameters")
+        .and_then(|parameters| parameters.get("properties"))
+        .and_then(Value::as_object)
+        .expect("native spawn_agent should use object params");
+    for property in ["message", "task_name", "fork_turns"] {
+        assert!(
+            native_properties.contains_key(property),
+            "expected native spawn_agent to expose `{property}`"
+        );
+    }
+    for property in [
+        "items",
+        "fork_context",
+        "agent_type",
+        "model",
+        "reasoning_effort",
+        "service_tier",
+    ] {
+        assert!(
+            !native_properties.contains_key(property),
+            "reserved native spawn_agent must not expose dynamic `{property}`"
+        );
+    }
+    let native_spawn_agent_json =
+        serde_json::to_string(native_spawn_agent).expect("serialize native spawn_agent");
+    for unexpected in [CUSTOM_ROLE_NAME, CUSTOM_ROLE_DESCRIPTION, CUSTOM_USAGE_HINT] {
+        assert!(
+            !native_spawn_agent_json.contains(unexpected),
+            "reserved native spawn_agent should not include dynamic text {unexpected:?}: {native_spawn_agent_json}"
+        );
+    }
+
+    let projected_v1_spawn_agent =
+        namespace_child_tool(&body, MULTI_AGENT_V1_NAMESPACE, SPAWN_AGENT_TOOL_NAME)
+            .expect("V2 request should expose projected multi_agent_v1.spawn_agent");
+    let projected_v1_agent_type_description =
+        tool_parameter_description(projected_v1_spawn_agent, "agent_type")
+            .expect("projected V1 spawn_agent should describe available roles");
+    assert!(projected_v1_agent_type_description.contains(CUSTOM_ROLE_NAME));
+    assert!(projected_v1_agent_type_description.contains(CUSTOM_ROLE_DESCRIPTION));
+
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

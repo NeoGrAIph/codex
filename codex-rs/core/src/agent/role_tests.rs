@@ -769,7 +769,7 @@ fn spawn_tool_spec_build_deduplicates_user_defined_built_in_roles() {
         ("researcher".to_string(), AgentRoleConfig::default()),
     ]);
 
-    let spec = spawn_tool_spec::build(&user_defined_roles);
+    let spec = spawn_tool_spec::build(&user_defined_roles, &[]);
 
     assert!(spec.contains("researcher: no description"));
     assert!(spec.contains("explorer: {\nuser override\n}"));
@@ -788,7 +788,7 @@ fn spawn_tool_spec_lists_user_defined_roles_before_built_ins() {
         },
     )]);
 
-    let spec = spawn_tool_spec::build(&user_defined_roles);
+    let spec = spawn_tool_spec::build(&user_defined_roles, &[]);
     let user_index = spec.find("aaa: {\nfirst\n}").expect("find user role");
     let built_in_index = spec
         .find("default: {\nDefault agent.\n}")
@@ -840,7 +840,7 @@ fn spawn_tool_spec_bounds_role_catalog_and_preserves_default_role() {
         })
         .collect::<BTreeMap<_, _>>();
 
-    let spec = spawn_tool_spec::build(&user_defined_roles);
+    let spec = spawn_tool_spec::build(&user_defined_roles, &[]);
 
     assert!(
         serde_json::to_string(&spec)
@@ -851,6 +851,45 @@ fn spawn_tool_spec_bounds_role_catalog_and_preserves_default_role() {
     assert!(spec.contains("[role metadata truncated]"));
     assert!(spec.contains("additional role(s) omitted"));
     assert!(spec.contains("default: {\nDefault agent.\n}"));
+}
+
+#[test]
+fn spawn_tool_spec_prioritizes_catalog_order_before_lower_priority_roles() {
+    let local_roles = (0..8).map(|index| format!("local_{index:02}"));
+    let global_roles = (0..32).map(|index| format!("global_{index:02}"));
+    let catalog_order = local_roles
+        .clone()
+        .chain(global_roles.clone())
+        .collect::<Vec<_>>();
+    let user_defined_roles = local_roles
+        .chain(global_roles)
+        .map(|name| {
+            (
+                name,
+                AgentRoleConfig {
+                    description: Some("role description ".repeat(20)),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let spec = spawn_tool_spec::build(&user_defined_roles, &catalog_order);
+
+    for index in 0..8 {
+        assert!(
+            spec.contains(&format!("local_{index:02}: {{")),
+            "expected every project-priority role in the bounded catalog: {spec}"
+        );
+    }
+    assert!(spec.contains("additional role(s) omitted"));
+    assert!(spec.contains("default: {\nDefault agent.\n}"));
+    assert!(
+        serde_json::to_string(&spec)
+            .expect("serialize role catalog")
+            .len()
+            <= spawn_tool_spec::MAX_AGENT_ROLE_CATALOG_JSON_BYTES
+    );
 }
 
 #[test]

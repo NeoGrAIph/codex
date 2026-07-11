@@ -30,16 +30,27 @@ use codex_tools::ToolSpec;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
-use super::HIDDEN_AGENT_TYPE_DESCRIPTION;
 use super::MULTI_AGENT_V1_PROJECTION_USAGE_HINT;
+use super::uses_reserved_native_spawn_agent_schema;
+use crate::agent::role::spawn_tool_spec;
 use crate::config::AgentRoleConfig;
 use crate::config::CurrentTimeReminderConfig;
+use crate::config::DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::ToolSearchHandlerCache;
 use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::handlers::multi_agents_spec::SPAWN_AGENT_MODEL_CATALOG_OMITTED_GUIDANCE;
+
+#[test]
+fn only_the_default_v2_namespace_uses_the_reserved_spawn_agent_schema() {
+    assert!(uses_reserved_native_spawn_agent_schema(Some(
+        DEFAULT_MULTI_AGENT_V2_TOOL_NAMESPACE
+    )));
+    assert!(!uses_reserved_native_spawn_agent_schema(None));
+    assert!(!uses_reserved_native_spawn_agent_schema(Some("agents")));
+}
 use crate::tools::router::ToolRouter;
 use crate::tools::router::ToolRouterParams;
 use crate::tools::router::ToolSuggestCandidates;
@@ -1357,8 +1368,8 @@ async fn multi_agent_feature_exposes_v1_alongside_v2() {
     assert!(spawn_agent_description.contains(
         "Note that passing `fork_turns=\"none\"` will not pass any surrounding context to the spawned subagent"
     ));
-    assert!(spawn_agent_description.contains(V2_USAGE_HINT));
-    assert!(spawn_agent_description.contains(V2_MODEL_DESCRIPTION));
+    assert!(!spawn_agent_description.contains(V2_USAGE_HINT));
+    assert!(!spawn_agent_description.contains(V2_MODEL_DESCRIPTION));
     let v2_properties = spawn_agent
         .parameters
         .properties
@@ -1370,18 +1381,19 @@ async fn multi_agent_feature_exposes_v1_alongside_v2() {
             "expected v2 spawn_agent to expose `{property}`"
         );
     }
-    for property in ["items", "fork_context"] {
+    for property in [
+        "items",
+        "fork_context",
+        "agent_type",
+        "model",
+        "reasoning_effort",
+        "service_tier",
+    ] {
         assert!(
             !v2_properties.contains_key(property),
-            "expected v2 spawn_agent to omit legacy `{property}`"
+            "expected reserved v2 spawn_agent to omit dynamic `{property}`"
         );
     }
-    let v2_agent_type_description = v2_properties
-        .get("agent_type")
-        .and_then(|schema| schema.description.as_deref())
-        .expect("v2 spawn_agent should describe available roles");
-    assert!(v2_agent_type_description.contains(CUSTOM_ROLE_NAME));
-    assert!(v2_agent_type_description.contains(CUSTOM_ROLE_DESCRIPTION));
     let v2_v1_spawn_agent = v2.namespace_function(MULTI_AGENT_V1_NAMESPACE, "spawn_agent");
     assert!(
         v2_v1_spawn_agent
@@ -1414,18 +1426,13 @@ async fn multi_agent_feature_exposes_v1_alongside_v2() {
         .get("agent_type")
         .and_then(|schema| schema.description.as_deref())
         .expect("projected v1 spawn_agent should describe available roles");
-    assert_eq!(v1_agent_type_description, v2_agent_type_description);
-    assert!(
-        serde_json::to_string(v2_agent_type_description)
-            .expect("serialize V2 role catalog")
-            .len()
-            <= 2_048
-    );
+    assert!(v1_agent_type_description.contains(CUSTOM_ROLE_NAME));
+    assert!(v1_agent_type_description.contains(CUSTOM_ROLE_DESCRIPTION));
     assert!(
         serde_json::to_string(v1_agent_type_description)
             .expect("serialize projected V1 role catalog")
             .len()
-            <= 2_048
+            <= spawn_tool_spec::MAX_AGENT_ROLE_CATALOG_JSON_BYTES
     );
     for property in ["message", "items", "fork_context"] {
         assert!(
@@ -1485,15 +1492,15 @@ async fn multi_agent_feature_exposes_v1_alongside_v2() {
     );
     let direct_v1_spawn_agent =
         direct_model_only.namespace_function(MULTI_AGENT_V1_NAMESPACE, "spawn_agent");
-    assert_eq!(
-        direct_v1_spawn_agent
-            .parameters
-            .properties
-            .as_ref()
-            .and_then(|properties| properties.get("agent_type"))
-            .and_then(|schema| schema.description.as_deref()),
-        Some(HIDDEN_AGENT_TYPE_DESCRIPTION)
-    );
+    let direct_v1_agent_type_description = direct_v1_spawn_agent
+        .parameters
+        .properties
+        .as_ref()
+        .and_then(|properties| properties.get("agent_type"))
+        .and_then(|schema| schema.description.as_deref())
+        .expect("projected v1 spawn_agent should describe available roles");
+    assert!(direct_v1_agent_type_description.contains(CUSTOM_ROLE_NAME));
+    assert!(direct_v1_agent_type_description.contains(CUSTOM_ROLE_DESCRIPTION));
     assert!(!direct_v1_spawn_agent.description.contains(CUSTOM_ROLE_NAME));
 }
 
@@ -1589,10 +1596,22 @@ async fn v1_multi_agent_tools_defer_when_tool_search_available() {
 
 #[tokio::test]
 async fn multi_agent_v2_can_use_configured_tool_namespace() {
+    const CUSTOM_ROLE_NAME: &str = "configured-namespace-auditor";
+    const CUSTOM_ROLE_DESCRIPTION: &str = "Audits a configured V2 namespace.";
+    const CUSTOM_USAGE_HINT: &str = "configured namespace usage guidance";
     let namespaced = probe(|turn| {
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
         update_config(turn, |config| {
             config.multi_agent_v2.tool_namespace = Some("agents".to_string());
+            config.multi_agent_v2.hide_spawn_agent_metadata = false;
+            config.multi_agent_v2.usage_hint_text = Some(CUSTOM_USAGE_HINT.to_string());
+            config.agent_roles.insert(
+                CUSTOM_ROLE_NAME.to_string(),
+                AgentRoleConfig {
+                    description: Some(CUSTOM_ROLE_DESCRIPTION.to_string()),
+                    ..Default::default()
+                },
+            );
         });
     })
     .await;
@@ -1663,6 +1682,25 @@ async fn multi_agent_v2_can_use_configured_tool_namespace() {
             "expected {tool_name} in v1 namespace"
         );
     }
+    let spawn_agent = namespaced.namespace_function("agents", "spawn_agent");
+    let properties = spawn_agent
+        .parameters
+        .properties
+        .as_ref()
+        .expect("configured spawn_agent should use object params");
+    for property in ["agent_type", "model", "reasoning_effort", "service_tier"] {
+        assert!(
+            properties.contains_key(property),
+            "expected configured V2 spawn_agent to expose `{property}`"
+        );
+    }
+    assert!(spawn_agent.description.contains(CUSTOM_USAGE_HINT));
+    let agent_type_description = properties
+        .get("agent_type")
+        .and_then(|schema| schema.description.as_deref())
+        .expect("configured V2 spawn_agent should describe roles");
+    assert!(agent_type_description.contains(CUSTOM_ROLE_NAME));
+    assert!(agent_type_description.contains(CUSTOM_ROLE_DESCRIPTION));
 }
 
 #[tokio::test]

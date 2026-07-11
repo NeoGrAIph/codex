@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use anyhow::Result;
+use codex_core::config::AgentRoleConfig;
 use codex_core::config::Config;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -81,6 +82,19 @@ fn namespaced_tool_names<'a>(tools: &'a [Value], namespace: &str) -> Vec<&'a str
         .collect()
 }
 
+fn namespaced_tool<'a>(tools: &'a [Value], namespace: &str, tool_name: &str) -> Option<&'a Value> {
+    tools
+        .iter()
+        .find(|tool| {
+            tool.get("type").and_then(Value::as_str) == Some("namespace")
+                && tool.get("name").and_then(Value::as_str) == Some(namespace)
+        })?
+        .get("tools")?
+        .as_array()?
+        .iter()
+        .find(|tool| tool.get("name").and_then(Value::as_str) == Some(tool_name))
+}
+
 fn additional_tools(body: &Value) -> Result<&[Value]> {
     body["input"]
         .as_array()
@@ -147,52 +161,104 @@ async fn responses_lite_uses_input_items_for_instructions_and_tools() -> Result<
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_lite_exposes_native_v2_and_projected_v1_namespaces() -> Result<()> {
-    let server = responses::start_mock_server().await;
-    let response_mock = responses::mount_sse_once(
-        &server,
-        responses::sse(vec![
-            responses::ev_response_created("resp-1"),
-            responses::ev_completed("resp-1"),
-        ]),
-    )
-    .await;
-    let mut builder = test_codex()
-        .with_model_info_override("gpt-5.4", |model_info| {
-            model_info.use_responses_lite = true;
-        })
-        .with_config(|config| {
+    for model in ["gpt-5.6-sol", "gpt-5.6-terra"] {
+        let server = responses::start_mock_server().await;
+        let response_mock = responses::mount_sse_once(
+            &server,
+            responses::sse(vec![
+                responses::ev_response_created("resp-1"),
+                responses::ev_completed("resp-1"),
+            ]),
+        )
+        .await;
+        let mut builder = test_codex().with_model(model).with_config(|config| {
             config
                 .features
                 .enable(Feature::MultiAgentV2)
                 .expect("test config should allow multi-agent V2");
+            config.agent_roles.insert(
+                "project-local".to_string(),
+                AgentRoleConfig {
+                    description: Some("Project-local role".to_string()),
+                    ..Default::default()
+                },
+            );
         });
-    let test = builder.build(&server).await?;
+        let test = builder.build(&server).await?;
 
-    test.submit_turn("delegate if useful").await?;
+        test.submit_turn("delegate if useful").await?;
 
-    let body = response_mock.single_request().body_json();
-    let tools = additional_tools(&body)?;
-    assert_eq!(
-        namespaced_tool_names(tools, "collaboration"),
-        vec![
-            "followup_task",
-            "interrupt_agent",
-            "list_agents",
-            "send_message",
-            "spawn_agent",
-            "wait_agent",
-        ]
-    );
-    assert_eq!(
-        namespaced_tool_names(tools, "multi_agent_v1"),
-        vec![
-            "close_agent",
-            "resume_agent",
-            "send_input",
-            "spawn_agent",
-            "wait_agent",
-        ]
-    );
+        let body = response_mock.single_request().body_json();
+        let tools = additional_tools(&body)?;
+        assert_eq!(
+            namespaced_tool_names(tools, "collaboration"),
+            vec![
+                "followup_task",
+                "interrupt_agent",
+                "list_agents",
+                "send_message",
+                "spawn_agent",
+                "wait_agent",
+            ],
+            "unexpected native V2 tools for {model}"
+        );
+        assert_eq!(
+            namespaced_tool_names(tools, "multi_agent_v1"),
+            vec![
+                "close_agent",
+                "resume_agent",
+                "send_input",
+                "spawn_agent",
+                "wait_agent",
+            ],
+            "unexpected projected V1 tools for {model}"
+        );
+
+        let native_spawn = namespaced_tool(tools, "collaboration", "spawn_agent")
+            .expect("native spawn_agent should be present");
+        // Responses transmits only the input tool schema; handler output schemas are not part of
+        // the provider-reserved contract. Keep this full object literal independent from the
+        // schema builder so strict-model compatibility drift cannot update the fixture silently.
+        assert_eq!(
+            native_spawn,
+            &serde_json::json!({
+                "type": "function",
+                "name": "spawn_agent",
+                "description": "\n        \n        Spawns an agent to work on the specified task. If your current task is `/root/task1` and you spawn_agent with task_name \"task_3\" the agent will have canonical task name `/root/task1/task_3`.\nYou are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.\nThe spawned agent will have the same tools as you and the ability to spawn its own subagents.\n\nOnly call this tool for a concrete, bounded subtask that can run independently alongside useful local work; otherwise continue locally.\nIt will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.\nThe new agent's canonical task name will be provided to it along with the message.\n\nNote that passing `fork_turns=\"none\"` will not pass any surrounding context to the spawned subagent, which may cause the agent to lack the context it needs to complete its task, whereas `fork_turns=\"all\"` will provide the subagent with all surrounding context.",
+                "strict": false,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "fork_turns": {
+                            "type": "string",
+                            "description": "Optional number of turns to fork. Defaults to `all`. Use `none`, `all`, or a positive integer string such as `3` to fork only the most recent turns."
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "Initial plain-text task for the new agent.",
+                            "encrypted": true
+                        },
+                        "task_name": {
+                            "type": "string",
+                            "description": "Task name for the new agent. Use lowercase letters, digits, and underscores."
+                        }
+                    },
+                    "required": ["task_name", "message"],
+                    "additionalProperties": false
+                }
+            }),
+            "reserved schema drifted for {model}"
+        );
+
+        let projected_spawn = namespaced_tool(tools, "multi_agent_v1", "spawn_agent")
+            .expect("projected V1 spawn_agent should be present");
+        let projected_agent_type =
+            projected_spawn["parameters"]["properties"]["agent_type"]["description"]
+                .as_str()
+                .expect("projected V1 agent_type should have a description");
+        assert!(projected_agent_type.contains("project-local"));
+        assert!(projected_agent_type.contains("Project-local role"));
+    }
 
     Ok(())
 }

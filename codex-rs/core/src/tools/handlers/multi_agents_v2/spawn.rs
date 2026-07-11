@@ -12,9 +12,16 @@ use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
 use codex_protocol::AgentPath;
 use codex_tools::ToolSpec;
 
-#[derive(Default)]
 pub(crate) struct Handler {
     options: SpawnAgentToolOptions,
+}
+
+impl Default for Handler {
+    fn default() -> Self {
+        Self {
+            options: SpawnAgentToolOptions::reserved_collaboration(),
+        }
+    }
 }
 
 impl Handler {
@@ -33,12 +40,18 @@ impl ToolExecutor<ToolInvocation> for Handler {
     }
 
     fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
-        Box::pin(async move { handle_spawn_agent(invocation).await.map(boxed_tool_output) })
+        let hide_agent_metadata = self.options.hides_agent_metadata();
+        Box::pin(async move {
+            handle_spawn_agent(invocation, hide_agent_metadata)
+                .await
+                .map(boxed_tool_output)
+        })
     }
 }
 
 async fn handle_spawn_agent(
     invocation: ToolInvocation,
+    hide_agent_metadata: bool,
 ) -> Result<SpawnAgentResult, FunctionCallError> {
     let ToolInvocation {
         session,
@@ -163,7 +176,6 @@ async fn handle_spawn_agent(
     );
     let task_name = String::from(new_agent_path);
 
-    let hide_agent_metadata = turn.config.multi_agent_v2.hide_spawn_agent_metadata;
     if hide_agent_metadata {
         Ok(SpawnAgentResult::HiddenMetadata { task_name })
     } else {
