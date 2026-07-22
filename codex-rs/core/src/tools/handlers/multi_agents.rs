@@ -6,8 +6,11 @@
 //! then optionally layer role-specific config on top.
 
 use crate::agent::AgentStatus;
+use crate::agent::control::ProjectedV1LifecycleTarget;
+use crate::agent::control::ValidatedV1Thread;
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::function_tool::FunctionCallError;
+use crate::session::session::Session;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
@@ -35,6 +38,31 @@ use serde_json::Value as JsonValue;
 
 const MULTI_AGENT_TOOL_SEARCH_SOURCE_NAME: &str = "Multi-agent tools";
 const MULTI_AGENT_TOOL_SEARCH_SOURCE_DESCRIPTION: &str = "Spawn and manage sub-agents.";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum V1ToolInvocationMode {
+    #[default]
+    Native,
+    ProjectedFromV2,
+}
+
+pub(crate) async fn resolve_v1_lifecycle_target(
+    session: &Session,
+    invocation_mode: V1ToolInvocationMode,
+    thread_id: ThreadId,
+) -> Result<Option<ProjectedV1LifecycleTarget>, FunctionCallError> {
+    if invocation_mode == V1ToolInvocationMode::Native {
+        return Ok(None);
+    }
+
+    session
+        .services
+        .agent_control
+        .resolve_v1_lifecycle_target(thread_id)
+        .await
+        .map(Some)
+        .map_err(|err| collab_agent_error(thread_id, err))
+}
 
 pub(crate) fn parse_agent_id_target(target: &str) -> Result<ThreadId, FunctionCallError> {
     ThreadId::from_string(target).map_err(|err| {
@@ -72,8 +100,11 @@ fn multi_agent_tool_search_info(
 }
 
 pub(crate) use close_agent::Handler as CloseAgentHandler;
+pub(crate) use close_agent::ProjectedHandler as ProjectedCloseAgentHandler;
 pub(crate) use resume_agent::Handler as ResumeAgentHandler;
+pub(crate) use resume_agent::ProjectedHandler as ProjectedResumeAgentHandler;
 pub(crate) use send_input::Handler as SendInputHandler;
+pub(crate) use send_input::ProjectedHandler as ProjectedSendInputHandler;
 pub(crate) use spawn::Handler as SpawnAgentHandler;
 pub(crate) use wait::Handler as WaitAgentHandler;
 

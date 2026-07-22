@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::control::MultiAgentRuntimeIntent;
 use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
 use crate::agent::next_thread_spawn_depth;
@@ -9,6 +10,7 @@ use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
 use codex_protocol::AgentPath;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
 
 #[derive(Default)]
@@ -71,6 +73,7 @@ async fn handle_spawn_agent(
         &session,
         turn.as_ref(),
         &mut config,
+        MultiAgentVersion::V2,
         args.model.as_deref(),
         args.reasoning_effort.clone(),
     )
@@ -119,6 +122,7 @@ async fn handle_spawn_agent(
                     fork_mode,
                     parent_thread_id: Some(session.thread_id),
                     environments: Some(turn.environments.to_selections()),
+                    multi_agent_runtime: MultiAgentRuntimeIntent::Inherit,
                 },
             ),
     )

@@ -13,6 +13,7 @@
 
 | Возможность | Пользовательский смысл | Статус | Основные ветки |
 | --- | --- | --- | --- |
+| [Native multi_agent_v1 child under V2](multi-agent-v1-native-child-under-v2.md) | Effective-V2 models получают дополнительный native V1 tool surface; spawn создаёт настоящий UUID/pathless V1 child с V1 lifecycle и persistence. | Upstream-first порт на `rust-v0.145.0` реализован и локально проверен; ожидает serial integration, CI и acceptance | `fork/144.4`, `fork/145` |
 | [Subagent Workbench / agents overlay](subagent-workbench.md) | TUI-окно для просмотра sub-agents, их статусов и контекста. Польза: легче управлять параллельной работой и понимать, кто чем занят. | Переносилась между release-ветками; native `rust-v0.140.0` покрывает частично | `fork/saw`, `fork/101`, `fork/106`, `fork/107`, `fork/118`, `fork/130`, `chrome_plugin` |
 | [Interactive collaboration mode](interactive-collaboration-mode.md) | Режим интерактивного взаимодействия с явной индикацией в TUI. Польза: пользователю проще взаимодействовать с агентом ввиду возможности интерактивного выбора из предложенных вариантов. | Историческая fork-возможность; native `rust-v0.140.0` покрывает частично | `fork/101` |
 | [Agent role templates](agent-role-templates.md) | Шаблоны ролей для sub-agents: explorer, worker, reviewer и т.п. Польза: agents стартуют с понятной специализацией и не требуют каждый раз ручного описания роли. | Переносилась между release-ветками; native `rust-v0.140.0` покрывает частично | `fork/saw`, `fork/106`, `fork/107`, `fork/111`, `fork/118`, `fork/130`, `chrome_plugin` |
@@ -24,6 +25,6 @@
 | [run_skill_script tool](run-skill-script.md) | Tool для запуска scripts из skills через unified exec. Польза: увеличение эффективности и качества работы agent, так как skill может не только описывать действия, но и выполнять подготовленный helper. | Экспериментальная fork-возможность; native `rust-v0.140.0` покрывает частично | `fork/multi-agent` |
 | [Provider-aware models and DeepSeek](provider-aware-models-deepseek.md) | Поддержка моделей разных providers, включая DeepSeek через Chat Completions. Польза: пользователь/agent выбирает не только model, но и корректный provider. | Реализовано в исторической fork-ветке; native `rust-v0.140.0` покрывает частично | `fork/130`, `chrome_plugin` |
 
-## Текущий draft/uncommitted state
+## Draft/uncommitted state
 
-На момент создания ledger текущая ветка `fork/140` не содержит коммитов поверх `fork/140-upstream`; актуальные изменения находятся в working tree. Они отражены только как draft в соответствующих feature docs, пока не будут закоммичены.
+Ledger не задаёт одну глобальную current branch для всех features. Незакоммиченный checkpoint отражается в status соответствующей строки и её feature/project документации; после commit branch/commit provenance обновляется в тех же артефактах.

@@ -13,6 +13,7 @@ use std::time::UNIX_EPOCH;
 use crate::agent::AgentControl;
 use crate::agent::AgentStatus;
 use crate::agent::agent_status_from_event;
+use crate::agent::control::MultiAgentRuntimeIntent;
 use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
@@ -444,6 +445,7 @@ pub(crate) struct SessionSpawnArgs {
     pub(crate) attestation_provider: Option<Arc<dyn AttestationProvider>>,
     pub(crate) external_time_provider: Option<Arc<dyn TimeProvider>>,
     pub(crate) inherited_multi_agent_version: Option<MultiAgentVersion>,
+    pub(crate) multi_agent_runtime: MultiAgentRuntimeIntent,
 }
 
 pub(crate) fn resolve_multi_agent_version(
@@ -462,6 +464,55 @@ pub(crate) fn resolve_multi_agent_version(
             // Threads created before runtime metadata existed keep the legacy V1 tool surface.
             InitialHistory::Resumed(_) | InitialHistory::Forked(_) => Some(MultiAgentVersion::V1),
         })
+}
+
+pub(crate) fn resolve_session_multi_agent_version(
+    config: &Config,
+    conversation_history: &InitialHistory,
+    inherited_multi_agent_version: Option<MultiAgentVersion>,
+    multi_agent_runtime: MultiAgentRuntimeIntent,
+) -> CodexResult<Option<MultiAgentVersion>> {
+    let config_override = config.multi_agent_version_override();
+    if config_override == Some(MultiAgentVersion::Disabled) {
+        return match multi_agent_runtime {
+            MultiAgentRuntimeIntent::Inherit => Ok(config_override),
+            MultiAgentRuntimeIntent::ExactV1Spawn | MultiAgentRuntimeIntent::ExactV1Resume => {
+                Err(CodexErr::InvalidRequest(
+                    "exact V1 runtime is unavailable while multi-agent support is disabled"
+                        .to_string(),
+                ))
+            }
+        };
+    }
+
+    match multi_agent_runtime {
+        MultiAgentRuntimeIntent::Inherit => Ok(config_override.or_else(|| {
+            resolve_multi_agent_version(conversation_history, inherited_multi_agent_version)
+        })),
+        MultiAgentRuntimeIntent::ExactV1Spawn
+            if matches!(
+                conversation_history,
+                InitialHistory::New | InitialHistory::Forked(_)
+            ) =>
+        {
+            Ok(Some(MultiAgentVersion::V1))
+        }
+        MultiAgentRuntimeIntent::ExactV1Resume
+            if matches!(conversation_history, InitialHistory::Resumed(_))
+                && resolve_multi_agent_version(
+                    conversation_history,
+                    /*inherited_multi_agent_version*/ None,
+                ) == Some(MultiAgentVersion::V1) =>
+        {
+            Ok(Some(MultiAgentVersion::V1))
+        }
+        MultiAgentRuntimeIntent::ExactV1Spawn => Err(CodexErr::Fatal(
+            "exact V1 spawn runtime is only valid for new or forked threads".to_string(),
+        )),
+        MultiAgentRuntimeIntent::ExactV1Resume => Err(CodexErr::Fatal(
+            "exact V1 resume runtime is only valid for resumed threads".to_string(),
+        )),
+    }
 }
 
 pub(crate) const INITIAL_SUBMIT_ID: &str = "";
@@ -532,6 +583,7 @@ impl Session {
             attestation_provider,
             external_time_provider,
             inherited_multi_agent_version,
+            multi_agent_runtime,
         } = args;
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
@@ -618,9 +670,12 @@ impl Session {
         let model_info = models_manager
             .get_model_info(model.as_str(), &config.to_models_manager_config())
             .await;
-        let multi_agent_version = config.multi_agent_version_override().or_else(|| {
-            resolve_multi_agent_version(&conversation_history, inherited_multi_agent_version)
-        });
+        let multi_agent_version = resolve_session_multi_agent_version(
+            &config,
+            &conversation_history,
+            inherited_multi_agent_version,
+            multi_agent_runtime,
+        )?;
         let history_mode = conversation_history.get_history_mode(
             requested_history_mode.unwrap_or_else(|| thread_store.default_history_mode()),
         );
@@ -719,6 +774,7 @@ impl Session {
             attestation_provider,
             external_time_provider,
             multi_agent_version,
+            multi_agent_runtime,
         ))
         .await
         .map_err(|e| {
@@ -3123,6 +3179,9 @@ impl Session {
         model_info: &ModelInfo,
         config: &Config,
     ) -> MultiAgentVersion {
+        if let Some(multi_agent_version) = self.multi_agent_runtime.exact_version() {
+            return multi_agent_version;
+        }
         if let Some(multi_agent_version) = self.multi_agent_version() {
             return config.multi_agent_version_for_model(Some(multi_agent_version));
         }

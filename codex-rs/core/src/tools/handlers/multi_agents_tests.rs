@@ -1,7 +1,10 @@
 use super::*;
 use crate::ThreadManager;
+use crate::agent::control::MultiAgentRuntimeIntent;
+use crate::agent::control::SpawnAgentOptions;
 use crate::config::AgentRoleConfig;
 use crate::config::DEFAULT_AGENT_MAX_DEPTH;
+use crate::config::PermissionProfileSnapshot;
 use crate::function_tool::FunctionCallError;
 use crate::init_state_db;
 use crate::local_agent_graph_store_from_state_db;
@@ -29,6 +32,8 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
+use codex_protocol::error::CodexErr;
+use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -999,6 +1004,277 @@ async fn spawn_agent_returns_agent_id_without_task_name() {
     assert!(result.get("task_name").is_none());
     assert!(result.get("nickname").is_some());
     assert_eq!(success, Some(true));
+}
+
+#[tokio::test]
+async fn native_v1_spawn_keeps_config_authoritative_runtime_selection() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    session.services.agent_control = manager.agent_control();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config);
+
+    let output = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({"message": "follow config authority"})),
+        ))
+        .await
+        .expect("native V1 spawn should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let child_thread_id = parse_agent_id(
+        result["agent_id"]
+            .as_str()
+            .expect("spawn_agent should return an agent id"),
+    );
+
+    assert_eq!(success, Some(true));
+    assert_eq!(
+        manager
+            .get_thread(child_thread_id)
+            .await
+            .expect("child should be live")
+            .multi_agent_version(),
+        Some(codex_protocol::protocol::MultiAgentVersion::V2)
+    );
+}
+
+#[tokio::test]
+async fn projected_v1_spawn_from_v2_creates_and_persists_exact_v1_runtime() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.agent_max_depth = 2;
+    set_turn_config(&mut turn, config.clone());
+    let expected_environments = turn.environments.to_selections();
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(config)
+        .await
+        .expect("V2 root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+
+    let output = SpawnAgentHandler::projected(Default::default())
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "spawn_agent",
+            function_payload(json!({"message": "inspect this repo"})),
+        ))
+        .await
+        .expect("projected V1 spawn should succeed under V2");
+    let (content, success) = expect_text_output(output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let child_thread_id = parse_agent_id(
+        result["agent_id"]
+            .as_str()
+            .expect("spawn_agent should return an agent id"),
+    );
+    assert_eq!(success, Some(true));
+
+    let child = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("projected child should be live");
+    assert_eq!(
+        child.multi_agent_version(),
+        Some(codex_protocol::protocol::MultiAgentVersion::V1)
+    );
+    let child_turn = child.session.new_default_turn().await;
+    assert_eq!(
+        child_turn.multi_agent_version,
+        codex_protocol::protocol::MultiAgentVersion::V1
+    );
+    assert_eq!(
+        child_turn.environments.to_selections(),
+        expected_environments
+    );
+
+    let grandchild_output = SpawnAgentHandler::default()
+        .handle(invocation(
+            Arc::clone(&child.session),
+            Arc::clone(&child_turn),
+            "spawn_agent",
+            function_payload(json!({"message": "inspect the nested module"})),
+        ))
+        .await
+        .expect("native V1 child should spawn a native V1 grandchild");
+    let (grandchild_content, grandchild_success) = expect_text_output(grandchild_output);
+    let grandchild_result: serde_json::Value =
+        serde_json::from_str(&grandchild_content).expect("grandchild spawn result should be json");
+    let grandchild_id = parse_agent_id(
+        grandchild_result["agent_id"]
+            .as_str()
+            .expect("grandchild spawn should return an agent id"),
+    );
+    assert_eq!(grandchild_success, Some(true));
+    assert_eq!(
+        manager
+            .get_thread(grandchild_id)
+            .await
+            .expect("grandchild should be live")
+            .multi_agent_version(),
+        Some(codex_protocol::protocol::MultiAgentVersion::V1)
+    );
+
+    child.ensure_rollout_materialized().await;
+    child
+        .flush_rollout()
+        .await
+        .expect("projected child rollout should flush");
+    let persisted_version = child
+        .read_thread(
+            /*include_archived*/ true, /*include_history*/ true,
+        )
+        .await
+        .expect("projected child should be persisted")
+        .history
+        .expect("projected child history should load")
+        .items
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            RolloutItem::SessionMeta(meta_line) if meta_line.meta.id == child_thread_id => {
+                meta_line.meta.multi_agent_version
+            }
+            _ => None,
+        });
+    assert_eq!(
+        persisted_version,
+        Some(codex_protocol::protocol::MultiAgentVersion::V1)
+    );
+}
+
+#[tokio::test]
+async fn projected_v1_cold_resume_restores_current_managed_authority() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let mut initial_config = (*turn.config).clone();
+    initial_config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(initial_config.clone())
+        .await
+        .expect("V2 root should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let target = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            initial_config.clone(),
+            vec![UserInput::Text {
+                text: "persist exact V1 target".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(root.thread_id),
+                environments: Some(manager.default_environment_selections(
+                    &initial_config.cwd,
+                    &initial_config.workspace_roots,
+                )),
+                multi_agent_runtime: MultiAgentRuntimeIntent::ExactV1Spawn,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("exact V1 target should start");
+    manager
+        .agent_control()
+        .shutdown_live_agent(target.thread_id)
+        .await
+        .expect("exact V1 target should unload without closing its edge");
+
+    let expected_active_permission_profile = ActivePermissionProfile::new("resume-profile");
+    let expected_profile_workspace_root = codex_utils_absolute_path::AbsolutePathBuf::try_from(
+        initial_config
+            .codex_home
+            .as_path()
+            .join("resume-profile-root"),
+    )
+    .expect("profile workspace root should be absolute");
+    tokio::fs::create_dir_all(expected_profile_workspace_root.as_path())
+        .await
+        .expect("profile workspace root should be created");
+    let mut resume_config = initial_config;
+    let configured_permission_profile = resume_config.permissions.permission_profile().clone();
+    resume_config
+        .permissions
+        .set_permission_profile_from_session_snapshot(
+            PermissionProfileSnapshot::active_with_profile_workspace_roots(
+                configured_permission_profile.clone(),
+                expected_active_permission_profile.clone(),
+                vec![expected_profile_workspace_root.clone()],
+            ),
+        )
+        .expect("managed permission profile should be selected");
+    let expected_network = resume_config.permissions.network.clone();
+    let expected_workspace_roots = resume_config.workspace_roots.clone();
+    set_turn_config(&mut turn, resume_config);
+    turn.permission_profile = configured_permission_profile;
+    turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
+    let expected_environments = turn.environments.to_selections();
+
+    ProjectedResumeAgentHandler
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "resume_agent",
+            function_payload(json!({"id": target.thread_id.to_string()})),
+        ))
+        .await
+        .expect("projected V1 cold resume should succeed");
+
+    let resumed = manager
+        .get_thread(target.thread_id)
+        .await
+        .expect("resumed exact V1 target should be live");
+    let snapshot = resumed.config_snapshot().await;
+    assert_eq!(
+        snapshot.active_permission_profile,
+        Some(expected_active_permission_profile.clone())
+    );
+    assert_eq!(
+        snapshot.profile_workspace_roots,
+        vec![expected_profile_workspace_root.clone()]
+    );
+    assert_eq!(snapshot.workspace_roots, expected_workspace_roots);
+    let resumed_turn = resumed.session.new_default_turn().await;
+    assert_eq!(
+        resumed_turn.config.permissions.active_permission_profile(),
+        Some(expected_active_permission_profile)
+    );
+    assert_eq!(
+        resumed_turn.config.permissions.profile_workspace_roots(),
+        &[expected_profile_workspace_root]
+    );
+    assert_eq!(resumed_turn.config.permissions.network, expected_network);
+    assert_eq!(
+        resumed_turn.environments.to_selections(),
+        expected_environments
+    );
 }
 
 #[tokio::test]
@@ -2262,7 +2538,7 @@ async fn multi_agent_v2_spawn_surfaces_task_name_validation_errors() {
 }
 
 #[tokio::test]
-async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
+async fn projected_v1_spawn_reapplies_runtime_authority_after_role_config() {
     #[derive(Debug, Deserialize)]
     struct SpawnAgentResult {
         agent_id: String,
@@ -2290,12 +2566,84 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
         &expected_file_system_sandbox_policy,
         expected_network_sandbox_policy,
     );
+    let expected_workspace_roots = turn.config.workspace_roots.clone();
+    let expected_workspace_roots_explicit = turn.config.workspace_roots_explicit;
+    let expected_permission_workspace_roots = turn.config.permissions.workspace_roots().to_vec();
+    let role_workspace_root = turn
+        .config
+        .codex_home
+        .as_path()
+        .join("role-only-workspace-root");
+    tokio::fs::create_dir_all(&role_workspace_root)
+        .await
+        .expect("role workspace root should be created");
+    let expected_active_permission_profile = ActivePermissionProfile::new("managed-test-profile");
+    let expected_profile_workspace_root = codex_utils_absolute_path::AbsolutePathBuf::try_from(
+        turn.config
+            .codex_home
+            .as_path()
+            .join("managed-profile-workspace-root"),
+    )
+    .expect("profile workspace root should be absolute");
+    tokio::fs::create_dir_all(expected_profile_workspace_root.as_path())
+        .await
+        .expect("profile workspace root should be created");
+    let role_config_path = turn
+        .config
+        .codex_home
+        .as_path()
+        .join("root-expanding-role.toml");
+    tokio::fs::write(
+        &role_config_path,
+        format!(
+            "sandbox_mode = \"workspace-write\"\n\n[sandbox_workspace_write]\nwritable_roots = [\"{}\"]\n",
+            role_workspace_root.display()
+        ),
+    )
+    .await
+    .expect("role config should be written");
+    let role_name = "root-expanding-role".to_string();
     turn.approval_policy
         .set(AskForApproval::OnRequest)
         .expect("approval policy should be set");
     let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let configured_permission_profile = config.permissions.permission_profile().clone();
+    config
+        .permissions
+        .set_permission_profile_from_session_snapshot(
+            PermissionProfileSnapshot::active_with_profile_workspace_roots(
+                configured_permission_profile,
+                expected_active_permission_profile.clone(),
+                vec![expected_profile_workspace_root.clone()],
+            ),
+        )
+        .expect("managed permission profile should be selected");
     config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+    config.agent_roles.insert(
+        role_name.clone(),
+        AgentRoleConfig {
+            description: Some("Attempts to add an external writable root".to_string()),
+            config_file: Some(role_config_path),
+            nickname_candidates: None,
+        },
+    );
     set_turn_config(&mut turn, config);
+    turn.multi_agent_version = codex_protocol::protocol::MultiAgentVersion::V2;
+    let mut role_overlay_probe = (*turn.config).clone();
+    crate::agent::role::apply_role_to_config(&mut role_overlay_probe, Some(&role_name))
+        .await
+        .expect("role overlay should apply in the control probe");
+    assert!(
+        role_overlay_probe
+            .workspace_roots
+            .iter()
+            .any(|root| root.as_path() == role_workspace_root),
+        "test role must attempt to expand runtime workspace roots"
+    );
     turn.permission_profile = expected_permission_profile.clone();
     assert_ne!(
         expected_permission_profile,
@@ -2309,10 +2657,10 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
         "spawn_agent",
         function_payload(json!({
             "message": "await this command",
-            "agent_type": "explorer"
+            "agent_type": role_name
         })),
     );
-    let output = SpawnAgentHandler::default()
+    let output = SpawnAgentHandler::projected(Default::default())
         .handle(invocation)
         .await
         .expect("spawn_agent should succeed");
@@ -2337,6 +2685,15 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
     assert_eq!(snapshot.approval_policy, AskForApproval::OnRequest);
     assert_eq!(snapshot.approvals_reviewer, ApprovalsReviewer::AutoReview);
     assert_eq!(snapshot.permission_profile, expected_permission_profile);
+    assert_eq!(
+        snapshot.active_permission_profile,
+        Some(expected_active_permission_profile.clone())
+    );
+    assert_eq!(
+        snapshot.profile_workspace_roots,
+        vec![expected_profile_workspace_root.clone()]
+    );
+    assert_eq!(snapshot.workspace_roots, expected_workspace_roots);
     let child_thread = manager
         .get_thread(agent_id)
         .await
@@ -2351,6 +2708,32 @@ async fn spawn_agent_reapplies_runtime_sandbox_after_role_config() {
         expected_network_sandbox_policy
     );
     assert_eq!(child_turn.permission_profile(), expected_permission_profile);
+    assert_eq!(
+        child_turn.config.permissions.active_permission_profile(),
+        Some(expected_active_permission_profile)
+    );
+    assert_eq!(
+        child_turn.config.permissions.profile_workspace_roots(),
+        &[expected_profile_workspace_root]
+    );
+    assert_eq!(child_turn.config.workspace_roots, expected_workspace_roots);
+    assert_eq!(
+        child_turn.config.workspace_roots_explicit,
+        expected_workspace_roots_explicit
+    );
+    assert_eq!(
+        child_turn.config.permissions.workspace_roots(),
+        expected_permission_workspace_roots
+    );
+    assert!(
+        !child_turn
+            .config
+            .permissions
+            .workspace_roots()
+            .iter()
+            .any(|root| root.as_path() == role_workspace_root),
+        "role-only workspace root must not reach child runtime permissions"
+    );
 }
 
 #[tokio::test]
@@ -2663,6 +3046,533 @@ async fn send_input_accepts_structured_items() {
         .submit(Op::Shutdown {})
         .await
         .expect("shutdown should submit");
+}
+
+#[tokio::test]
+async fn projected_v1_target_tools_reject_live_v2_before_effects() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let target = manager
+        .start_thread(config.clone())
+        .await
+        .expect("V2 target should start");
+    let _ = target.thread.session.new_default_turn().await;
+    assert_eq!(
+        target.thread.multi_agent_version(),
+        Some(codex_protocol::protocol::MultiAgentVersion::V2)
+    );
+    session.services.agent_control = manager.agent_control();
+    set_turn_config(&mut turn, config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let target_id = target.thread_id;
+    let expected_error_fragment = "does not use the V1 multi-agent runtime";
+
+    let Err(send_error) = ProjectedSendInputHandler
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "send_input",
+            function_payload(json!({"target": target_id.to_string(), "message": "hello"})),
+        ))
+        .await
+    else {
+        panic!("projected send_input should reject a V2 target");
+    };
+    let Err(wait_error) = WaitAgentHandler::projected(Default::default())
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "wait_agent",
+            function_payload(json!({
+                "targets": [target_id.to_string()],
+                "timeout_ms": 1_000
+            })),
+        ))
+        .await
+    else {
+        panic!("projected wait_agent should reject a V2 target");
+    };
+    let Err(close_error) = ProjectedCloseAgentHandler
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "close_agent",
+            function_payload(json!({"target": target_id.to_string()})),
+        ))
+        .await
+    else {
+        panic!("projected close_agent should reject a V2 target");
+    };
+    let Err(resume_error) = ProjectedResumeAgentHandler
+        .handle(invocation(
+            session,
+            turn,
+            "resume_agent",
+            function_payload(json!({"id": target_id.to_string()})),
+        ))
+        .await
+    else {
+        panic!("projected resume_agent should reject a V2 target");
+    };
+
+    for error in [send_error, wait_error, close_error, resume_error] {
+        let FunctionCallError::RespondToModel(message) = error else {
+            panic!("expected a model-facing target-version error");
+        };
+        assert!(message.contains(expected_error_fragment), "{message}");
+    }
+    assert_eq!(manager.captured_ops(), Vec::<(ThreadId, Op)>::new());
+    assert_ne!(
+        manager.agent_control().get_status(target_id).await,
+        AgentStatus::NotFound
+    );
+    assert_eq!(
+        target.thread.multi_agent_version(),
+        Some(codex_protocol::protocol::MultiAgentVersion::V2)
+    );
+
+    manager
+        .agent_control()
+        .shutdown_live_agent(target_id)
+        .await
+        .expect("V2 target shutdown should succeed");
+}
+
+#[tokio::test]
+async fn projected_v1_bound_target_does_not_follow_reused_uuid_into_v2() {
+    let (_session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let v1_target = manager
+        .resume_thread_with_history(
+            (*turn.config).clone(),
+            InitialHistory::Forked(vec![RolloutItem::ResponseItem(ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "bind projected V1 target".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            })]),
+            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
+            /*parent_trace*/ None,
+            /*supports_openai_form_elicitation*/ false,
+        )
+        .await
+        .expect("V1 target should start");
+    let target_id = v1_target.thread_id;
+    let bound_target = manager
+        .agent_control()
+        .resolve_v1_lifecycle_target(target_id)
+        .await
+        .expect("live V1 target should bind");
+
+    let mut v2_config = (*turn.config).clone();
+    v2_config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let replacement = manager
+        .start_thread(v2_config.clone())
+        .await
+        .expect("replacement V2 should start");
+    assert_eq!(
+        replacement.thread.multi_agent_version(),
+        Some(codex_protocol::protocol::MultiAgentVersion::V2)
+    );
+    let displaced = manager
+        .replace_thread_for_tests(target_id, replacement.thread.clone())
+        .await
+        .expect("V1 target should be displaced");
+    assert!(Arc::ptr_eq(&displaced, &v1_target.thread));
+    let replacement_child = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            v2_config.clone(),
+            vec![UserInput::Text {
+                text: "replacement branch child".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: target_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(target_id),
+                environments: Some(
+                    manager
+                        .default_environment_selections(&v2_config.cwd, &v2_config.workspace_roots),
+                ),
+                multi_agent_runtime: MultiAgentRuntimeIntent::ExactV1Spawn,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("replacement branch V1 child should start");
+
+    let Err(close_error) = manager
+        .agent_control()
+        .close_projected_v1_agent(bound_target.clone())
+        .await
+    else {
+        panic!("bound close should report the replacement race");
+    };
+    assert!(
+        close_error
+            .to_string()
+            .contains("changed runtime after V1 validation")
+    );
+    let current = manager
+        .get_thread(target_id)
+        .await
+        .expect("replacement V2 must remain mapped");
+    assert!(Arc::ptr_eq(&current, &replacement.thread));
+    assert_ne!(current.agent_status().await, AgentStatus::Shutdown);
+    assert_ne!(
+        manager
+            .get_thread(replacement_child.thread_id)
+            .await
+            .expect("replacement child must remain mapped")
+            .agent_status()
+            .await,
+        AgentStatus::Shutdown
+    );
+    assert_eq!(
+        manager
+            .agent_control()
+            .projected_v1_target_status(&bound_target)
+            .await,
+        AgentStatus::Shutdown
+    );
+
+    let send_error = manager
+        .agent_control()
+        .send_input_to_projected_v1_target(
+            &bound_target,
+            vec![UserInput::Text {
+                text: "must not reach V2".to_string(),
+                text_elements: Vec::new(),
+            }],
+        )
+        .await
+        .expect_err("the terminated bound V1 should reject input");
+    assert!(matches!(send_error, CodexErr::InternalAgentDied));
+    let current = manager
+        .get_thread(target_id)
+        .await
+        .expect("InternalAgentDied cleanup must preserve replacement V2");
+    assert!(Arc::ptr_eq(&current, &replacement.thread));
+
+    let removed_alias = manager
+        .remove_thread(&target_id)
+        .await
+        .expect("test replacement alias should be removable");
+    assert!(Arc::ptr_eq(&removed_alias, &replacement.thread));
+    manager
+        .agent_control()
+        .shutdown_live_agent(replacement_child.thread_id)
+        .await
+        .expect("replacement child cleanup should succeed");
+    manager
+        .agent_control()
+        .shutdown_live_agent(replacement.thread_id)
+        .await
+        .expect("replacement V2 cleanup should succeed");
+}
+
+#[tokio::test]
+async fn projected_v1_target_guard_rejects_persisted_v2_before_reload() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let target = manager
+        .start_thread(config.clone())
+        .await
+        .expect("V2 target should start");
+    let _ = target.thread.session.new_default_turn().await;
+    let target_id = target.thread_id;
+    target
+        .thread
+        .inject_user_message_without_turn("persist target".to_string())
+        .await;
+    target.thread.ensure_rollout_materialized().await;
+    target
+        .thread
+        .flush_rollout()
+        .await
+        .expect("V2 target rollout should flush");
+    manager
+        .agent_control()
+        .shutdown_live_agent(target_id)
+        .await
+        .expect("V2 target should unload");
+    assert!(manager.get_thread(target_id).await.is_err());
+
+    session.services.agent_control = manager.agent_control();
+    set_turn_config(&mut turn, config);
+    let ops_before = manager.captured_ops();
+    let Err(error) = ProjectedCloseAgentHandler
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "close_agent",
+            function_payload(json!({"target": target_id.to_string()})),
+        ))
+        .await
+    else {
+        panic!("projected close_agent should reject a persisted V2 target");
+    };
+    let FunctionCallError::RespondToModel(message) = error else {
+        panic!("expected a model-facing target-version error");
+    };
+    assert!(message.contains("does not use the V1 multi-agent runtime"));
+    assert_eq!(manager.captured_ops(), ops_before);
+    assert!(manager.get_thread(target_id).await.is_err());
+}
+
+#[tokio::test]
+async fn projected_v1_close_accepts_persisted_target_without_registry_metadata() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let mut v2_config = (*turn.config).clone();
+    v2_config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    v2_config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow sqlite");
+    let state_db = init_state_db(&v2_config)
+        .await
+        .expect("sqlite state db should initialize");
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        v2_config.model_provider.clone(),
+        v2_config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Some(state_db.clone()),
+    );
+    let root = manager
+        .start_thread(v2_config.clone())
+        .await
+        .expect("V2 root should start");
+    let target = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            v2_config.clone(),
+            vec![UserInput::Text {
+                text: "persist foreign V1 target".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(root.thread_id),
+                environments: Some(
+                    manager
+                        .default_environment_selections(&v2_config.cwd, &v2_config.workspace_roots),
+                ),
+                multi_agent_runtime: MultiAgentRuntimeIntent::ExactV1Spawn,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("V1 target should start");
+    let target_id = target.thread_id;
+    let target_thread = manager
+        .get_thread(target_id)
+        .await
+        .expect("V1 target should be live");
+    target_thread.ensure_rollout_materialized().await;
+    target_thread
+        .flush_rollout()
+        .await
+        .expect("V1 target rollout should flush");
+    assert_eq!(
+        state_db
+            .list_thread_spawn_children_with_status(
+                root.thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("open child edge should load"),
+        vec![target_id]
+    );
+    manager
+        .agent_control()
+        .shutdown_live_agent(target_id)
+        .await
+        .expect("V1 target should unload");
+    assert!(manager.get_thread(target_id).await.is_err());
+    assert!(
+        manager
+            .agent_control()
+            .get_agent_metadata(target_id)
+            .is_none()
+    );
+
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    set_turn_config(&mut turn, v2_config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let ops_before = manager.captured_ops();
+    for _ in 0..2 {
+        let output = ProjectedCloseAgentHandler
+            .handle(invocation(
+                Arc::clone(&session),
+                Arc::clone(&turn),
+                "close_agent",
+                function_payload(json!({"target": target_id.to_string()})),
+            ))
+            .await
+            .expect("persisted V1 close should be idempotent without registry metadata");
+        let (content, success) = expect_text_output(output);
+        let result: close_agent::CloseAgentResult =
+            serde_json::from_str(&content).expect("close result should be json");
+        assert_eq!(result.previous_status, AgentStatus::NotFound);
+        assert_eq!(success, Some(true));
+    }
+    assert_eq!(manager.captured_ops(), ops_before);
+    assert!(manager.get_thread(target_id).await.is_err());
+    assert_eq!(
+        state_db
+            .list_thread_spawn_children_with_status(
+                root.thread_id,
+                DirectionalThreadSpawnEdgeStatus::Open,
+            )
+            .await
+            .expect("open child edges should load"),
+        Vec::<ThreadId>::new()
+    );
+    assert_eq!(
+        state_db
+            .list_thread_spawn_children_with_status(
+                root.thread_id,
+                DirectionalThreadSpawnEdgeStatus::Closed,
+            )
+            .await
+            .expect("closed child edges should load"),
+        vec![target_id]
+    );
+
+    manager
+        .agent_control()
+        .shutdown_live_agent(root.thread_id)
+        .await
+        .expect("V2 root cleanup should succeed");
+}
+
+#[tokio::test]
+async fn projected_v1_close_stops_before_live_v2_descendant_branch() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let v1_root = manager
+        .resume_thread_with_history(
+            (*turn.config).clone(),
+            InitialHistory::Forked(vec![RolloutItem::ResponseItem(ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "foreign V1 target".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            })]),
+            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
+            /*parent_trace*/ None,
+            /*supports_openai_form_elicitation*/ false,
+        )
+        .await
+        .expect("V1 target should start");
+    assert_eq!(
+        v1_root.thread.multi_agent_version(),
+        Some(codex_protocol::protocol::MultiAgentVersion::V1)
+    );
+
+    let mut v2_config = (*turn.config).clone();
+    v2_config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let v2_child_id = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            v2_config.clone(),
+            vec![UserInput::Text {
+                text: "mixed V2 branch".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: v1_root.thread_id,
+                depth: 1,
+                agent_path: Some(AgentPath::root().join("mixed_v2").expect("mixed V2 path")),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            crate::agent::control::SpawnAgentOptions {
+                parent_thread_id: Some(v1_root.thread_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("V2 descendant should spawn")
+        .thread_id;
+    assert_eq!(
+        manager
+            .get_thread(v2_child_id)
+            .await
+            .expect("V2 descendant should be live")
+            .multi_agent_version(),
+        Some(codex_protocol::protocol::MultiAgentVersion::V2)
+    );
+
+    session.services.agent_control = manager.agent_control();
+    set_turn_config(&mut turn, v2_config);
+    let output = ProjectedCloseAgentHandler
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "close_agent",
+            function_payload(json!({"target": v1_root.thread_id.to_string()})),
+        ))
+        .await
+        .expect("projected close should accept the foreign V1 target");
+    let (_, success) = expect_text_output(output);
+    assert_eq!(success, Some(true));
+    assert!(manager.get_thread(v1_root.thread_id).await.is_err());
+    assert_eq!(
+        manager
+            .get_thread(v2_child_id)
+            .await
+            .expect("V2 descendant branch must remain live")
+            .multi_agent_version(),
+        Some(codex_protocol::protocol::MultiAgentVersion::V2)
+    );
+
+    manager
+        .agent_control()
+        .shutdown_live_agent(v2_child_id)
+        .await
+        .expect("V2 descendant cleanup should succeed");
 }
 
 #[tokio::test]

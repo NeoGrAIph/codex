@@ -1,5 +1,6 @@
 use super::turn_context::TurnEnvironment;
 use super::*;
+use crate::agent::control::MultiAgentRuntimeIntent;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
 use crate::config::ConfigBuilder;
@@ -2141,6 +2142,30 @@ fn resolve_multi_agent_version_handles_unset_and_legacy_history() {
         ),
         Some(MultiAgentVersion::V1)
     );
+}
+
+#[tokio::test]
+async fn exact_v1_session_intent_rejects_disabled_config() {
+    let codex_home = tempfile::tempdir().expect("create temp dir");
+    let mut config = build_test_config(codex_home.path()).await;
+    config.agents_enabled = false;
+
+    for multi_agent_runtime in [
+        MultiAgentRuntimeIntent::ExactV1Spawn,
+        MultiAgentRuntimeIntent::ExactV1Resume,
+    ] {
+        let error = resolve_session_multi_agent_version(
+            &config,
+            &InitialHistory::New,
+            /*inherited_multi_agent_version*/ None,
+            multi_agent_runtime,
+        )
+        .expect_err("disabled multi-agent config must reject exact V1 intent");
+        assert_eq!(
+            error.to_string(),
+            "exact V1 runtime is unavailable while multi-agent support is disabled"
+        );
+    }
 }
 
 #[tokio::test]
@@ -5179,6 +5204,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         /*attestation_provider*/ None,
         /*external_time_provider*/ None,
         Some(config.multi_agent_version_from_features()),
+        MultiAgentRuntimeIntent::Inherit,
     )
     .await;
 
@@ -5439,6 +5465,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
+        multi_agent_runtime: MultiAgentRuntimeIntent::Inherit,
         pending_mcp_server_refresh_config: Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
@@ -5567,6 +5594,7 @@ async fn make_session_with_config_and_rx(
         /*attestation_provider*/ None,
         /*external_time_provider*/ None,
         Some(config.multi_agent_version_from_features()),
+        MultiAgentRuntimeIntent::Inherit,
     )
     .await?;
 
@@ -5681,6 +5709,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         /*attestation_provider*/ None,
         /*external_time_provider*/ None,
         Some(config.multi_agent_version_from_features()),
+        MultiAgentRuntimeIntent::Inherit,
     )
     .await?;
 
@@ -7597,6 +7626,7 @@ where
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
         features: config.features.clone(),
         multi_agent_version: OnceLock::from(config.multi_agent_version_from_features()),
+        multi_agent_runtime: MultiAgentRuntimeIntent::Inherit,
         pending_mcp_server_refresh_config: Mutex::new(None),
         conversation: Arc::new(RealtimeConversationManager::new()),
         active_turn: Mutex::new(None),
@@ -7632,6 +7662,101 @@ pub(crate) async fn make_session_and_context_with_rx() -> (
     async_channel::Receiver<Event>,
 ) {
     make_session_and_context_with_dynamic_tools_and_rx(Vec::new()).await
+}
+
+fn projected_v1_collision_dynamic_tool() -> DynamicToolSpec {
+    DynamicToolSpec::Namespace(codex_protocol::dynamic_tools::DynamicToolNamespaceSpec {
+        name: crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE.to_string(),
+        description: "External multi-agent namespace owner".to_string(),
+        tools: vec![
+            codex_protocol::dynamic_tools::DynamicToolNamespaceTool::Function(
+                codex_protocol::dynamic_tools::DynamicToolFunctionSpec {
+                    name: "external".to_string(),
+                    description: "External namespace tool".to_string(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": false
+                    }),
+                    defer_loading: false,
+                },
+            ),
+        ],
+    })
+}
+
+fn drain_projected_v1_collision_warnings(rx_event: &async_channel::Receiver<Event>) -> usize {
+    let expected = crate::tools::multi_agent_v1_projection::NAMESPACE_COLLISION_WARNING;
+    let mut count = 0;
+    while let Ok(event) = rx_event.try_recv() {
+        if matches!(
+            event.msg,
+            EventMsg::Warning(WarningEvent { ref message }) if message == expected
+        ) {
+            count += 1;
+        }
+    }
+    count
+}
+
+#[tokio::test]
+async fn projected_v1_collision_warning_is_once_per_turn_and_skips_ineligible_turns() {
+    let (session, turn_context, rx_event) = make_session_and_context_with_auth_and_config_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        vec![projected_v1_collision_dynamic_tool()],
+        |config| {
+            config
+                .features
+                .enable(Feature::MultiAgentV2)
+                .expect("test feature should be enableable");
+        },
+    )
+    .await;
+    let step_context = StepContext::for_test(Arc::clone(&turn_context));
+    for _ in 0..2 {
+        crate::session::turn::built_tools(
+            session.as_ref(),
+            step_context.as_ref(),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("tool planning should succeed");
+    }
+    assert_eq!(drain_projected_v1_collision_warnings(&rx_event), 1);
+
+    let next_turn = session.new_default_turn().await;
+    let next_step_context = StepContext::for_test(next_turn);
+    crate::session::turn::built_tools(
+        session.as_ref(),
+        next_step_context.as_ref(),
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("next-turn tool planning should succeed");
+    assert_eq!(drain_projected_v1_collision_warnings(&rx_event), 1);
+
+    let (ineligible_session, ineligible_turn, ineligible_rx) =
+        make_session_and_context_with_auth_and_config_and_rx(
+            CodexAuth::from_api_key("Test API Key"),
+            vec![projected_v1_collision_dynamic_tool()],
+            |config| {
+                config
+                    .features
+                    .enable(Feature::MultiAgentV2)
+                    .expect("test feature should be enableable");
+                config.agent_max_depth = 0;
+            },
+        )
+        .await;
+    let ineligible_step = StepContext::for_test(ineligible_turn);
+    crate::session::turn::built_tools(
+        ineligible_session.as_ref(),
+        ineligible_step.as_ref(),
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("ineligible tool planning should succeed");
+    assert_eq!(drain_projected_v1_collision_warnings(&ineligible_rx), 0);
 }
 
 #[tokio::test]

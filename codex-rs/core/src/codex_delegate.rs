@@ -32,6 +32,7 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::control::MultiAgentRuntimeIntent;
 use crate::config::Config;
 use crate::guardian::GuardianApprovalRequest;
 use crate::guardian::new_guardian_review_id;
@@ -133,6 +134,7 @@ pub(crate) async fn run_codex_thread_interactive(
         attestation_provider: parent_session.services.attestation_provider.clone(),
         external_time_provider: Some(Arc::clone(&parent_session.services.time_provider)),
         inherited_multi_agent_version: Some(MultiAgentVersion::Disabled),
+        multi_agent_runtime: MultiAgentRuntimeIntent::Inherit,
     }))
     .or_cancel(&cancel_token)
     .await??;

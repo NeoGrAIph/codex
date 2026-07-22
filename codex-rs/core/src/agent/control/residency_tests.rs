@@ -1,5 +1,7 @@
 use crate::ThreadManager;
 use crate::agent::AgentControl;
+use crate::agent::control::MultiAgentRuntimeIntent;
+use crate::agent::control::SpawnAgentOptions;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::config::test_config;
@@ -9,12 +11,14 @@ use codex_login::CodexAuth;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::user_input::UserInput;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
@@ -109,7 +113,7 @@ async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
     mark_thread_completed(second.thread.as_ref()).await;
 
     let err = control
-        .ensure_v2_agent_loaded(config, first.thread_id)
+        .ensure_v2_agent_loaded(config.clone(), first.thread_id)
         .await
         .expect_err("evicted interrupted agent should stay lost");
     match err {
@@ -124,6 +128,91 @@ async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
         Err(err) => panic!("expected evicted thread to be missing, got {err:?}"),
         Ok(_) => panic!("expected evicted thread to be missing"),
     }
+}
+
+#[tokio::test]
+async fn exact_v1_spawn_does_not_reserve_or_evict_v2_residency_slot() {
+    let mut config = test_config().await;
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    // V2 capacity includes the root, leaving two resident sub-agent slots here.
+    config.multi_agent_v2.max_concurrent_threads_per_session = 3;
+    let temp_home = tempfile::tempdir().expect("create temp home");
+    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
+    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("start root thread");
+    let control = manager.agent_control();
+    let state = control.upgrade().expect("thread manager should be live");
+
+    let first_slot = control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+        .expect("first resident slot");
+    let first =
+        spawn_v2_subagent(&control, &state, config.clone(), root.thread_id, "worker-1").await;
+    first_slot.commit(first.thread_id);
+    mark_thread_completed(first.thread.as_ref()).await;
+
+    let exact_v1 = control
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "exact V1 task".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(root.thread_id),
+                environments: Some(
+                    manager.default_environment_selections(&config.cwd, &config.workspace_roots),
+                ),
+                multi_agent_runtime: MultiAgentRuntimeIntent::ExactV1Spawn,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("exact V1 spawn should succeed");
+    assert_eq!(
+        manager
+            .get_thread(exact_v1.thread_id)
+            .await
+            .expect("exact V1 thread should remain live")
+            .multi_agent_version(),
+        Some(MultiAgentVersion::V1)
+    );
+
+    let second_slot = control
+        .reserve_v2_residency_slot(&state, &config, /*protected_thread_id*/ None)
+        .await
+        .expect("exact V1 must not consume the second V2 residency slot");
+    assert!(
+        manager.get_thread(first.thread_id).await.is_ok(),
+        "reserving the second V2 slot must not evict the first resident"
+    );
+    drop(second_slot);
+
+    control
+        .shutdown_live_agent(exact_v1.thread_id)
+        .await
+        .expect("exact V1 cleanup should succeed");
+    control
+        .shutdown_live_agent(first.thread_id)
+        .await
+        .expect("V2 resident cleanup should succeed");
 }
 
 async fn spawn_v2_subagent(
@@ -146,6 +235,7 @@ async fn spawn_v2_subagent(
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            MultiAgentRuntimeIntent::Inherit,
         )
         .await
         .expect("spawn v2 subagent")

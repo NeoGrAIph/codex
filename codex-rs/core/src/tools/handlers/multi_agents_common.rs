@@ -241,10 +241,44 @@ pub(crate) fn apply_spawn_agent_runtime_overrides(
     Ok(())
 }
 
+/// Preserve the live turn's complete authority snapshot for an exact V1 child.
+///
+/// The upstream shared overlay intentionally has narrower semantics. Projected V1 children need
+/// the additional fields because their persisted V2-facing config may otherwise reintroduce stale
+/// workspace, network, or named permission-profile authority after role application.
+pub(crate) fn apply_exact_v1_runtime_authority_overrides(
+    config: &mut Config,
+    turn: &TurnContext,
+) -> Result<(), FunctionCallError> {
+    config
+        .workspace_roots
+        .clone_from(&turn.config.workspace_roots);
+    config.workspace_roots_explicit = turn.config.workspace_roots_explicit;
+    config
+        .permissions
+        .set_workspace_roots(turn.config.permissions.workspace_roots().to_vec());
+    config
+        .permissions
+        .network
+        .clone_from(&turn.config.permissions.network);
+    config
+        .permissions
+        .set_permission_profile_from_session_snapshot(
+            turn.config
+                .permissions
+                .permission_profile_snapshot_with_profile(turn.permission_profile()),
+        )
+        .map_err(|err| {
+            FunctionCallError::RespondToModel(format!("permission_profile is invalid: {err}"))
+        })?;
+    Ok(())
+}
+
 pub(crate) async fn apply_requested_spawn_agent_model_overrides(
     session: &Session,
     turn: &TurnContext,
     config: &mut Config,
+    multi_agent_version: MultiAgentVersion,
     requested_model: Option<&str>,
     requested_reasoning_effort: Option<ReasoningEffort>,
 ) -> Result<(), FunctionCallError> {
@@ -261,11 +295,8 @@ pub(crate) async fn apply_requested_spawn_agent_model_overrides(
             .models_manager
             .list_models(RefreshStrategy::Offline, config.http_client_factory())
             .await;
-        let selected_model_name = find_spawn_agent_model_name(
-            &available_models,
-            requested_model,
-            turn.multi_agent_version,
-        )?;
+        let selected_model_name =
+            find_spawn_agent_model_name(&available_models, requested_model, multi_agent_version)?;
         let selected_model_info = session
             .services
             .models_manager

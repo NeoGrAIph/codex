@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::control::MultiAgentRuntimeIntent;
 use crate::agent::control::SpawnAgentForkMode;
 use crate::agent::control::SpawnAgentOptions;
 use crate::agent::control::render_input_preview;
@@ -7,16 +8,28 @@ use crate::agent::next_thread_spawn_depth;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
 
 #[derive(Default)]
 pub(crate) struct Handler {
     options: SpawnAgentToolOptions,
+    invocation_mode: V1ToolInvocationMode,
 }
 
 impl Handler {
     pub(crate) fn new(options: SpawnAgentToolOptions) -> Self {
-        Self { options }
+        Self {
+            options,
+            invocation_mode: V1ToolInvocationMode::Native,
+        }
+    }
+
+    pub(crate) fn projected(options: SpawnAgentToolOptions) -> Self {
+        Self {
+            options,
+            invocation_mode: V1ToolInvocationMode::ProjectedFromV2,
+        }
     }
 }
 
@@ -37,12 +50,18 @@ impl ToolExecutor<ToolInvocation> for Handler {
     }
 
     fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
-        Box::pin(async move { handle_spawn_agent(invocation).await.map(boxed_tool_output) })
+        let invocation_mode = self.invocation_mode;
+        Box::pin(async move {
+            handle_spawn_agent(invocation, invocation_mode)
+                .await
+                .map(boxed_tool_output)
+        })
     }
 }
 
 async fn handle_spawn_agent(
     invocation: ToolInvocation,
+    invocation_mode: V1ToolInvocationMode,
 ) -> Result<SpawnAgentResult, FunctionCallError> {
     let ToolInvocation {
         session,
@@ -60,6 +79,13 @@ async fn handle_spawn_agent(
         .filter(|role| !role.is_empty());
     let input_items = parse_collab_input(args.message, args.items)?;
     let prompt = render_input_preview(&input_items);
+    let multi_agent_runtime = if invocation_mode == V1ToolInvocationMode::ProjectedFromV2
+        || session.requires_exact_v1_descendants()
+    {
+        MultiAgentRuntimeIntent::ExactV1Spawn
+    } else {
+        MultiAgentRuntimeIntent::Inherit
+    };
     let session_source = turn.session_source.clone();
     let child_depth = next_thread_spawn_depth(&session_source);
     let max_depth = turn.config.agent_max_depth;
@@ -97,6 +123,7 @@ async fn handle_spawn_agent(
         &session,
         turn.as_ref(),
         &mut config,
+        MultiAgentVersion::V1,
         args.model.as_deref(),
         args.reasoning_effort.clone(),
     )
@@ -112,6 +139,9 @@ async fn handle_spawn_agent(
     )
     .await?;
     apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+    if multi_agent_runtime == MultiAgentRuntimeIntent::ExactV1Spawn {
+        apply_exact_v1_runtime_authority_overrides(&mut config, turn.as_ref())?;
+    }
 
     let result = Box::pin(session.services.agent_control.spawn_agent_with_metadata(
         config,
@@ -128,6 +158,7 @@ async fn handle_spawn_agent(
             fork_mode: args.fork_context.then_some(SpawnAgentForkMode::FullHistory),
             parent_thread_id: Some(session.thread_id),
             environments: Some(turn.environments.to_selections()),
+            multi_agent_runtime,
         },
     ))
     .await
