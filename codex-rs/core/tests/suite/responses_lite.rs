@@ -13,7 +13,6 @@ use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
 use codex_web_search_extension::install as install_web_search_extension;
@@ -128,55 +127,6 @@ async fn responses_lite_uses_input_items_for_instructions_and_tools() -> Result<
 
     let tools = additional_tools(&body)?;
     assert!(!tools.is_empty());
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_lite_exposes_projected_v1_and_native_v2() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = responses::start_mock_server().await;
-    let response_mock = responses::mount_sse_once(
-        &server,
-        responses::sse(vec![
-            responses::ev_response_created("resp-1"),
-            responses::ev_completed("resp-1"),
-        ]),
-    )
-    .await;
-
-    let mut builder = test_codex()
-        .with_model_info_override("gpt-5.6-sol", |_| {})
-        .with_config(|config| {
-            config
-                .features
-                .enable(Feature::Collab)
-                .expect("test config should allow feature update");
-            config
-                .features
-                .disable(Feature::MultiAgentV2)
-                .expect("test config should allow feature update");
-        });
-    let test = builder.build(&server).await?;
-
-    test.submit_turn("Use both compatible multi-agent families")
-        .await?;
-
-    assert_eq!(
-        test.codex.multi_agent_version(),
-        Some(MultiAgentVersion::V2)
-    );
-    let request = response_mock.single_request();
-    assert_eq!(
-        request.header(RESPONSES_LITE_HEADER).as_deref(),
-        Some("true")
-    );
-    let body = request.body_json();
-    assert!(body.get("tools").is_none());
-    let tools = additional_tools(&body)?;
-    assert!(has_namespaced_tool(tools, "collaboration", "list_agents"));
-    assert!(has_namespaced_tool(tools, "multi_agent_v1", "resume_agent"));
 
     Ok(())
 }

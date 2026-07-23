@@ -466,23 +466,6 @@ impl Permissions {
         self.permission_profile_state.active_permission_profile()
     }
 
-    /// Capture a live runtime profile while preserving the selected profile identity and roots.
-    pub(crate) fn permission_profile_snapshot_with_profile(
-        &self,
-        permission_profile: PermissionProfile,
-    ) -> PermissionProfileSnapshot {
-        match self.active_permission_profile() {
-            Some(active_permission_profile) => {
-                PermissionProfileSnapshot::active_with_profile_workspace_roots(
-                    permission_profile,
-                    active_permission_profile,
-                    self.profile_workspace_roots().to_vec(),
-                )
-            }
-            None => PermissionProfileSnapshot::legacy(permission_profile),
-        }
-    }
-
     /// Effective filesystem sandbox policy derived from the canonical profile.
     pub fn file_system_sandbox_policy(&self) -> FileSystemSandboxPolicy {
         self.materialized_permission_profile()

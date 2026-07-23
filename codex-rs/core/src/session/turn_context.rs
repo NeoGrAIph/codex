@@ -1,8 +1,6 @@
 use super::*;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::shell_snapshot::ShellSnapshotFile;
-use crate::tools::multi_agent_v1_projection::NAMESPACE_COLLISION_WARNING;
-use crate::tools::multi_agent_v1_projection::ProjectedV1Availability;
 use codex_core_skills::HostSkillsSnapshot;
 use codex_file_system::FileSystemSandboxContext;
 use codex_model_provider::SharedModelProvider;
@@ -156,7 +154,6 @@ pub struct TurnContext {
     pub(crate) terminal_error: Arc<Mutex<Option<ErrorEvent>>>,
     pub(crate) server_model_warning_emitted: AtomicBool,
     pub(crate) model_verification_emitted: AtomicBool,
-    pub(crate) projected_v1_collision_warning_emitted: Arc<AtomicBool>,
 }
 
 enum TurnMultiAgentRuntime {
@@ -322,9 +319,6 @@ impl TurnContext {
             ),
             model_verification_emitted: AtomicBool::new(
                 self.model_verification_emitted.load(Ordering::Relaxed),
-            ),
-            projected_v1_collision_warning_emitted: Arc::clone(
-                &self.projected_v1_collision_warning_emitted,
             ),
         }
     }
@@ -601,7 +595,6 @@ impl Session {
             terminal_error: Arc::new(Mutex::new(None)),
             server_model_warning_emitted: AtomicBool::new(false),
             model_verification_emitted: AtomicBool::new(false),
-            projected_v1_collision_warning_emitted: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -744,14 +737,10 @@ impl Session {
             TurnMultiAgentRuntime::ResolveAndStore => {
                 self.resolve_multi_agent_version_for_model(&model_info, &per_turn_config)
             }
-            TurnMultiAgentRuntime::Preview => {
-                self.multi_agent_runtime.exact_version().unwrap_or_else(|| {
-                    per_turn_config.multi_agent_version_for_model(
-                        self.multi_agent_version()
-                            .or(model_info.multi_agent_version),
-                    )
-                })
-            }
+            TurnMultiAgentRuntime::Preview => per_turn_config.multi_agent_version_for_model(
+                self.multi_agent_version()
+                    .or(model_info.multi_agent_version),
+            ),
         };
         let plugins_input = per_turn_config.plugins_config_input();
         let plugin_outcome = self
@@ -838,29 +827,6 @@ impl Session {
             self.send_event(tc, EventMsg::Warning(WarningEvent { message }))
                 .await;
         }
-    }
-
-    pub(crate) async fn maybe_emit_projected_v1_collision_warning_for_turn(
-        &self,
-        tc: &TurnContext,
-        availability: ProjectedV1Availability,
-    ) {
-        if availability != ProjectedV1Availability::NamespaceInUse
-            || tc
-                .projected_v1_collision_warning_emitted
-                .swap(true, Ordering::Relaxed)
-        {
-            return;
-        }
-
-        tracing::warn!("{NAMESPACE_COLLISION_WARNING}");
-        self.send_event(
-            tc,
-            EventMsg::Warning(WarningEvent {
-                message: NAMESPACE_COLLISION_WARNING.to_string(),
-            }),
-        )
-        .await;
     }
 
     pub(crate) async fn new_default_turn(&self) -> Arc<TurnContext> {

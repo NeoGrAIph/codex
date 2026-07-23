@@ -1,5 +1,4 @@
 use super::*;
-use crate::agent::control::ResumeAgentOptions;
 use crate::agent::next_thread_spawn_depth;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
@@ -8,7 +7,6 @@ use codex_tools::ToolSpec;
 use std::sync::Arc;
 
 pub(crate) struct Handler;
-pub(crate) struct ProjectedHandler;
 
 impl ToolExecutor<ToolInvocation> for Handler {
     fn tool_name(&self) -> ToolName {
@@ -27,42 +25,12 @@ impl ToolExecutor<ToolInvocation> for Handler {
     }
 
     fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
-        Box::pin(async move {
-            handle_resume_agent(invocation, V1ToolInvocationMode::Native)
-                .await
-                .map(boxed_tool_output)
-        })
-    }
-}
-
-impl ToolExecutor<ToolInvocation> for ProjectedHandler {
-    fn tool_name(&self) -> ToolName {
-        ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "resume_agent")
-    }
-
-    fn spec(&self) -> ToolSpec {
-        create_resume_agent_tool()
-    }
-
-    fn search_info(&self) -> Option<ToolSearchInfo> {
-        multi_agent_tool_search_info(
-            "resume_agent resume reopen closed agent subagent thread id target",
-            self.spec(),
-        )
-    }
-
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
-        Box::pin(async move {
-            handle_resume_agent(invocation, V1ToolInvocationMode::ProjectedFromV2)
-                .await
-                .map(boxed_tool_output)
-        })
+        Box::pin(async move { handle_resume_agent(invocation).await.map(boxed_tool_output) })
     }
 }
 
 async fn handle_resume_agent(
     invocation: ToolInvocation,
-    invocation_mode: V1ToolInvocationMode,
 ) -> Result<ResumeAgentResult, FunctionCallError> {
     let ToolInvocation {
         session,
@@ -76,6 +44,11 @@ async fn handle_resume_agent(
     let receiver_thread_id = ThreadId::from_string(&args.id).map_err(|err| {
         FunctionCallError::RespondToModel(format!("invalid agent id {}: {err:?}", args.id))
     })?;
+    let receiver_agent = session
+        .services
+        .agent_control
+        .get_agent_metadata(receiver_thread_id)
+        .unwrap_or_default();
     let child_depth = next_thread_spawn_depth(&turn.session_source);
     let max_depth = turn.config.agent_max_depth;
     if exceeds_thread_spawn_depth_limit(child_depth, max_depth) {
@@ -83,13 +56,6 @@ async fn handle_resume_agent(
             "Agent depth limit reached. Solve the task yourself.".to_string(),
         ));
     }
-    let lifecycle_target =
-        resolve_v1_lifecycle_target(&session, invocation_mode, receiver_thread_id).await?;
-    let receiver_agent = session
-        .services
-        .agent_control
-        .get_agent_metadata(receiver_thread_id)
-        .unwrap_or_default();
 
     session
         .emit_turn_item_started(
@@ -113,43 +79,26 @@ async fn handle_resume_agent(
         )
         .await;
 
-    let mut status = match lifecycle_target.as_ref() {
-        Some(target) => {
-            session
-                .services
-                .agent_control
-                .projected_v1_target_status(target)
-                .await
-        }
-        None => {
-            session
-                .services
-                .agent_control
-                .get_status(receiver_thread_id)
-                .await
-        }
-    };
+    let mut status = session
+        .services
+        .agent_control
+        .get_status(receiver_thread_id)
+        .await;
     let (receiver_agent, error) = if matches!(status, AgentStatus::NotFound) {
         match Box::pin(try_resume_closed_agent(
             &session,
             &turn,
             receiver_thread_id,
             child_depth,
-            invocation_mode,
         ))
         .await
         {
-            Ok(resumed_target) => {
-                status = match resumed_target {
-                    Some(target) => target.status().await,
-                    None => {
-                        session
-                            .services
-                            .agent_control
-                            .get_status(receiver_thread_id)
-                            .await
-                    }
-                };
+            Ok(()) => {
+                status = session
+                    .services
+                    .agent_control
+                    .get_status(receiver_thread_id)
+                    .await;
                 (
                     session
                         .services
@@ -160,22 +109,11 @@ async fn handle_resume_agent(
                 )
             }
             Err(err) => {
-                status = match lifecycle_target.as_ref() {
-                    Some(target) => {
-                        session
-                            .services
-                            .agent_control
-                            .projected_v1_target_status(target)
-                            .await
-                    }
-                    None => {
-                        session
-                            .services
-                            .agent_control
-                            .get_status(receiver_thread_id)
-                            .await
-                    }
-                };
+                status = session
+                    .services
+                    .agent_control
+                    .get_status(receiver_thread_id)
+                    .await;
                 (receiver_agent, Some(err))
             }
         }
@@ -219,12 +157,6 @@ impl CoreToolRuntime for Handler {
     }
 }
 
-impl CoreToolRuntime for ProjectedHandler {
-    fn matches_kind(&self, payload: &ToolPayload) -> bool {
-        matches!(payload, ToolPayload::Function { .. })
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct ResumeAgentArgs {
     id: String,
@@ -258,43 +190,20 @@ async fn try_resume_closed_agent(
     turn: &Arc<TurnContext>,
     receiver_thread_id: ThreadId,
     child_depth: i32,
-    invocation_mode: V1ToolInvocationMode,
-) -> Result<Option<ValidatedV1Thread>, FunctionCallError> {
-    let mut config = build_agent_resume_config(turn.as_ref())?;
-    if invocation_mode == V1ToolInvocationMode::ProjectedFromV2 {
-        apply_exact_v1_runtime_authority_overrides(&mut config, turn.as_ref())?;
-    }
-    let session_source = thread_spawn_source(
-        session.thread_id(),
-        &turn.session_source,
-        child_depth,
-        /*agent_role*/ None,
-        /*task_name*/ None,
-    )?;
-    let options = ResumeAgentOptions {
-        environment_selections: match invocation_mode {
-            V1ToolInvocationMode::Native => None,
-            V1ToolInvocationMode::ProjectedFromV2 => Some(turn.environments.to_selections()),
-        },
-    };
-    match invocation_mode {
-        V1ToolInvocationMode::Native => session
-            .services
-            .agent_control
-            .resume_agent_from_rollout(config, receiver_thread_id, session_source, options)
-            .await
-            .map(|_| None),
-        V1ToolInvocationMode::ProjectedFromV2 => session
-            .services
-            .agent_control
-            .resume_projected_v1_agent_from_rollout(
-                config,
-                receiver_thread_id,
-                session_source,
-                options,
-            )
-            .await
-            .map(Some),
-    }
+) -> Result<(), FunctionCallError> {
+    let config = build_agent_resume_config(turn.as_ref())?;
+    Box::pin(session.services.agent_control.resume_agent_from_rollout(
+        config,
+        receiver_thread_id,
+        thread_spawn_source(
+            session.thread_id(),
+            &turn.session_source,
+            child_depth,
+            /*agent_role*/ None,
+            /*task_name*/ None,
+        )?,
+    ))
+    .await
+    .map(|_| ())
     .map_err(|err| collab_agent_error(receiver_thread_id, err))
 }

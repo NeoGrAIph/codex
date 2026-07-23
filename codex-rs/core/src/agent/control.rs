@@ -6,7 +6,6 @@ use crate::agent::role::resolve_role_config;
 use crate::agent::status::is_final;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
-use crate::codex_thread::CodexThread;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::config::RolloutBudgetConfig;
@@ -24,6 +23,9 @@ use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::MessagePhase;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -50,48 +52,16 @@ use tracing::warn;
 pub(crate) use self::execution::AgentExecutionGuard;
 use self::execution::AgentExecutionLimiter;
 use self::residency::V2Residency;
-pub(crate) use self::target_version::ProjectedV1LifecycleTarget;
-pub(crate) use self::target_version::ValidatedV1Thread;
 
 mod execution;
-mod fork_history;
 mod legacy;
 mod residency;
-mod resume;
 mod spawn;
-mod target_version;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SpawnAgentForkMode {
     FullHistory,
     LastNTurns(usize),
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum MultiAgentRuntimeIntent {
-    #[default]
-    Inherit,
-    ExactV1Spawn,
-    ExactV1Resume,
-}
-
-impl MultiAgentRuntimeIntent {
-    pub(crate) fn exact_version(self) -> Option<MultiAgentVersion> {
-        match self {
-            Self::Inherit => None,
-            Self::ExactV1Spawn | Self::ExactV1Resume => Some(MultiAgentVersion::V1),
-        }
-    }
-}
-
-pub(crate) fn resolve_persisted_multi_agent_version_for_exact_v1(
-    history: &InitialHistory,
-    history_mode: ThreadHistoryMode,
-) -> Option<MultiAgentVersion> {
-    history.get_multi_agent_version().or_else(|| {
-        (history_mode == ThreadHistoryMode::Legacy && matches!(history, InitialHistory::Resumed(_)))
-            .then_some(MultiAgentVersion::V1)
-    })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -100,12 +70,6 @@ pub(crate) struct SpawnAgentOptions {
     pub(crate) fork_mode: Option<SpawnAgentForkMode>,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) environments: Option<Vec<TurnEnvironmentSelection>>,
-    pub(crate) multi_agent_runtime: MultiAgentRuntimeIntent,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ResumeAgentOptions {
-    pub(crate) environment_selections: Option<Vec<TurnEnvironmentSelection>>,
 }
 
 #[derive(Clone, Debug)]
@@ -471,7 +435,6 @@ impl AgentControl {
     fn maybe_start_completion_watcher(
         &self,
         child_thread_id: ThreadId,
-        child_thread: Option<Arc<CodexThread>>,
         session_source: Option<SessionSource>,
         child_reference: String,
         child_agent_path: Option<AgentPath>,
@@ -484,33 +447,19 @@ impl AgentControl {
         };
         let control = self.clone();
         tokio::spawn(async move {
-            let status = match child_thread.as_ref() {
-                Some(child_thread) => {
-                    let mut status_rx = child_thread.subscribe_status();
+            let status = match control.subscribe_status(child_thread_id).await {
+                Ok(mut status_rx) => {
                     let mut status = status_rx.borrow().clone();
                     while !is_final(&status) {
                         if status_rx.changed().await.is_err() {
-                            status = child_thread.agent_status().await;
+                            status = control.get_status(child_thread_id).await;
                             break;
                         }
                         status = status_rx.borrow().clone();
                     }
                     status
                 }
-                None => match control.subscribe_status(child_thread_id).await {
-                    Ok(mut status_rx) => {
-                        let mut status = status_rx.borrow().clone();
-                        while !is_final(&status) {
-                            if status_rx.changed().await.is_err() {
-                                status = control.get_status(child_thread_id).await;
-                                break;
-                            }
-                            status = status_rx.borrow().clone();
-                        }
-                        status
-                    }
-                    Err(_) => control.get_status(child_thread_id).await,
-                },
+                Err(_) => control.get_status(child_thread_id).await,
             };
             if !is_final(&status) {
                 return;
@@ -519,9 +468,13 @@ impl AgentControl {
             let Ok(state) = control.upgrade() else {
                 return;
             };
-            let child_uses_multi_agent_v2 = child_thread.as_ref().is_none_or(|child_thread| {
-                child_thread.multi_agent_version() == Some(MultiAgentVersion::V2)
-            });
+            let child_thread = state.get_thread(child_thread_id).await.ok();
+            let child_uses_multi_agent_v2 = match child_thread.as_ref() {
+                Some(child_thread) => {
+                    child_thread.multi_agent_version() == Some(MultiAgentVersion::V2)
+                }
+                None => true,
+            };
             if child_agent_path.is_some() && child_uses_multi_agent_v2 {
                 let Some(child_agent_path) = child_agent_path.clone() else {
                     return;

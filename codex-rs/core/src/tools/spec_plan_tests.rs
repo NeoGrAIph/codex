@@ -8,7 +8,6 @@ use codex_mcp::ToolInfo;
 use codex_model_provider::create_model_provider;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
-use codex_protocol::ThreadId;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::openai_models::ApplyPatchToolType;
@@ -16,8 +15,6 @@ use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ToolMode;
 use codex_protocol::openai_models::WebSearchToolType;
-use codex_protocol::protocol::SessionSource;
-use codex_protocol::protocol::SubAgentSource;
 use codex_tools::DiscoverablePluginInfo;
 use codex_tools::DiscoverableTool;
 use codex_tools::ResponsesApiNamespaceTool;
@@ -248,16 +245,6 @@ fn update_config(turn: &mut TurnContext, update: impl FnOnce(&mut crate::config:
     turn.config = Arc::new(config);
 }
 
-fn set_thread_spawn_depth(turn: &mut TurnContext, depth: i32) {
-    turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-        parent_thread_id: ThreadId::new(),
-        depth,
-        agent_path: None,
-        agent_nickname: None,
-        agent_role: None,
-    });
-}
-
 fn set_web_search_mode(turn: &mut TurnContext, mode: WebSearchMode) {
     update_config(turn, |config| {
         config
@@ -445,26 +432,6 @@ fn has_parameter(spec: &ToolSpec, parameter_name: &str) -> bool {
         .expect("tool spec should serialize")
         .pointer(&format!("/parameters/properties/{parameter_name}"))
         .is_some()
-}
-
-fn namespace_function<'a>(
-    plan: &'a ToolPlanProbe,
-    namespace_name: &str,
-    function_name: &str,
-) -> &'a ResponsesApiTool {
-    let ToolSpec::Namespace(namespace) = plan.visible_spec(namespace_name) else {
-        panic!("expected namespace `{namespace_name}`");
-    };
-    namespace
-        .tools
-        .iter()
-        .find_map(|tool| match tool {
-            ResponsesApiNamespaceTool::Function(tool) if tool.name == function_name => Some(tool),
-            ResponsesApiNamespaceTool::Function(_) => None,
-        })
-        .unwrap_or_else(|| {
-            panic!("expected function `{function_name}` in namespace `{namespace_name}`")
-        })
 }
 
 fn apply_patch_accepts_environment_id(spec: &ToolSpec) -> bool {
@@ -1197,7 +1164,7 @@ async fn excluded_deferred_namespaces_do_not_enable_nested_tool_guidance() {
 }
 
 #[tokio::test]
-async fn multi_agent_feature_selects_compatible_agent_tool_families() {
+async fn multi_agent_feature_selects_one_agent_tool_family() {
     let v1 = probe(|turn| {
         set_feature(turn, Feature::Collab, /*enabled*/ true);
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
@@ -1259,7 +1226,7 @@ async fn multi_agent_feature_selects_compatible_agent_tool_families() {
         });
     })
     .await;
-    v2.assert_visible_contains(&[MULTI_AGENT_V2_NAMESPACE, MULTI_AGENT_V1_NAMESPACE]);
+    v2.assert_visible_contains(&[MULTI_AGENT_V2_NAMESPACE]);
     v2.assert_visible_lacks(&[
         "spawn_agent",
         "send_message",
@@ -1287,16 +1254,6 @@ async fn multi_agent_feature_selects_compatible_agent_tool_families() {
             "expected {tool_name} in {MULTI_AGENT_V2_NAMESPACE} namespace"
         );
     }
-    assert_eq!(
-        v2.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
-        &[
-            "close_agent".to_string(),
-            "resume_agent".to_string(),
-            "send_input".to_string(),
-            "spawn_agent".to_string(),
-            "wait_agent".to_string(),
-        ]
-    );
     let ToolSpec::Namespace(namespace) = v2.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
         panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace");
     };
@@ -1341,313 +1298,13 @@ async fn multi_agent_feature_selects_compatible_agent_tool_families() {
         });
     })
     .await;
-    direct_model_only
-        .assert_visible_contains(&[MULTI_AGENT_V2_NAMESPACE, MULTI_AGENT_V1_NAMESPACE]);
+    direct_model_only.assert_visible_contains(&[MULTI_AGENT_V2_NAMESPACE]);
     direct_model_only.assert_visible_lacks(&["spawn_agent", "send_message", "wait_agent"]);
     assert_eq!(
         direct_model_only
             .exposure(&ToolName::namespaced(MULTI_AGENT_V2_NAMESPACE, "spawn_agent").to_string()),
         ToolExposure::DirectModelOnly
     );
-    assert_eq!(
-        direct_model_only
-            .exposure(&ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "spawn_agent").to_string()),
-        ToolExposure::DirectModelOnly
-    );
-}
-
-#[tokio::test]
-async fn projected_v1_namespace_matches_native_v1_schema() {
-    let native_v1 = probe(|turn| {
-        set_feature(turn, Feature::Collab, /*enabled*/ true);
-        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
-        update_config(turn, |config| {
-            config.multi_agent_v2.min_wait_timeout_ms = 7_000;
-            config.multi_agent_v2.default_wait_timeout_ms = 42_000;
-            config.multi_agent_v2.max_wait_timeout_ms = 91_000;
-        });
-    })
-    .await;
-    let projected_v1 = probe(|turn| {
-        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
-        update_config(turn, |config| {
-            config.multi_agent_v2.min_wait_timeout_ms = 7_000;
-            config.multi_agent_v2.default_wait_timeout_ms = 42_000;
-            config.multi_agent_v2.max_wait_timeout_ms = 91_000;
-        });
-    })
-    .await;
-
-    assert_eq!(
-        projected_v1.visible_spec(MULTI_AGENT_V1_NAMESPACE),
-        native_v1.visible_spec(MULTI_AGENT_V1_NAMESPACE)
-    );
-    assert_eq!(
-        projected_v1.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
-        &[
-            "close_agent".to_string(),
-            "resume_agent".to_string(),
-            "send_input".to_string(),
-            "spawn_agent".to_string(),
-            "wait_agent".to_string(),
-        ]
-    );
-}
-
-#[tokio::test]
-async fn projected_v1_visibility_respects_depth_and_v2_exposure() {
-    let root = probe(|turn| {
-        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
-        update_config(turn, |config| {
-            config.agent_max_depth = 2;
-            config.multi_agent_v2.non_code_mode_only = false;
-        });
-    })
-    .await;
-    let intermediate = probe(|turn| {
-        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
-        update_config(turn, |config| {
-            config.agent_max_depth = 2;
-            config.multi_agent_v2.non_code_mode_only = false;
-        });
-        set_thread_spawn_depth(turn, /*depth*/ 1);
-    })
-    .await;
-    let boundary = probe(|turn| {
-        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
-        update_config(turn, |config| {
-            config.agent_max_depth = 2;
-            config.multi_agent_v2.non_code_mode_only = false;
-        });
-        set_thread_spawn_depth(turn, /*depth*/ 2);
-    })
-    .await;
-
-    for plan in [&root, &intermediate] {
-        plan.assert_visible_contains(&[MULTI_AGENT_V2_NAMESPACE, MULTI_AGENT_V1_NAMESPACE]);
-        assert_eq!(
-            plan.exposure(
-                &ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "spawn_agent").to_string()
-            ),
-            ToolExposure::Direct
-        );
-    }
-    boundary.assert_visible_contains(&[MULTI_AGENT_V2_NAMESPACE]);
-    boundary.assert_visible_lacks(&[MULTI_AGENT_V1_NAMESPACE]);
-    boundary.assert_registered_lacks(&[&ToolName::namespaced(
-        MULTI_AGENT_V1_NAMESPACE,
-        "spawn_agent",
-    )
-    .to_string()]);
-
-    let v1_direct_only = probe(|turn| {
-        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
-        update_config(turn, |config| {
-            config.multi_agent_v2.non_code_mode_only = false;
-            config.code_mode.direct_only_tool_namespaces =
-                vec![MULTI_AGENT_V1_NAMESPACE.to_string()];
-        });
-    })
-    .await;
-    assert_eq!(
-        v1_direct_only
-            .exposure(&ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "spawn_agent").to_string()),
-        ToolExposure::DirectModelOnly
-    );
-    assert_eq!(
-        v1_direct_only
-            .exposure(&ToolName::namespaced(MULTI_AGENT_V2_NAMESPACE, "spawn_agent").to_string()),
-        ToolExposure::Direct
-    );
-}
-
-#[tokio::test]
-async fn projected_v1_collision_preserves_existing_namespace_owner() {
-    let configured_owner = probe(|turn| {
-        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
-        update_config(turn, |config| {
-            config.multi_agent_v2.tool_namespace = Some(MULTI_AGENT_V1_NAMESPACE.to_string());
-        });
-    })
-    .await;
-    assert_eq!(
-        configured_owner.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
-        &[
-            "followup_task".to_string(),
-            "interrupt_agent".to_string(),
-            "list_agents".to_string(),
-            "send_message".to_string(),
-            "spawn_agent".to_string(),
-            "wait_agent".to_string(),
-        ]
-    );
-    assert!(
-        namespace_function(&configured_owner, MULTI_AGENT_V1_NAMESPACE, "spawn_agent")
-            .parameters
-            .properties
-            .as_ref()
-            .is_some_and(|properties| properties.contains_key("task_name"))
-    );
-    configured_owner.assert_registered_lacks(&[
-        &ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "resume_agent").to_string(),
-        &ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "send_input").to_string(),
-        &ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "close_agent").to_string(),
-    ]);
-
-    let dynamic_owner = probe_with(
-        |turn| {
-            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
-        },
-        ToolPlanInputs {
-            dynamic_tools: vec![dynamic_tool(
-                Some(MULTI_AGENT_V1_NAMESPACE),
-                "external",
-                /*defer_loading*/ false,
-            )],
-            ..Default::default()
-        },
-    )
-    .await;
-    assert_eq!(
-        dynamic_owner.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
-        &["external".to_string()]
-    );
-    dynamic_owner.assert_registered_lacks(&[&ToolName::namespaced(
-        MULTI_AGENT_V1_NAMESPACE,
-        "spawn_agent",
-    )
-    .to_string()]);
-
-    let runtime_owner = probe_with(
-        |turn| {
-            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
-        },
-        ToolPlanInputs {
-            tool_runtimes: vec![mcp_runtime(
-                "external",
-                MULTI_AGENT_V1_NAMESPACE,
-                "spawn_agent",
-                ToolExposure::Direct,
-            )],
-            ..Default::default()
-        },
-    )
-    .await;
-    assert_eq!(
-        runtime_owner.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
-        &["spawn_agent".to_string()]
-    );
-    runtime_owner.assert_registered_contains(&[&ToolName::namespaced(
-        MULTI_AGENT_V1_NAMESPACE,
-        "spawn_agent",
-    )
-    .to_string()]);
-    assert!(
-        !namespace_function(&runtime_owner, MULTI_AGENT_V1_NAMESPACE, "spawn_agent")
-            .parameters
-            .properties
-            .as_ref()
-            .is_some_and(|properties| properties.contains_key("task_name"))
-    );
-}
-
-#[tokio::test]
-async fn projected_v1_reserves_its_namespace_from_extension_tools() {
-    let projected = probe_with(
-        |turn| {
-            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
-        },
-        ToolPlanInputs {
-            extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
-                namespace: MULTI_AGENT_V1_NAMESPACE,
-                tool_name: "extension_only",
-            })],
-            ..Default::default()
-        },
-    )
-    .await;
-    assert_eq!(
-        projected.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
-        &[
-            "close_agent".to_string(),
-            "resume_agent".to_string(),
-            "send_input".to_string(),
-            "spawn_agent".to_string(),
-            "wait_agent".to_string(),
-        ]
-    );
-    projected.assert_registered_lacks(&[&ToolName::namespaced(
-        MULTI_AGENT_V1_NAMESPACE,
-        "extension_only",
-    )
-    .to_string()]);
-
-    let depth_ineligible = probe_with(
-        |turn| {
-            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
-            update_config(turn, |config| {
-                config.agent_max_depth = 1;
-            });
-            set_thread_spawn_depth(turn, /*depth*/ 1);
-        },
-        ToolPlanInputs {
-            extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
-                namespace: MULTI_AGENT_V1_NAMESPACE,
-                tool_name: "extension_only",
-            })],
-            ..Default::default()
-        },
-    )
-    .await;
-    assert_eq!(
-        depth_ineligible.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
-        &["extension_only".to_string()]
-    );
-}
-
-#[tokio::test]
-async fn projected_v1_remains_direct_when_tool_search_is_available() {
-    let plan = probe_with(
-        |turn| {
-            turn.model_info.supports_search_tool = true;
-            set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
-            update_config(turn, |config| {
-                config.multi_agent_v2.non_code_mode_only = false;
-            });
-        },
-        ToolPlanInputs {
-            tool_runtimes: vec![mcp_runtime(
-                "searchable",
-                "mcp__searchable",
-                "lookup",
-                ToolExposure::Deferred,
-            )],
-            ..Default::default()
-        },
-    )
-    .await;
-
-    plan.assert_visible_contains(&[
-        MULTI_AGENT_V2_NAMESPACE,
-        MULTI_AGENT_V1_NAMESPACE,
-        "tool_search",
-    ]);
-    for tool_name in [
-        "spawn_agent",
-        "send_input",
-        "resume_agent",
-        "wait_agent",
-        "close_agent",
-    ] {
-        assert_eq!(
-            plan.exposure(&ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, tool_name).to_string()),
-            ToolExposure::Direct
-        );
-    }
-    let ToolSpec::ToolSearch { description, .. } = plan.visible_spec("tool_search") else {
-        panic!("expected visible tool_search spec");
-    };
-    assert!(!description.contains("Multi-agent tools"));
 }
 
 #[tokio::test]
@@ -1821,7 +1478,7 @@ async fn multi_agent_v2_namespace_is_supported_by_bedrock_provider() {
 }
 
 #[tokio::test]
-async fn code_mode_only_can_expose_compatible_multi_agent_families_as_normal_tools() {
+async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
     let plan = probe(|turn| {
         set_features(
             turn,
@@ -1845,7 +1502,6 @@ async fn code_mode_only_can_expose_compatible_multi_agent_families_as_normal_too
             "wait",
             "request_user_input",
             "agents",
-            MULTI_AGENT_V1_NAMESPACE,
             // Hosted Responses tool.
             "web_search",
         ]
@@ -1964,9 +1620,8 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
             codex_code_mode::PUBLIC_TOOL_NAME,
             codex_code_mode::WAIT_TOOL_NAME,
             "request_user_input",
-            // Compatible multi-agent tools.
+            // Multi-agent v2 tools.
             MULTI_AGENT_V2_NAMESPACE,
-            MULTI_AGENT_V1_NAMESPACE,
             // Hosted Responses tools.
             "web_search",
         ]

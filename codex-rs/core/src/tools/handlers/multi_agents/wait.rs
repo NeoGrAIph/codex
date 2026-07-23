@@ -19,22 +19,11 @@ use tokio::time::timeout_at;
 #[derive(Default)]
 pub(crate) struct Handler {
     options: WaitAgentTimeoutOptions,
-    invocation_mode: V1ToolInvocationMode,
 }
 
 impl Handler {
     pub(crate) fn new(options: WaitAgentTimeoutOptions) -> Self {
-        Self {
-            options,
-            invocation_mode: V1ToolInvocationMode::Native,
-        }
-    }
-
-    pub(crate) fn projected(options: WaitAgentTimeoutOptions) -> Self {
-        Self {
-            options,
-            invocation_mode: V1ToolInvocationMode::ProjectedFromV2,
-        }
+        Self { options }
     }
 }
 
@@ -74,22 +63,6 @@ impl Handler {
         let arguments = function_arguments(payload)?;
         let args: WaitArgs = parse_arguments(&arguments)?;
         let receiver_thread_ids = parse_agent_id_targets(args.targets)?;
-        let timeout_ms = args.timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
-        let timeout_ms = match timeout_ms {
-            ms if ms <= 0 => {
-                return Err(FunctionCallError::RespondToModel(
-                    "timeout_ms must be greater than zero".to_owned(),
-                ));
-            }
-            ms => ms.clamp(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
-        };
-        let mut lifecycle_targets = Vec::with_capacity(receiver_thread_ids.len());
-        for receiver_thread_id in &receiver_thread_ids {
-            lifecycle_targets.push(
-                resolve_v1_lifecycle_target(&session, self.invocation_mode, *receiver_thread_id)
-                    .await?,
-            );
-        }
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
         let mut target_by_thread_id = HashMap::with_capacity(receiver_thread_ids.len());
         for receiver_thread_id in &receiver_thread_ids {
@@ -113,6 +86,16 @@ impl Handler {
             });
         }
 
+        let timeout_ms = args.timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS);
+        let timeout_ms = match timeout_ms {
+            ms if ms <= 0 => {
+                return Err(FunctionCallError::RespondToModel(
+                    "timeout_ms must be greater than zero".to_owned(),
+                ));
+            }
+            ms => ms.clamp(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS),
+        };
+
         session
             .emit_turn_item_started(
                 &turn,
@@ -133,31 +116,21 @@ impl Handler {
 
         let mut status_rxs = Vec::with_capacity(receiver_thread_ids.len());
         let mut initial_final_statuses = Vec::new();
-        for (id, lifecycle_target) in receiver_thread_ids.iter().zip(&lifecycle_targets) {
-            let status_subscription = match lifecycle_target.as_ref() {
-                Some(target) => session
-                    .services
-                    .agent_control
-                    .subscribe_projected_v1_target(target),
-                None => session.services.agent_control.subscribe_status(*id).await,
-            };
-            match status_subscription {
+        for id in &receiver_thread_ids {
+            match session.services.agent_control.subscribe_status(*id).await {
                 Ok(rx) => {
                     let status = rx.borrow().clone();
                     if is_final(&status) {
                         initial_final_statuses.push((*id, status));
                     }
-                    status_rxs.push((*id, rx, lifecycle_target.clone()));
+                    status_rxs.push((*id, rx));
                 }
                 Err(CodexErr::ThreadNotFound(_)) => {
                     initial_final_statuses.push((*id, AgentStatus::NotFound));
                 }
                 Err(err) => {
                     let mut statuses = HashMap::with_capacity(1);
-                    statuses.insert(
-                        *id,
-                        lifecycle_target_status(&session, *id, lifecycle_target.as_ref()).await,
-                    );
+                    statuses.insert(*id, session.services.agent_control.get_status(*id).await);
                     session
                         .emit_turn_item_completed(
                             &turn,
@@ -184,9 +157,9 @@ impl Handler {
             initial_final_statuses
         } else {
             let mut futures = FuturesUnordered::new();
-            for (id, rx, lifecycle_target) in status_rxs {
+            for (id, rx) in status_rxs.into_iter() {
                 let session = session.clone();
-                futures.push(wait_for_final_status(session, id, rx, lifecycle_target));
+                futures.push(wait_for_final_status(session, id, rx));
             }
             let mut results = Vec::new();
             let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
@@ -332,7 +305,6 @@ async fn wait_for_final_status(
     session: Arc<Session>,
     thread_id: ThreadId,
     mut status_rx: Receiver<AgentStatus>,
-    lifecycle_target: Option<ProjectedV1LifecycleTarget>,
 ) -> Option<(ThreadId, AgentStatus)> {
     let mut status = status_rx.borrow().clone();
     if is_final(&status) {
@@ -341,30 +313,12 @@ async fn wait_for_final_status(
 
     loop {
         if status_rx.changed().await.is_err() {
-            let latest =
-                lifecycle_target_status(&session, thread_id, lifecycle_target.as_ref()).await;
+            let latest = session.services.agent_control.get_status(thread_id).await;
             return is_final(&latest).then_some((thread_id, latest));
         }
         status = status_rx.borrow().clone();
         if is_final(&status) {
             return Some((thread_id, status));
         }
-    }
-}
-
-async fn lifecycle_target_status(
-    session: &Session,
-    thread_id: ThreadId,
-    lifecycle_target: Option<&ProjectedV1LifecycleTarget>,
-) -> AgentStatus {
-    match lifecycle_target {
-        Some(target) => {
-            session
-                .services
-                .agent_control
-                .projected_v1_target_status(target)
-                .await
-        }
-        None => session.services.agent_control.get_status(thread_id).await,
     }
 }
