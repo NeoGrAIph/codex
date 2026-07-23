@@ -56,6 +56,8 @@ use crate::stream_events_utils::record_completed_response_item_with_finalized_fa
 use crate::tasks::emit_compact_metric;
 use crate::tools::ToolRouter;
 use crate::tools::context::SharedTurnDiffTracker;
+use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
+use crate::tools::multi_agent_v1_projection::projected_v1_availability;
 use crate::tools::parallel::ToolCallRuntime;
 use crate::tools::registry::ToolArgumentDiffConsumer;
 use crate::tools::router::ToolRouterParams;
@@ -1336,6 +1338,19 @@ pub(crate) async fn built_tools(
         &turn_context.config,
         search_tool_enabled(turn_context),
     );
+    let runtime_namespace_in_use = mcp_tool_runtimes
+        .iter()
+        .any(|runtime| runtime.tool_name().namespace.as_deref() == Some(MULTI_AGENT_V1_NAMESPACE));
+    let projected_v1_availability = projected_v1_availability(
+        turn_context,
+        turn_context.dynamic_tools.as_slice(),
+        runtime_namespace_in_use,
+    );
+    sess.maybe_emit_projected_v1_collision_warning_for_turn(
+        turn_context,
+        projected_v1_availability,
+    )
+    .await;
     Ok(Arc::new(ToolRouter::from_context(
         step_context,
         ToolRouterParams {

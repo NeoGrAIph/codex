@@ -1,5 +1,6 @@
 use super::input_queue::InputQueue;
 use super::*;
+use crate::agent::control::MultiAgentRuntimeIntent;
 use crate::agents_md_manager::AgentsMdManager;
 use crate::config::ConstraintError;
 use crate::environment_selection::ThreadEnvironments;
@@ -38,6 +39,7 @@ pub(crate) struct Session {
     /// session.
     pub(super) features: ManagedFeatures,
     pub(super) multi_agent_version: OnceLock<MultiAgentVersion>,
+    pub(super) multi_agent_runtime: MultiAgentRuntimeIntent,
     pub(super) pending_mcp_server_refresh_config: Mutex<Option<McpServerRefreshConfig>>,
     pub(crate) conversation: Arc<RealtimeConversationManager>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
@@ -461,6 +463,11 @@ impl Session {
         self.thread_id
     }
 
+    /// Returns whether descendants spawned through the native V1 surface must remain exact V1.
+    pub(crate) fn requires_exact_v1_descendants(&self) -> bool {
+        self.multi_agent_runtime.exact_version() == Some(MultiAgentVersion::V1)
+    }
+
     /// Returns the identity shared by the root thread and all descendant threads.
     pub(crate) fn session_id(&self) -> SessionId {
         self.services.agent_control.session_id()
@@ -501,6 +508,7 @@ impl Session {
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
         external_time_provider: Option<Arc<dyn TimeProvider>>,
         multi_agent_version: Option<MultiAgentVersion>,
+        multi_agent_runtime: MultiAgentRuntimeIntent,
     ) -> anyhow::Result<Arc<Self>> {
         debug!(
             "Configuring session: model={}; provider={:?}",
@@ -1153,6 +1161,7 @@ impl Session {
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
                 features: config.features.clone(),
                 multi_agent_version,
+                multi_agent_runtime,
                 pending_mcp_server_refresh_config: Mutex::new(None),
                 conversation: Arc::new(RealtimeConversationManager::new()),
                 active_turn: Mutex::new(None),

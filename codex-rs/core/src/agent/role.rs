@@ -172,7 +172,12 @@ mod reload {
             layers,
             config.config_layer_stack.requirements().clone(),
             config.config_layer_stack.requirements_toml().clone(),
-        )?)
+        )?
+        .with_user_and_project_exec_policy_rules_ignored(
+            config
+                .config_layer_stack
+                .ignore_user_and_project_exec_policy_rules(),
+        ))
     }
 
     fn deserialize_effective_config(

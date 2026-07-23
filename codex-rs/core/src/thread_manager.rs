@@ -1,6 +1,7 @@
 use crate::CodexAppsToolsCache;
 use crate::SkillsService;
 use crate::agent::AgentControl;
+use crate::agent::control::MultiAgentRuntimeIntent;
 use crate::attestation::AttestationProvider;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
@@ -101,6 +102,13 @@ static FORCE_TEST_THREAD_MANAGER_BEHAVIOR: AtomicBool = AtomicBool::new(false);
 
 type CapturedOps = Vec<(ThreadId, Op)>;
 type SharedCapturedOps = Arc<std::sync::Mutex<CapturedOps>>;
+
+pub(crate) use self::lifecycle::ThreadLifecycleGuard;
+use self::lifecycle::ThreadLifecycleLocks;
+pub(crate) use self::multi_agent_runtime::normalize_multi_agent_runtime_intent;
+
+mod lifecycle;
+mod multi_agent_runtime;
 
 pub(crate) fn set_thread_manager_test_mode_for_tests(enabled: bool) {
     FORCE_TEST_THREAD_MANAGER_BEHAVIOR.store(enabled, Ordering::Relaxed);
@@ -235,11 +243,14 @@ fn effective_originator_value(
 pub(crate) struct ResumeThreadWithHistoryOptions {
     pub(crate) config: Config,
     pub(crate) initial_history: InitialHistory,
+    pub(crate) history_mode: ThreadHistoryMode,
     pub(crate) agent_control: AgentControl,
     pub(crate) session_source: SessionSource,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) inherited_environments: Option<TurnEnvironmentSnapshot>,
     pub(crate) inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
+    pub(crate) environment_selections: Option<Vec<TurnEnvironmentSelection>>,
+    pub(crate) multi_agent_runtime: MultiAgentRuntimeIntent,
 }
 
 /// Shared, `Arc`-owned state for [`ThreadManager`]. This `Arc` is required to have a single
@@ -247,6 +258,7 @@ pub(crate) struct ResumeThreadWithHistoryOptions {
 /// function to require an `Arc<&Self>`.
 pub(crate) struct ThreadManagerState {
     threads: Arc<RwLock<HashMap<ThreadId, Arc<CodexThread>>>>,
+    thread_lifecycle_locks: ThreadLifecycleLocks,
     thread_created_tx: broadcast::Sender<ThreadId>,
     auth_manager: Arc<AuthManager>,
     models_manager: SharedModelsManager,
@@ -348,6 +360,7 @@ impl ThreadManager {
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
+                thread_lifecycle_locks: ThreadLifecycleLocks::default(),
                 thread_created_tx,
                 models_manager,
                 environment_manager,
@@ -467,6 +480,7 @@ impl ThreadManager {
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
+                thread_lifecycle_locks: ThreadLifecycleLocks::default(),
                 thread_created_tx,
                 models_manager: create_model_provider(provider, Some(auth_manager.clone()))
                     .models_manager(codex_home, /*config_model_catalog*/ None),
@@ -707,6 +721,10 @@ impl ThreadManager {
         options: StartThreadOptions,
         forked_from_thread_id: Option<ThreadId>,
     ) -> CodexResult<NewThread> {
+        let _lifecycle_guard = self
+            .state
+            .lock_resumed_history_lifecycle(&options.initial_history)
+            .await;
         let agent_control = self.agent_control_for_config(&options.config);
         let (resumed_session_source, resumed_thread_source) = options
             .initial_history
@@ -734,6 +752,7 @@ impl ThreadManager {
             options.thread_extension_init,
             options.supports_openai_form_elicitation,
             /*user_shell_override*/ None,
+            MultiAgentRuntimeIntent::Inherit,
         ))
         .await
     }
@@ -803,6 +822,10 @@ impl ThreadManager {
         parent_trace: Option<W3cTraceContext>,
         supports_openai_form_elicitation: bool,
     ) -> CodexResult<NewThread> {
+        let _lifecycle_guard = self
+            .state
+            .lock_resumed_history_lifecycle(&initial_history)
+            .await;
         let agent_control = self.agent_control_for_config(&config);
         let environments = default_thread_environment_selections(
             self.state.environment_manager.as_ref(),
@@ -840,6 +863,7 @@ impl ThreadManager {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             supports_openai_form_elicitation,
             /*user_shell_override*/ None,
+            MultiAgentRuntimeIntent::Inherit,
         ))
         .await
     }
@@ -885,6 +909,10 @@ impl ThreadManager {
     ) -> CodexResult<NewThread> {
         let agent_control = self.agent_control_for_config(&config);
         let initial_history = self.initial_history_from_rollout_path(rollout_path).await?;
+        let _lifecycle_guard = self
+            .state
+            .lock_resumed_history_lifecycle(&initial_history)
+            .await;
         let environments = default_thread_environment_selections(
             self.state.environment_manager.as_ref(),
             &config.cwd,
@@ -913,6 +941,7 @@ impl ThreadManager {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             supports_openai_form_elicitation,
             /*user_shell_override*/ Some(user_shell_override),
+            MultiAgentRuntimeIntent::Inherit,
         ))
         .await
     }
@@ -922,6 +951,15 @@ impl ThreadManager {
     /// Returns the thread if the thread was found and removed.
     pub async fn remove_thread(&self, thread_id: &ThreadId) -> Option<Arc<CodexThread>> {
         self.state.threads.write().await.remove(thread_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn replace_thread_for_tests(
+        &self,
+        thread_id: ThreadId,
+        thread: Arc<CodexThread>,
+    ) -> Option<Arc<CodexThread>> {
+        self.state.threads.write().await.insert(thread_id, thread)
     }
 
     /// Tries to shut down all tracked threads concurrently within the provided timeout.
@@ -1069,6 +1107,7 @@ impl ThreadManager {
                 /*parent_thread_id*/ None,
                 source_thread_id,
                 &config,
+                MultiAgentRuntimeIntent::Inherit,
             )
             .await;
         let interrupted_marker =
@@ -1209,6 +1248,16 @@ impl ThreadManagerState {
     /// Send an operation to a thread by ID.
     pub(crate) async fn send_op(&self, thread_id: ThreadId, op: Op) -> CodexResult<String> {
         let thread = self.get_thread(thread_id).await?;
+        self.send_op_to_thread(thread_id, &thread, op).await
+    }
+
+    /// Send an operation to a concrete thread instance while retaining normal operation logging.
+    pub(crate) async fn send_op_to_thread(
+        &self,
+        thread_id: ThreadId,
+        thread: &Arc<CodexThread>,
+        op: Op,
+    ) -> CodexResult<String> {
         if let Some(ops_log) = &self.ops_log
             && let Ok(mut log) = ops_log.lock()
         {
@@ -1222,6 +1271,46 @@ impl ThreadManagerState {
         self.threads.write().await.remove(thread_id)
     }
 
+    /// Remove `thread_id` only when it still identifies the expected runtime instance, and run
+    /// identity-scoped cleanup before another runtime can reuse the manager slot.
+    pub(crate) async fn remove_thread_if_same_with_cleanup<F>(
+        &self,
+        thread_id: &ThreadId,
+        expected: &Arc<CodexThread>,
+        cleanup: F,
+    ) -> Option<Arc<CodexThread>>
+    where
+        F: FnOnce(),
+    {
+        let mut threads = self.threads.write().await;
+        let is_same = threads
+            .get(thread_id)
+            .is_some_and(|thread| Arc::ptr_eq(thread, expected));
+        if !is_same {
+            return None;
+        }
+        let removed = threads.remove(thread_id);
+        cleanup();
+        removed
+    }
+
+    /// Serialize lifecycle finalization and durable graph updates for one thread identity.
+    pub(crate) async fn lock_thread_lifecycle(&self, thread_id: ThreadId) -> ThreadLifecycleGuard {
+        self.thread_lifecycle_locks.lock(thread_id).await
+    }
+
+    async fn lock_resumed_history_lifecycle(
+        &self,
+        initial_history: &InitialHistory,
+    ) -> Option<ThreadLifecycleGuard> {
+        match initial_history {
+            InitialHistory::Resumed(resumed) => {
+                Some(self.lock_thread_lifecycle(resumed.conversation_id).await)
+            }
+            InitialHistory::New | InitialHistory::Forked(_) | InitialHistory::Cleared => None,
+        }
+    }
+
     pub(crate) async fn effective_multi_agent_version_for_spawn(
         &self,
         initial_history: &InitialHistory,
@@ -1229,7 +1318,14 @@ impl ThreadManagerState {
         parent_thread_id: Option<ThreadId>,
         forked_from_thread_id: Option<ThreadId>,
         config: &Config,
+        multi_agent_runtime: MultiAgentRuntimeIntent,
     ) -> MultiAgentVersion {
+        if config.multi_agent_version_override() == Some(MultiAgentVersion::Disabled) {
+            return MultiAgentVersion::Disabled;
+        }
+        if let Some(multi_agent_version) = multi_agent_runtime.exact_version() {
+            return multi_agent_version;
+        }
         if let Some(multi_agent_version) = config.multi_agent_version_override() {
             return multi_agent_version;
         }
@@ -1397,6 +1493,7 @@ impl ThreadManagerState {
             /*inherited_environments*/ None,
             /*inherited_exec_policy*/ None,
             /*environments*/ None,
+            MultiAgentRuntimeIntent::Inherit,
         ))
         .await
     }
@@ -1415,6 +1512,7 @@ impl ThreadManagerState {
         inherited_environments: Option<TurnEnvironmentSnapshot>,
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
+        multi_agent_runtime: MultiAgentRuntimeIntent,
     ) -> CodexResult<NewThread> {
         let environments = environments.unwrap_or_else(|| {
             default_thread_environment_selections(
@@ -1443,6 +1541,7 @@ impl ThreadManagerState {
             /*thread_extension_init*/ ExtensionDataInit::default(),
             /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
+            multi_agent_runtime,
         ))
         .await
     }
@@ -1454,22 +1553,27 @@ impl ThreadManagerState {
         let ResumeThreadWithHistoryOptions {
             config,
             initial_history,
+            history_mode,
             agent_control,
             session_source,
             parent_thread_id,
             inherited_environments,
             inherited_exec_policy,
+            environment_selections,
+            multi_agent_runtime,
         } = options;
-        let environments = default_thread_environment_selections(
-            self.environment_manager.as_ref(),
-            &config.cwd,
-            &config.workspace_roots,
-        );
+        let environment_selections = environment_selections.unwrap_or_else(|| {
+            default_thread_environment_selections(
+                self.environment_manager.as_ref(),
+                &config.cwd,
+                &config.workspace_roots,
+            )
+        });
         let thread_source = initial_history.get_resumed_thread_source();
         Box::pin(self.spawn_thread_with_source(
             config,
             initial_history,
-            /*history_mode*/ None,
+            Some(history_mode),
             /*allow_provider_model_fallback*/ false,
             Arc::clone(&self.auth_manager),
             agent_control,
@@ -1482,10 +1586,11 @@ impl ThreadManagerState {
             inherited_environments,
             inherited_exec_policy,
             /*parent_trace*/ None,
-            environments,
+            environment_selections,
             /*thread_extension_init*/ ExtensionDataInit::default(),
             /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
+            multi_agent_runtime,
         ))
         .await
     }
@@ -1505,6 +1610,7 @@ impl ThreadManagerState {
         inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
         environments: Option<Vec<TurnEnvironmentSelection>>,
         thread_extension_init: ExtensionDataInit,
+        multi_agent_runtime: MultiAgentRuntimeIntent,
     ) -> CodexResult<NewThread> {
         let environments = environments.unwrap_or_else(|| {
             default_thread_environment_selections(
@@ -1533,6 +1639,7 @@ impl ThreadManagerState {
             thread_extension_init,
             /*supports_openai_form_elicitation*/ false,
             /*user_shell_override*/ None,
+            multi_agent_runtime,
         ))
         .await
     }
@@ -1576,6 +1683,7 @@ impl ThreadManagerState {
             thread_extension_init,
             supports_openai_form_elicitation,
             user_shell_override,
+            MultiAgentRuntimeIntent::Inherit,
         ))
         .await
     }
@@ -1602,11 +1710,30 @@ impl ThreadManagerState {
         thread_extension_init: ExtensionDataInit,
         supports_openai_form_elicitation: bool,
         user_shell_override: Option<crate::shell::Shell>,
+        multi_agent_runtime: MultiAgentRuntimeIntent,
     ) -> CodexResult<NewThread> {
+        let multi_agent_runtime = normalize_multi_agent_runtime_intent(
+            multi_agent_runtime,
+            &initial_history,
+            history_mode,
+            &session_source,
+            parent_thread_id,
+            forked_from_thread_id,
+            thread_source.as_ref(),
+            &config,
+        )?;
         let is_resumed_thread = matches!(&initial_history, InitialHistory::Resumed(_));
         if let InitialHistory::Resumed(resumed) = &initial_history {
             let mut threads = self.threads.write().await;
             if let Some(thread) = threads.get(&resumed.conversation_id).cloned() {
+                if multi_agent_runtime == MultiAgentRuntimeIntent::ExactV1Resume
+                    && thread.multi_agent_version() != Some(MultiAgentVersion::V1)
+                {
+                    return Err(CodexErr::InvalidRequest(format!(
+                        "thread {} does not use the V1 multi-agent runtime",
+                        resumed.conversation_id
+                    )));
+                }
                 if thread.is_running() {
                     if let Some(requested_rollout_path) = resumed.rollout_path.as_deref()
                         && thread.rollout_path().as_deref() != Some(requested_rollout_path)
@@ -1632,14 +1759,18 @@ impl ThreadManagerState {
             .parent_rollout_thread_trace_for_source(&session_source, &initial_history)
             .await;
         let tracked_session_source = session_source.clone();
-        let multi_agent_version = self
-            .initial_multi_agent_version_for_spawn(
-                &initial_history,
-                Some(&session_source),
-                parent_thread_id,
-                forked_from_thread_id,
-            )
-            .await;
+        let multi_agent_version = match multi_agent_runtime.exact_version() {
+            Some(multi_agent_version) => Some(multi_agent_version),
+            None => {
+                self.initial_multi_agent_version_for_spawn(
+                    &initial_history,
+                    Some(&session_source),
+                    parent_thread_id,
+                    forked_from_thread_id,
+                )
+                .await
+            }
+        };
         let originator = self
             .effective_originator(
                 &initial_history,
@@ -1685,6 +1816,7 @@ impl ThreadManagerState {
             attestation_provider: self.attestation_provider.clone(),
             external_time_provider: self.external_time_provider.clone(),
             inherited_multi_agent_version: multi_agent_version,
+            multi_agent_runtime,
         }))
         .await?;
         let new_thread = self

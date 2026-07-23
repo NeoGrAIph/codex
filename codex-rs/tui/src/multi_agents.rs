@@ -900,6 +900,35 @@ mod tests {
     }
 
     #[test]
+    fn collab_agent_title_falls_back_to_thread_uuid_without_metadata() {
+        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let receiver_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
+            .expect("valid receiver thread id");
+        let cell = tool_call_history_cell(
+            &ThreadItem::CollabAgentToolCall {
+                id: "call-spawn".to_string(),
+                tool: CollabAgentTool::SpawnAgent,
+                status: CollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::new(),
+            },
+            /*cached_spawn_request*/ None,
+            |_thread_id| AgentMetadata::default(),
+        )
+        .expect("spawn item renders");
+
+        assert_eq!(
+            cell_to_text(&cell),
+            format!("• Spawned {receiver_thread_id}")
+        );
+    }
+
+    #[test]
     fn collab_resume_interrupted_snapshot() {
         let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
             .expect("valid sender thread id");

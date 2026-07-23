@@ -1,4 +1,5 @@
 use super::AgentControl;
+use crate::codex_thread::CodexThread;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
@@ -46,6 +47,18 @@ impl AgentControl {
         }
         let state = self.upgrade()?;
         let thread = state.get_thread(thread_id).await?;
+        self.ensure_execution_capacity_for_bound_turn_start(&thread, starts_turn)
+            .await
+    }
+
+    pub(super) async fn ensure_execution_capacity_for_bound_turn_start(
+        &self,
+        thread: &Arc<CodexThread>,
+        starts_turn: bool,
+    ) -> CodexResult<()> {
+        if !starts_turn {
+            return Ok(());
+        }
         if thread.session.active_turn.lock().await.is_some() {
             return Ok(());
         }

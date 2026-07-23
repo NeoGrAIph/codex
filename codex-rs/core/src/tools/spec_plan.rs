@@ -33,6 +33,9 @@ use crate::tools::handlers::WaitForEnvironmentHandler;
 use crate::tools::handlers::WriteStdinHandler;
 use crate::tools::handlers::extension_tools::ExtensionToolAdapter;
 use crate::tools::handlers::multi_agents::CloseAgentHandler;
+use crate::tools::handlers::multi_agents::ProjectedCloseAgentHandler;
+use crate::tools::handlers::multi_agents::ProjectedResumeAgentHandler;
+use crate::tools::handlers::multi_agents::ProjectedSendInputHandler;
 use crate::tools::handlers::multi_agents::ResumeAgentHandler;
 use crate::tools::handlers::multi_agents::SendInputHandler;
 use crate::tools::handlers::multi_agents::SpawnAgentHandler;
@@ -40,6 +43,7 @@ use crate::tools::handlers::multi_agents::WaitAgentHandler;
 use crate::tools::handlers::multi_agents_common::DEFAULT_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents_common::MAX_WAIT_TIMEOUT_MS;
 use crate::tools::handlers::multi_agents_common::MIN_WAIT_TIMEOUT_MS;
+use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
@@ -51,6 +55,9 @@ use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandle
 use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
 use crate::tools::hosted_spec::WebSearchToolOptions;
 use crate::tools::hosted_spec::create_web_search_tool;
+use crate::tools::multi_agent_v1_projection::ProjectedV1Availability;
+use crate::tools::multi_agent_v1_projection::multi_agent_v2_base_exposure;
+use crate::tools::multi_agent_v1_projection::projected_v1_availability;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExposure;
 use crate::tools::registry::ToolRegistry;
@@ -147,6 +154,7 @@ struct CoreToolPlanContext<'a> {
     tool_search_handler_cache: &'a ToolSearchHandlerCache,
     default_agent_type_description: &'a str,
     wait_agent_timeouts: WaitAgentTimeoutOptions,
+    projected_v1_availability: ProjectedV1Availability,
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -175,6 +183,11 @@ fn build_tool_specs_and_registry(
     } = params;
     let default_agent_type_description =
         crate::agent::role::spawn_tool_spec::build(&std::collections::BTreeMap::new());
+    let projected_v1_availability = projected_v1_availability(
+        turn_context,
+        dynamic_tools,
+        runtime_owns_multi_agent_v1_namespace(&tool_runtimes),
+    );
     let context = CoreToolPlanContext {
         step_context,
         tool_runtimes: &tool_runtimes,
@@ -184,6 +197,7 @@ fn build_tool_specs_and_registry(
         tool_search_handler_cache,
         default_agent_type_description: &default_agent_type_description,
         wait_agent_timeouts: wait_agent_timeout_options(turn_context),
+        projected_v1_availability,
     };
     let mut planned_tools = PlannedTools::default();
     add_tool_sources(&context, &mut planned_tools);
@@ -401,6 +415,54 @@ fn agent_type_description(
         default_agent_type_description.to_string()
     } else {
         agent_type_description
+    }
+}
+
+fn runtime_owns_multi_agent_v1_namespace(runtimes: &[PlannedRuntime]) -> bool {
+    runtimes
+        .iter()
+        .any(|runtime| runtime.tool_name().namespace.as_deref() == Some(MULTI_AGENT_V1_NAMESPACE))
+}
+
+fn add_multi_agent_v1_tools(
+    context: &CoreToolPlanContext<'_>,
+    planned_tools: &mut PlannedTools,
+    exposure: ToolExposure,
+    projected_from_v2: bool,
+) {
+    let turn_context = context.step_context.turn.as_ref();
+    let options = SpawnAgentToolOptions {
+        available_models: turn_context.available_models.clone(),
+        agent_type_description: agent_type_description(
+            turn_context,
+            context.default_agent_type_description,
+        ),
+        expose_agent_type: !turn_context.config.agent_roles.is_empty(),
+        hide_agent_type_model_reasoning: false,
+        expose_spawn_agent_model_overrides: true,
+        multi_agent_version: if projected_from_v2 {
+            MultiAgentVersion::V1
+        } else {
+            turn_context.multi_agent_version
+        },
+        usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
+    };
+    if projected_from_v2 {
+        planned_tools.add_with_exposure(SpawnAgentHandler::projected(options), exposure);
+        planned_tools.add_with_exposure(ProjectedSendInputHandler, exposure);
+        planned_tools.add_with_exposure(ProjectedResumeAgentHandler, exposure);
+        planned_tools.add_with_exposure(
+            WaitAgentHandler::projected(WaitAgentTimeoutOptions::default()),
+            exposure,
+        );
+        planned_tools.add_with_exposure(ProjectedCloseAgentHandler, exposure);
+    } else {
+        planned_tools.add_with_exposure(SpawnAgentHandler::new(options), exposure);
+        planned_tools.add_with_exposure(SendInputHandler, exposure);
+        planned_tools.add_with_exposure(ResumeAgentHandler, exposure);
+        planned_tools
+            .add_with_exposure(WaitAgentHandler::new(context.wait_agent_timeouts), exposure);
+        planned_tools.add_with_exposure(CloseAgentHandler, exposure);
     }
 }
 
@@ -773,11 +835,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
     let turn_context = context.step_context.turn.as_ref();
     if collab_tools_enabled(turn_context) {
         if multi_agent_v2_enabled(turn_context) {
-            let exposure = if turn_context.config.multi_agent_v2.non_code_mode_only {
-                ToolExposure::DirectModelOnly
-            } else {
-                ToolExposure::Direct
-            };
+            let exposure = multi_agent_v2_base_exposure(turn_context);
             let tool_namespace = namespace_tools_enabled(turn_context)
                 .then_some(turn_context.config.multi_agent_v2.tool_namespace.as_deref())
                 .flatten();
@@ -826,31 +884,29 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                 multi_agent_v2_handler(ListAgentsHandlerV2, tool_namespace),
                 exposure,
             ));
+
+            if let ProjectedV1Availability::Available { base_exposure } =
+                context.projected_v1_availability
+            {
+                add_multi_agent_v1_tools(
+                    context,
+                    planned_tools,
+                    base_exposure,
+                    /*projected_from_v2*/ true,
+                );
+            }
         } else {
-            let agent_type_description =
-                agent_type_description(turn_context, context.default_agent_type_description);
             let exposure = if search_tool_enabled(turn_context) {
                 ToolExposure::Deferred
             } else {
                 ToolExposure::Direct
             };
-            planned_tools.add_with_exposure(
-                SpawnAgentHandler::new(SpawnAgentToolOptions {
-                    available_models: turn_context.available_models.clone(),
-                    agent_type_description,
-                    expose_agent_type: !turn_context.config.agent_roles.is_empty(),
-                    hide_agent_type_model_reasoning: false,
-                    expose_spawn_agent_model_overrides: true,
-                    multi_agent_version: turn_context.multi_agent_version,
-                    usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
-                }),
+            add_multi_agent_v1_tools(
+                context,
+                planned_tools,
                 exposure,
+                /*projected_from_v2*/ false,
             );
-            planned_tools.add_with_exposure(SendInputHandler, exposure);
-            planned_tools.add_with_exposure(ResumeAgentHandler, exposure);
-            planned_tools
-                .add_with_exposure(WaitAgentHandler::new(context.wait_agent_timeouts), exposure);
-            planned_tools.add_with_exposure(CloseAgentHandler, exposure);
         }
     }
 }
@@ -896,10 +952,15 @@ fn add_dynamic_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut Plan
 fn add_extension_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut PlannedTools) {
     // Extension ToolContributor implementations are resolved into executors
     // before planning. Core only adapts those executors into its runtime set.
+    let projected_v1_available = matches!(
+        context.projected_v1_availability,
+        ProjectedV1Availability::Available { .. }
+    );
     append_extension_tool_executors(
         context.step_context.turn.as_ref(),
         context.extension_tool_executors,
         planned_tools,
+        projected_v1_available,
     );
 }
 
@@ -940,6 +1001,7 @@ fn append_extension_tool_executors(
     turn_context: &TurnContext,
     executors: &[Arc<dyn ToolExecutor<ExtensionToolCall>>],
     planned_tools: &mut PlannedTools,
+    projected_v1_available: bool,
 ) {
     if executors.is_empty() {
         return;
@@ -969,6 +1031,14 @@ fn append_extension_tool_executors(
 
     for executor in executors.iter().cloned() {
         let tool_name = executor.tool_name();
+        if projected_v1_available
+            && tool_name.namespace.as_deref() == Some(MULTI_AGENT_V1_NAMESPACE)
+        {
+            warn!(
+                "Skipping extension tool `{tool_name}`: namespace `{MULTI_AGENT_V1_NAMESPACE}` is reserved by the projected V1 tool family"
+            );
+            continue;
+        }
         if tool_name == ToolName::namespaced("web", "run")
             && (!standalone_web_search_enabled || !web_search_mode_on)
         {

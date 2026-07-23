@@ -37,6 +37,7 @@ use tokio::time::sleep;
 const CHILD_MODEL: &str = "test-multi-agent-child";
 const ROOT_MODEL: &str = "test-multi-agent-root";
 const ROOT_PROMPT: &str = "spawn a child";
+const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
 const MULTI_AGENT_V2_NAMESPACE: &str = "collaboration";
 const UNSUPPORTED_CODE_MODE_WARNING: &str = "does not advertise Code Mode support";
 
@@ -448,16 +449,19 @@ async fn remote_multi_agent_selector_uses_model_selected_before_first_turn() -> 
     assert_eq!(
         (
             models_mock.requests().len(),
-            test.codex.multi_agent_version(),
-            tool_names(
-                &response_mock
-                    .last_request()
-                    .expect("expected response request")
-                    .body_json(),
-            )
-            .contains(&MULTI_AGENT_V2_NAMESPACE.to_string()),
+            test.codex.multi_agent_version()
         ),
-        (1, Some(MultiAgentVersion::V2), true)
+        (1, Some(MultiAgentVersion::V2))
+    );
+    let body = response_mock
+        .last_request()
+        .expect("expected response request")
+        .body_json();
+    assert!(
+        responses::namespace_child_tool(&body, MULTI_AGENT_V2_NAMESPACE, "list_agents").is_some()
+    );
+    assert!(
+        responses::namespace_child_tool(&body, MULTI_AGENT_V1_NAMESPACE, "resume_agent").is_some()
     );
 
     Ok(())

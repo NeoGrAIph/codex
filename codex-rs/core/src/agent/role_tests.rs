@@ -203,6 +203,39 @@ async fn apply_role_preserves_unspecified_keys() {
 }
 
 #[tokio::test]
+async fn apply_role_preserves_ignored_user_and_project_exec_policy_rules() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    config.config_layer_stack = config
+        .config_layer_stack
+        .clone()
+        .with_user_and_project_exec_policy_rules_ignored(true);
+    let role_path = write_role_config(
+        &home,
+        "instructions-only.toml",
+        "developer_instructions = \"Stay focused\"",
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+
+    apply_role_to_config(&mut config, Some("custom"))
+        .await
+        .expect("custom role should apply");
+
+    assert!(
+        config
+            .config_layer_stack
+            .ignore_user_and_project_exec_policy_rules()
+    );
+}
+
+#[tokio::test]
 async fn apply_role_reports_explicit_service_tier() {
     let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
     let role_path = write_role_config(

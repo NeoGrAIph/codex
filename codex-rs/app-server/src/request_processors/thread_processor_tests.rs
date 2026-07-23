@@ -258,6 +258,21 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
+    fn validate_dynamic_tools_accepts_projected_v1_namespace() {
+        let tools = vec![dynamic_tool(
+            Some("multi_agent_v1"),
+            "spawn_agent",
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+            /*defer_loading*/ false,
+        )];
+        validate_dynamic_tools(&tools).expect("runtime planner owns collision suppression");
+    }
+
+    #[test]
     fn validate_dynamic_tools_rejects_duplicate_name_in_same_namespace() {
         let function = || DynamicToolFunctionSpec {
             name: "my_tool".to_string(),
