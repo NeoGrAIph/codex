@@ -13,21 +13,20 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
-/// This structure is used to add some limits on the multi-agent capabilities for Codex. In
-/// the current implementation, it limits:
-/// * Total number of sub-agents (i.e. threads) per user session
+/// Tracks logical agents and the dedicated V1 capacity for one multi-agent session tree.
 ///
-/// This structure is shared by all agents in the same user session (because the `AgentControl`
-/// is).
+/// V2 agents use the same logical catalog, but their loaded and executing capacity is owned by
+/// V2 residency and execution limiters rather than this registry counter.
 #[derive(Default)]
 pub(crate) struct AgentRegistry {
     active_agents: Mutex<ActiveAgents>,
-    total_count: AtomicUsize,
+    v1_count: AtomicUsize,
 }
 
 #[derive(Default)]
 struct ActiveAgents {
     agent_tree: HashMap<String, AgentMetadata>,
+    v1_counted_thread_ids: HashSet<ThreadId>,
     used_agent_nicknames: HashSet<String>,
     nickname_reset_count: usize,
 }
@@ -78,17 +77,20 @@ pub(crate) fn exceeds_thread_spawn_depth_limit(depth: i32, max_depth: i32) -> bo
 impl AgentRegistry {
     pub(crate) fn reserve_spawn_slot(
         self: &Arc<Self>,
-        max_threads: Option<usize>,
+        capacity: SpawnCapacity,
     ) -> Result<SpawnReservation> {
-        if let Some(max_threads) = max_threads {
-            if !self.try_increment_spawned(max_threads) {
-                return Err(CodexErr::AgentLimitReached { max_threads });
+        let counts_toward_v1_limit = match capacity {
+            SpawnCapacity::V1Limited { max_threads } => {
+                if !self.try_increment_v1(max_threads) {
+                    return Err(CodexErr::AgentLimitReached { max_threads });
+                }
+                true
             }
-        } else {
-            self.total_count.fetch_add(1, Ordering::AcqRel);
-        }
+            SpawnCapacity::CatalogOnly => false,
+        };
         Ok(SpawnReservation {
             state: Arc::clone(self),
+            counts_toward_v1_limit,
             active: true,
             reserved_agent_nickname: None,
             reserved_agent_path: None,
@@ -96,7 +98,7 @@ impl AgentRegistry {
     }
 
     pub(crate) fn release_spawned_thread(&self, thread_id: ThreadId) {
-        let removed_counted_agent = {
+        let released_v1_slot = {
             let mut active_agents = self
                 .active_agents
                 .lock()
@@ -106,14 +108,13 @@ impl AgentRegistry {
                 .iter()
                 .find_map(|(key, metadata)| (metadata.agent_id == Some(thread_id)).then_some(key))
                 .cloned();
-            removed_key
-                .and_then(|key| active_agents.agent_tree.remove(key.as_str()))
-                .is_some_and(|metadata| {
-                    !metadata.agent_path.as_ref().is_some_and(AgentPath::is_root)
-                })
+            if let Some(removed_key) = removed_key {
+                active_agents.agent_tree.remove(removed_key.as_str());
+            }
+            active_agents.v1_counted_thread_ids.remove(&thread_id)
         };
-        if removed_counted_agent {
-            self.total_count.fetch_sub(1, Ordering::AcqRel);
+        if released_v1_slot {
+            self.release_v1_slot();
         }
     }
 
@@ -165,7 +166,32 @@ impl AgentRegistry {
             .collect()
     }
 
-    fn register_spawned_thread(&self, agent_metadata: AgentMetadata) {
+    pub(crate) fn catalog_child_ids(&self, thread_id: ThreadId) -> Vec<ThreadId> {
+        let active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(root_path) = active_agents
+            .agent_tree
+            .values()
+            .find(|metadata| metadata.agent_id == Some(thread_id))
+            .and_then(|metadata| metadata.agent_path.as_ref())
+        else {
+            return Vec::new();
+        };
+        let child_prefix = format!("{root_path}/");
+        active_agents
+            .agent_tree
+            .values()
+            .filter_map(|metadata| {
+                let path = metadata.agent_path.as_ref()?;
+                let relative_path = path.as_str().strip_prefix(&child_prefix)?;
+                (!relative_path.contains('/')).then_some(metadata.agent_id)?
+            })
+            .collect()
+    }
+
+    fn register_spawned_thread(&self, agent_metadata: AgentMetadata, counts_toward_v1_limit: bool) {
         let Some(thread_id) = agent_metadata.agent_id else {
             return;
         };
@@ -182,6 +208,10 @@ impl AgentRegistry {
             active_agents.used_agent_nicknames.insert(agent_nickname);
         }
         active_agents.agent_tree.insert(key, agent_metadata);
+        if counts_toward_v1_limit && !active_agents.v1_counted_thread_ids.insert(thread_id) {
+            drop(active_agents);
+            self.release_v1_slot();
+        }
     }
 
     fn reserve_agent_nickname(&self, names: &[&str], preferred: Option<&str>) -> Option<String> {
@@ -257,13 +287,13 @@ impl AgentRegistry {
         }
     }
 
-    fn try_increment_spawned(&self, max_threads: usize) -> bool {
-        let mut current = self.total_count.load(Ordering::Acquire);
+    fn try_increment_v1(&self, max_threads: usize) -> bool {
+        let mut current = self.v1_count.load(Ordering::Acquire);
         loop {
             if current >= max_threads {
                 return false;
             }
-            match self.total_count.compare_exchange_weak(
+            match self.v1_count.compare_exchange_weak(
                 current,
                 current + 1,
                 Ordering::AcqRel,
@@ -274,10 +304,28 @@ impl AgentRegistry {
             }
         }
     }
+
+    fn release_v1_slot(&self) {
+        assert!(
+            self.v1_count
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    count.checked_sub(1)
+                })
+                .is_ok(),
+            "V1 capacity reservation must be released exactly once"
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SpawnCapacity {
+    V1Limited { max_threads: usize },
+    CatalogOnly,
 }
 
 pub(crate) struct SpawnReservation {
     state: Arc<AgentRegistry>,
+    counts_toward_v1_limit: bool,
     active: bool,
     reserved_agent_nickname: Option<String>,
     reserved_agent_path: Option<AgentPath>,
@@ -308,7 +356,8 @@ impl SpawnReservation {
     pub(crate) fn commit(mut self, agent_metadata: AgentMetadata) {
         self.reserved_agent_nickname = None;
         self.reserved_agent_path = None;
-        self.state.register_spawned_thread(agent_metadata);
+        self.state
+            .register_spawned_thread(agent_metadata, self.counts_toward_v1_limit);
         self.active = false;
     }
 }
@@ -319,7 +368,9 @@ impl Drop for SpawnReservation {
             if let Some(agent_path) = self.reserved_agent_path.take() {
                 self.state.release_reserved_agent_path(&agent_path);
             }
-            self.state.total_count.fetch_sub(1, Ordering::AcqRel);
+            if self.counts_toward_v1_limit {
+                self.state.release_v1_slot();
+            }
         }
     }
 }

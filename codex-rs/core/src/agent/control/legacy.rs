@@ -1,11 +1,8 @@
+#[cfg(test)]
+use super::close::ClosedEdgeErrorPolicy;
 use super::*;
+#[cfg(test)]
 use std::collections::HashSet;
-
-#[derive(Clone, Copy)]
-enum ClosedEdgeErrorPolicy {
-    Warn,
-    Fail,
-}
 
 impl AgentControl {
     /// Submit a shutdown request for a live agent without marking it explicitly closed in
@@ -32,6 +29,7 @@ impl AgentControl {
     }
 
     /// Close a projected V1 target without crossing into non-V1 descendant branches.
+    #[cfg(test)]
     pub(crate) async fn close_projected_v1_agent(
         &self,
         target: ProjectedV1LifecycleTarget,
@@ -183,6 +181,7 @@ impl AgentControl {
         result
     }
 
+    #[cfg(test)]
     async fn live_projected_v1_descendants(
         &self,
         agent_id: ThreadId,
@@ -221,6 +220,7 @@ impl AgentControl {
         Ok(descendants)
     }
 
+    #[cfg(test)]
     async fn shutdown_validated_v1_agent(
         &self,
         target: &target_version::ValidatedV1Thread,
@@ -254,32 +254,5 @@ impl AgentControl {
             );
         }
         (result, removed)
-    }
-
-    async fn persist_closed_spawn_edge(
-        &self,
-        state: &Arc<ThreadManagerState>,
-        agent_id: ThreadId,
-        error_policy: ClosedEdgeErrorPolicy,
-    ) -> CodexResult<()> {
-        let Some(agent_graph_store) = state.agent_graph_store() else {
-            return Ok(());
-        };
-        match agent_graph_store
-            .set_thread_spawn_edge_status(
-                agent_id,
-                codex_agent_graph_store::ThreadSpawnEdgeStatus::Closed,
-            )
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(err) if matches!(error_policy, ClosedEdgeErrorPolicy::Warn) => {
-                warn!("failed to persist thread-spawn edge status for {agent_id}: {err}");
-                Ok(())
-            }
-            Err(err) => Err(CodexErr::Fatal(format!(
-                "failed to persist stale thread-spawn edge status for {agent_id}: {err}"
-            ))),
-        }
     }
 }

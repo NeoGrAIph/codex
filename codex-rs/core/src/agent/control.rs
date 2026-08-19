@@ -1,6 +1,7 @@
 use crate::agent::AgentStatus;
 use crate::agent::registry::AgentMetadata;
 use crate::agent::registry::AgentRegistry;
+use crate::agent::registry::SpawnCapacity;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
 use crate::agent::status::is_final;
@@ -51,8 +52,10 @@ pub(crate) use self::execution::AgentExecutionGuard;
 use self::execution::AgentExecutionLimiter;
 use self::residency::V2Residency;
 pub(crate) use self::target_version::ProjectedV1LifecycleTarget;
+pub(crate) use self::target_version::ResolvedCloseTarget;
 pub(crate) use self::target_version::ValidatedV1Thread;
 
+mod close;
 mod execution;
 mod fork_history;
 mod legacy;

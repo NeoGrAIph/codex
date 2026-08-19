@@ -1,5 +1,6 @@
 use super::*;
 use crate::tools::handlers::multi_agents_spec::create_close_agent_tool_v1;
+use crate::tools::handlers::multi_agents_spec::create_projected_close_agent_tool_v1;
 use codex_protocol::error::CodexErr;
 use codex_tools::ToolSpec;
 
@@ -37,7 +38,7 @@ impl ToolExecutor<ToolInvocation> for ProjectedHandler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_close_agent_tool_v1()
+        create_projected_close_agent_tool_v1()
     }
 
     fn search_info(&self) -> Option<ToolSearchInfo> {
@@ -56,6 +57,12 @@ impl ToolExecutor<ToolInvocation> for ProjectedHandler {
     }
 }
 
+pub(crate) async fn handle_cross_runtime_close_agent(
+    invocation: ToolInvocation,
+) -> Result<CloseAgentResult, FunctionCallError> {
+    handle_close_agent(invocation, V1ToolInvocationMode::ProjectedFromV2).await
+}
+
 async fn handle_close_agent(
     invocation: ToolInvocation,
     invocation_mode: V1ToolInvocationMode,
@@ -69,15 +76,47 @@ async fn handle_close_agent(
     } = invocation;
     let arguments = function_arguments(payload)?;
     let args: CloseAgentArgs = parse_arguments(&arguments)?;
-    let agent_id = parse_agent_id_target(&args.target)?;
-    let lifecycle_target = resolve_v1_lifecycle_target(&session, invocation_mode, agent_id).await?;
+    let (agent_id, lifecycle_target) = match invocation_mode {
+        V1ToolInvocationMode::Native => (parse_agent_id_target(&args.target)?, None),
+        V1ToolInvocationMode::ProjectedFromV2 => {
+            let agent_id = resolve_agent_target(&session, &turn, &args.target).await?;
+            let target = session
+                .services
+                .agent_control
+                .resolve_close_target(agent_id)
+                .await
+                .map_err(|err| collab_agent_error(agent_id, err))?;
+            if !target.is_spawned_agent() {
+                return Err(FunctionCallError::RespondToModel(
+                    "root is not a spawned agent".to_string(),
+                ));
+            }
+            (agent_id, Some(target))
+        }
+    };
     let receiver_agent = session.services.agent_control.get_agent_metadata(agent_id);
     let known_agent = receiver_agent.is_some();
     let known_close_target = known_agent
         || lifecycle_target
             .as_ref()
-            .is_some_and(|target| matches!(target, ProjectedV1LifecycleTarget::Persisted(_)));
+            .is_some_and(|target| matches!(target, ResolvedCloseTarget::Persisted { .. }));
     let receiver_agent = receiver_agent.unwrap_or_default();
+    if invocation_mode == V1ToolInvocationMode::ProjectedFromV2
+        && receiver_agent
+            .agent_path
+            .as_ref()
+            .is_some_and(AgentPath::is_root)
+    {
+        return Err(FunctionCallError::RespondToModel(
+            "root is not a spawned agent".to_string(),
+        ));
+    }
+    if invocation_mode == V1ToolInvocationMode::ProjectedFromV2 && agent_id == session.thread_id {
+        return Err(FunctionCallError::RespondToModel(
+            "an agent cannot close itself; return your result and let the parent close you if needed"
+                .to_string(),
+        ));
+    }
     session
         .emit_turn_item_started(
             &turn,
@@ -99,7 +138,7 @@ async fn handle_close_agent(
         Some(target) => session
             .services
             .agent_control
-            .subscribe_projected_v1_target(target),
+            .subscribe_resolved_close_target(target),
         None => {
             session
                 .services
@@ -115,7 +154,7 @@ async fn handle_close_agent(
                 session
                     .services
                     .agent_control
-                    .projected_v1_target_status(target)
+                    .resolved_close_target_status(target)
                     .await
             }
             None => session.services.agent_control.get_status(agent_id).await,
@@ -126,7 +165,7 @@ async fn handle_close_agent(
                     session
                         .services
                         .agent_control
-                        .projected_v1_target_status(target)
+                        .resolved_close_target_status(target)
                         .await
                 }
                 None => session.services.agent_control.get_status(agent_id).await,
@@ -156,15 +195,7 @@ async fn handle_close_agent(
         }
     };
     let close_result = match lifecycle_target {
-        Some(target) => {
-            Box::pin(
-                session
-                    .services
-                    .agent_control
-                    .close_projected_v1_agent(target),
-            )
-            .await
-        }
+        Some(target) => Box::pin(session.services.agent_control.close_resolved_agent(target)).await,
         None => Box::pin(session.services.agent_control.close_agent(agent_id)).await,
     };
     let result = close_result

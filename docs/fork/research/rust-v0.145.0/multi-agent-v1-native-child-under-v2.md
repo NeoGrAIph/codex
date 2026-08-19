@@ -58,17 +58,24 @@ Upstream по-прежнему не публикует V1 tools при effective
 - shared role reload сохраняет security-sensitive `ignore_user_and_project_exec_policy_rules` для projected и ordinary role consumers, не меняя остальные role/model semantics;
 - projected live close пытается записать root `Closed` до shutdown, сохраняя upstream warning-only policy для live graph-write failures;
 - tool projection строится current native-V1 factories и подчиняется namespace-level ownership policy;
+- общий registry разделяет logical V2 catalog и отдельный V1 `agents.max_threads` budget; V2 residency/execution limits остаются upstream owners и не расходуют V1 slots;
+- permanent close получает отдельный cross-runtime resolver поверх existing UUID/`AgentPath`, публикуется в V2 family и не ослабляет V1-only send/wait/resume contracts;
 - app-server protocol и TUI production contract не расширяются.
 
 ## Обязательные invariants
 
 - Exact V1 разрешён только для pathless subagent new/full-history-fork или проверенного resume.
 - Exact intent не является config, protocol, persisted field или новым `MultiAgentVersion`.
-- Native V2 family, path/mailbox/activity/residency и current model/role behavior не меняются.
-- Native V1 UUID остаётся bearer capability внутри доступного manager/store, а не security boundary.
-- Missing UUID сохраняет native per-tool not-found semantics; V2/Disabled/unresolved target отклоняется до side effects.
-- Live projected lifecycle не следует за повторно использованным UUID: send/wait/close действуют на bound V1 instance, а conditional cleanup не удаляет late V2 replacement.
+- Native V2 path/mailbox/activity/residency и current model/role behavior не меняются; единственная additive V2 tool delta — permanent `close_agent` рядом с non-terminal `interrupt_agent`.
+- Native V1 spawned-agent UUID остаётся bearer capability внутри доступного manager/store, а не security boundary; root sessions не являются closeable agents.
+- Missing target сохраняет controlled not-found semantics; Disabled/unresolved target отклоняется до side effects.
+- Live projected lifecycle не следует за повторно использованным UUID: V1-only send/wait/resume и cross-runtime close действуют на bound instance, а conditional cleanup не удаляет late replacement.
+- V2 catalog entry не занимает V1 `agents.max_threads`; освобождение capacity принадлежит только зарегистрированному V1 ThreadId и идемпотентно.
+- Смешанная session может одновременно использовать доступный V1 slot и доступную V2 residency; это явный fork contract, а не общий V1+V2 session cap.
+- UUID и canonical task name разрешаются existing resolver-ом; новый protocol identity или persistence migration не вводятся.
 - Same-UUID effects не переходят на replacement runtime; per-ID guards не являются atomic subtree transaction.
+- Persisted spawned provenance использует `SessionSource::ThreadSpawn` с fallback на `parent_thread_id`, поэтому legacy child без новой колонки не классифицируется как root.
+- Cross-runtime close выполняет read-only preflight persisted `Open` graph до первой записи `Closed`, чтобы повреждённый cycle не маскировался lifecycle mutation.
 - Cold resume следует доступным `Open` V1 edges best-effort: без graph store возобновляется только target, descendant failures пропускаются с warning, уже загруженные instances не откатываются.
 - Projected close последователен и non-transactional: первая распространяемая descendant error прекращает обход без rollback уже закрытых instances.
 - Legacy missing-version history сохраняет V1 compatibility fallback; нечитаемая history завершается controlled error.

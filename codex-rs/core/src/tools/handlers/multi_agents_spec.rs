@@ -316,9 +316,19 @@ pub fn create_list_agents_tool() -> ToolSpec {
 }
 
 pub fn create_close_agent_tool_v1() -> ToolSpec {
+    create_close_agent_tool_v1_with_target_description("Agent id to close (from spawn_agent).")
+}
+
+pub fn create_projected_close_agent_tool_v1() -> ToolSpec {
+    create_close_agent_tool_v1_with_target_description(
+        "Agent id or canonical task name to close (from either spawn_agent surface).",
+    )
+}
+
+fn create_close_agent_tool_v1_with_target_description(target_description: &str) -> ToolSpec {
     let properties = BTreeMap::from([(
         "target".to_string(),
-        JsonSchema::string(Some("Agent id to close (from spawn_agent).".to_string())),
+        JsonSchema::string(Some(target_description.to_string())),
     )]);
 
     ToolSpec::Namespace(ResponsesApiNamespace {
@@ -334,6 +344,27 @@ pub fn create_close_agent_tool_v1() -> ToolSpec {
                 "The agent status observed before shutdown was requested.",
             )),
         })],
+    })
+}
+
+pub fn create_close_agent_tool_v2() -> ToolSpec {
+    let properties = BTreeMap::from([(
+        "target".to_string(),
+        JsonSchema::string(Some(
+            "Agent id or canonical task name to close permanently (from either spawn_agent surface)."
+                .to_string(),
+        )),
+    )]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "close_agent".to_string(),
+        description: "Permanently close an agent and its open descendants when they are no longer needed, release its owned capacity, and return the target agent's previous status. Unlike interrupt_agent, a closed agent is no longer available for messages or follow-up tasks.".to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(properties, Some(vec!["target".to_string()]), Some(false.into())),
+        output_schema: Some(agent_previous_status_output_schema(
+            "The agent status observed before permanent shutdown was requested.",
+        )),
     })
 }
 

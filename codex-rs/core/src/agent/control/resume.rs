@@ -334,8 +334,15 @@ impl AgentControl {
                 multi_agent_runtime,
             )
             .await;
-        let agent_max_threads = config.effective_agent_max_threads(multi_agent_version);
-        let mut reservation = self.state.reserve_spawn_slot(agent_max_threads)?;
+        let spawn_capacity = match multi_agent_version {
+            MultiAgentVersion::V2 => SpawnCapacity::CatalogOnly,
+            MultiAgentVersion::V1 | MultiAgentVersion::Disabled => SpawnCapacity::V1Limited {
+                max_threads: config
+                    .effective_agent_max_threads(multi_agent_version)
+                    .unwrap_or(usize::MAX),
+            },
+        };
+        let mut reservation = self.state.reserve_spawn_slot(spawn_capacity)?;
         let (session_source, agent_metadata) = match session_source {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id,

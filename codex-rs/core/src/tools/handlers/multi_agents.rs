@@ -6,7 +6,9 @@
 //! then optionally layer role-specific config on top.
 
 use crate::agent::AgentStatus;
+use crate::agent::agent_resolver::resolve_agent_target;
 use crate::agent::control::ProjectedV1LifecycleTarget;
+use crate::agent::control::ResolvedCloseTarget;
 use crate::agent::control::ValidatedV1Thread;
 use crate::agent::exceeds_thread_spawn_depth_limit;
 use crate::function_tool::FunctionCallError;
@@ -20,6 +22,7 @@ use crate::tools::handlers::multi_agents_spec::MULTI_AGENT_V1_NAMESPACE;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
+use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::items::CollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallItem;

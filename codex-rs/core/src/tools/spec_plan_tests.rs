@@ -1315,6 +1315,7 @@ async fn multi_agent_feature_selects_compatible_agent_tool_families() {
         "close_agent",
     ]);
     for tool_name in [
+        "close_agent",
         "spawn_agent",
         "send_message",
         "followup_task",
@@ -1329,6 +1330,23 @@ async fn multi_agent_feature_selects_compatible_agent_tool_families() {
             "expected {tool_name} in {MULTI_AGENT_V2_NAMESPACE} namespace"
         );
     }
+    let close_agent = namespace_function(&v2, MULTI_AGENT_V2_NAMESPACE, "close_agent");
+    assert_eq!(
+        close_agent
+            .parameters
+            .properties
+            .as_ref()
+            .and_then(|properties| properties.get("target"))
+            .and_then(|target| target.description.as_deref()),
+        Some(
+            "Agent id or canonical task name to close permanently (from either spawn_agent surface)."
+        )
+    );
+    assert_eq!(
+        close_agent.parameters.required.as_deref(),
+        Some(["target".to_string()].as_slice())
+    );
+    assert!(close_agent.output_schema.is_some());
     assert_eq!(
         v2.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
         &[
@@ -1399,7 +1417,7 @@ async fn multi_agent_feature_selects_compatible_agent_tool_families() {
 }
 
 #[tokio::test]
-async fn projected_v1_namespace_matches_native_v1_schema() {
+async fn projected_v1_namespace_matches_native_v1_except_cross_runtime_close_target() {
     let native_v1 = probe(|turn| {
         set_feature(turn, Feature::Collab, /*enabled*/ true);
         set_feature(turn, Feature::MultiAgentV2, /*enabled*/ false);
@@ -1420,9 +1438,24 @@ async fn projected_v1_namespace_matches_native_v1_schema() {
     })
     .await;
 
+    for tool_name in ["resume_agent", "send_input", "spawn_agent", "wait_agent"] {
+        assert_eq!(
+            namespace_function(&projected_v1, MULTI_AGENT_V1_NAMESPACE, tool_name),
+            namespace_function(&native_v1, MULTI_AGENT_V1_NAMESPACE, tool_name)
+        );
+    }
+    let projected_close =
+        namespace_function(&projected_v1, MULTI_AGENT_V1_NAMESPACE, "close_agent");
+    let native_close = namespace_function(&native_v1, MULTI_AGENT_V1_NAMESPACE, "close_agent");
+    assert_eq!(projected_close.output_schema, native_close.output_schema);
     assert_eq!(
-        projected_v1.visible_spec(MULTI_AGENT_V1_NAMESPACE),
-        native_v1.visible_spec(MULTI_AGENT_V1_NAMESPACE)
+        projected_close
+            .parameters
+            .properties
+            .as_ref()
+            .and_then(|properties| properties.get("target"))
+            .and_then(|target| target.description.as_deref()),
+        Some("Agent id or canonical task name to close (from either spawn_agent surface).")
     );
     assert_eq!(
         projected_v1.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
@@ -1547,6 +1580,7 @@ async fn projected_v1_collision_preserves_existing_namespace_owner() {
     assert_eq!(
         configured_owner.namespace_function_names(MULTI_AGENT_V1_NAMESPACE),
         &[
+            "close_agent".to_string(),
             "followup_task".to_string(),
             "interrupt_agent".to_string(),
             "list_agents".to_string(),
@@ -1565,7 +1599,6 @@ async fn projected_v1_collision_preserves_existing_namespace_owner() {
     configured_owner.assert_registered_lacks(&[
         &ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "resume_agent").to_string(),
         &ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "send_input").to_string(),
-        &ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, "close_agent").to_string(),
     ]);
 
     let dynamic_owner = probe_with(
@@ -1707,11 +1740,11 @@ async fn projected_v1_remains_direct_when_tool_search_is_available() {
         "tool_search",
     ]);
     for tool_name in [
+        "close_agent",
         "spawn_agent",
         "send_input",
         "resume_agent",
         "wait_agent",
-        "close_agent",
     ] {
         assert_eq!(
             plan.exposure(&ToolName::namespaced(MULTI_AGENT_V1_NAMESPACE, tool_name).to_string()),

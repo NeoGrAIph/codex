@@ -2,11 +2,11 @@
 
 ## Статус
 
-Upstream-first порт `a5e21107643d` после явного workflow rollback `10713a4a4040` повторно применён к `fork/145` и адаптирован по повторным аудитам. Focused regressions, domain/integration audits и current release build завершены; delivery commit/push identity фиксируется в итоговом handoff. Cross-platform CI остаётся отдельным release gate. Исторический commit `2f2e7e2949` задаёт исходный feature contract, но не является implementation source of truth текущего релиза.
+Upstream-first порт `a5e21107643d` после явного workflow rollback `10713a4a4040` повторно применён к `fork/145` и адаптирован по повторным аудитам. Текущая реализация сохраняет отдельный V1 capacity budget и добавляет cross-runtime permanent close; фактические focused checks, audit verdicts и stripped release build зафиксированы в verification ledger. Cross-platform CI остаётся отдельным release gate. Исторический commit `2f2e7e2949` задаёт исходный feature contract, но не является implementation source of truth текущего релиза.
 
 ## Цель
 
-Сделать exact native `multi_agent_v1` доступным effective-V2 models, сохранив current upstream 0.145 runtime selection, roles/models, Legacy/Paginated persistence, permission/environment authority и V2 path/mailbox lifecycle.
+Сделать exact native `multi_agent_v1` доступным effective-V2 models и обеспечить общий permanent close между V1/V2 surfaces, сохранив current upstream 0.145 runtime selection, roles/models, Legacy/Paginated persistence, permission/environment authority и остальные V2 path/mailbox lifecycle semantics.
 
 ## Канонические документы
 
@@ -22,10 +22,10 @@ Upstream-first порт `a5e21107643d` после явного workflow rollback
 
 | Поверхность | Основные файлы | Роль |
 | --- | --- | --- |
-| Planner/registry | `codex-rs/core/src/tools/spec_plan.rs`, `tools/multi_agent_v1_projection.rs`, `tools/handlers/multi_agents.rs` | Eligibility, namespace ownership, native V1 factories и projected handler mode |
+| Planner/registry | `codex-rs/core/src/tools/spec_plan.rs`, `tools/multi_agent_v1_projection.rs`, `tools/handlers/multi_agents*.rs`, `agent/registry.rs` | Eligibility, namespace ownership, cross-surface close publication и раздельные V1 capacity/V2 catalog reservations |
 | Runtime admission | `codex-rs/core/src/agent/control.rs`, `agent/control/spawn.rs`, `thread_manager.rs`, `thread_manager/multi_agent_runtime.rs`, `session/*` | Private exact-V1 intent до accounting/Session и unchanged ordinary `Inherit` |
 | History/authority | `codex-rs/core/src/agent/control/fork_history.rs`, `tools/handlers/multi_agents/spawn.rs`, `resume_agent.rs`, `agent/role.rs`, `config/mod.rs` | Legacy/Paginated sanitation, fresh role overlay, shared role ignore-bit preservation, active-turn authority и persisted-role compatibility |
-| Lifecycle/persistence | `codex-rs/core/src/agent/control/{target_version,resume,legacy}.rs`, `thread_manager/lifecycle.rs` | Bound V1 capability, conditional cleanup, keyed resume/close и graph restart |
+| Lifecycle/persistence | `codex-rs/core/src/agent/control/{close,target_version,resume,legacy}.rs`, `thread_manager/lifecycle.rs` | Bound V1/V2 close capability, UUID/path resolution, conditional cleanup, keyed spawn/resume/close и graph restart |
 | App/TUI | `codex-rs/app-server/src/request_processors/thread_processor_tests.rs`, `app-server/tests/suite/v2/projected_v1.rs`, `codex-rs/tui/src/multi_agents.rs` | Existing thread projections, direct-input E2E и pathless UUID fallback |
 | Evidence | `codex-rs/core/src/**/*tests*.rs`, `codex-rs/core/tests/suite/*`, `verification.md` | Focused regressions, package/workspace classification, audits и build evidence |
 
@@ -35,4 +35,4 @@ Upstream-first порт `a5e21107643d` после явного workflow rollback
 - Один write-owner меняет cross-module runtime contract; parallel agents выполняют только read-only research/audit.
 - Public config/protocol/persistence и dependency surfaces не меняются.
 - Текущий patch повторно применяется прямо в основной `fork/145` по явной пользовательской команде; отдельный worker commit не является source of truth.
-- Commit, push и release build в этой задаче явно разрешены; install и runtime replacement остаются вне scope без отдельной команды.
+- Commit/push не выполняются без отдельной текущей команды; release build входит в implementation verification, install и runtime replacement остаются вне scope.

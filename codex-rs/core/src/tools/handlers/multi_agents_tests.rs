@@ -14,6 +14,7 @@ use crate::session::turn_context::TurnContext;
 use crate::session_prefix::format_inter_agent_completion_message;
 use crate::thread_manager::thread_store_from_config;
 use crate::tools::context::ToolOutput;
+use crate::tools::handlers::multi_agents_v2::CloseAgentHandler as CloseAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
 use crate::tools::handlers::multi_agents_v2::InterruptAgentHandler;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
@@ -474,7 +475,7 @@ async fn multi_agent_v2_spawn_rejects_child_model_from_different_backend() {
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
-    set_turn_config(&mut turn, config);
+    set_turn_config(&mut turn, config.clone());
 
     let err = SpawnAgentHandlerV2::default()
         .handle(invocation(
@@ -2013,7 +2014,7 @@ async fn multi_agent_v2_list_agents_filters_by_relative_path_prefix() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_list_agents_omits_closed_agents() {
+async fn v2_spawn_projected_v1_close_by_path_then_v1_spawn_succeeds() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
@@ -2024,6 +2025,7 @@ async fn multi_agent_v2_list_agents_omits_closed_agents() {
     session.thread_id = root.thread_id;
     let mut config = (*turn.config).clone();
     let _ = config.features.enable(Feature::MultiAgentV2);
+    config.agent_max_threads = Some(1);
     set_turn_config(&mut turn, config);
 
     let session = Arc::new(session);
@@ -2048,17 +2050,24 @@ async fn multi_agent_v2_list_agents_omits_closed_agents() {
         .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
         .await
         .expect("worker path should resolve");
-    session
-        .services
-        .agent_control
-        .close_agent(agent_id)
+    ProjectedCloseAgentHandler
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "close_agent",
+            function_payload(json!({"target": "/root/worker"})),
+        ))
         .await
-        .expect("close_agent should succeed");
+        .expect("projected V1 close_agent should resolve and close a V2 canonical path");
+    assert_eq!(
+        session.services.agent_control.get_status(agent_id).await,
+        AgentStatus::NotFound
+    );
 
     let output = ListAgentsHandlerV2
         .handle(invocation(
-            session,
-            turn,
+            session.clone(),
+            turn.clone(),
             "list_agents",
             function_payload(json!({})),
         ))
@@ -2070,6 +2079,106 @@ async fn multi_agent_v2_list_agents_omits_closed_agents() {
 
     assert_eq!(result.agents.len(), 1);
     assert_eq!(result.agents[0].agent_name, "/root");
+
+    let output = SpawnAgentHandler::default()
+        .handle(invocation(
+            session.clone(),
+            turn,
+            "spawn_agent",
+            function_payload(json!({"message": "verify V1 capacity"})),
+        ))
+        .await
+        .expect("V1 spawn should succeed after cross-runtime close");
+    let (content, _) = expect_text_output(output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let v1_agent_id = ThreadId::from_string(
+        result["agent_id"]
+            .as_str()
+            .expect("spawn_agent should return agent_id"),
+    )
+    .expect("spawn_agent should return a valid thread id");
+    session
+        .services
+        .agent_control
+        .close_agent(v1_agent_id)
+        .await
+        .expect("V1 cleanup should succeed");
+}
+
+#[tokio::test]
+async fn live_v2_agent_does_not_consume_dedicated_v1_capacity() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    let _ = config.features.enable(Feature::MultiAgentV2);
+    config.agent_max_threads = Some(1);
+    set_turn_config(&mut turn, config);
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "remain live while V1 uses its own slot",
+                "task_name": "v2_worker"
+            })),
+        ))
+        .await
+        .expect("V2 spawn should succeed");
+    let v2_agent_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "v2_worker")
+        .await
+        .expect("V2 path should resolve");
+
+    let first_v1_output = SpawnAgentHandler::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({"message": "use the dedicated V1 slot"})),
+        ))
+        .await
+        .expect("a live V2 agent must not consume dedicated V1 capacity");
+    let (content, _) = expect_text_output(first_v1_output);
+    let result: serde_json::Value =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let v1_agent_id = ThreadId::from_string(
+        result["agent_id"]
+            .as_str()
+            .expect("spawn_agent should return agent_id"),
+    )
+    .expect("spawn_agent should return a valid thread id");
+
+    session
+        .services
+        .agent_control
+        .close_agent(v1_agent_id)
+        .await
+        .expect("V1 cleanup should succeed");
+    let v2_target = session
+        .services
+        .agent_control
+        .resolve_close_target(v2_agent_id)
+        .await
+        .expect("V2 cleanup target should resolve");
+    session
+        .services
+        .agent_control
+        .close_resolved_agent(v2_target)
+        .await
+        .expect("V2 cleanup should succeed");
 }
 
 #[tokio::test]
@@ -2759,6 +2868,11 @@ async fn projected_v1_spawn_reapplies_runtime_authority_after_role_config() {
         "test requires a runtime profile override that differs from base config"
     );
     let expected_exec_policy_parent_config = (*turn.config).clone();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("V2 root thread should start");
+    session.thread_id = root.thread_id;
 
     let invocation = invocation(
         Arc::new(session),
@@ -3168,7 +3282,7 @@ async fn send_input_accepts_structured_items() {
 }
 
 #[tokio::test]
-async fn projected_v1_target_tools_reject_live_v2_before_effects() {
+async fn projected_v1_close_accepts_live_v2_while_other_lifecycle_tools_reject_it() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let mut config = (*turn.config).clone();
@@ -3176,21 +3290,54 @@ async fn projected_v1_target_tools_reject_live_v2_before_effects() {
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
-    let target = manager
+    let root = manager
         .start_thread(config.clone())
         .await
+        .expect("V2 root should start");
+    let target = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "live V2 close target".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(
+                    AgentPath::try_from("/root/target").expect("target path should be valid"),
+                ),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(root.thread_id),
+                environments: Some(
+                    manager.default_environment_selections(&config.cwd, &config.workspace_roots),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
         .expect("V2 target should start");
-    let _ = target.thread.session.new_default_turn().await;
+    let target_thread = manager
+        .get_thread(target.thread_id)
+        .await
+        .expect("V2 target should be live");
+    let _ = target_thread.session.new_default_turn().await;
     assert_eq!(
-        target.thread.multi_agent_version(),
+        target_thread.multi_agent_version(),
         Some(codex_protocol::protocol::MultiAgentVersion::V2)
     );
     session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
     set_turn_config(&mut turn, config);
     let session = Arc::new(session);
     let turn = Arc::new(turn);
     let target_id = target.thread_id;
     let expected_error_fragment = "does not use the V1 multi-agent runtime";
+    let ops_before = manager.captured_ops();
 
     let Err(send_error) = ProjectedSendInputHandler
         .handle(invocation(
@@ -3217,21 +3364,10 @@ async fn projected_v1_target_tools_reject_live_v2_before_effects() {
     else {
         panic!("projected wait_agent should reject a V2 target");
     };
-    let Err(close_error) = ProjectedCloseAgentHandler
+    let Err(resume_error) = ProjectedResumeAgentHandler
         .handle(invocation(
             session.clone(),
             turn.clone(),
-            "close_agent",
-            function_payload(json!({"target": target_id.to_string()})),
-        ))
-        .await
-    else {
-        panic!("projected close_agent should reject a V2 target");
-    };
-    let Err(resume_error) = ProjectedResumeAgentHandler
-        .handle(invocation(
-            session,
-            turn,
             "resume_agent",
             function_payload(json!({"id": target_id.to_string()})),
         ))
@@ -3240,27 +3376,27 @@ async fn projected_v1_target_tools_reject_live_v2_before_effects() {
         panic!("projected resume_agent should reject a V2 target");
     };
 
-    for error in [send_error, wait_error, close_error, resume_error] {
+    for error in [send_error, wait_error, resume_error] {
         let FunctionCallError::RespondToModel(message) = error else {
             panic!("expected a model-facing target-version error");
         };
         assert!(message.contains(expected_error_fragment), "{message}");
     }
-    assert_eq!(manager.captured_ops(), Vec::<(ThreadId, Op)>::new());
-    assert_ne!(
+    assert_eq!(manager.captured_ops(), ops_before);
+
+    ProjectedCloseAgentHandler
+        .handle(invocation(
+            session,
+            turn,
+            "close_agent",
+            function_payload(json!({"target": target_id.to_string()})),
+        ))
+        .await
+        .expect("projected close_agent should close a live V2 target");
+    assert_eq!(
         manager.agent_control().get_status(target_id).await,
         AgentStatus::NotFound
     );
-    assert_eq!(
-        target.thread.multi_agent_version(),
-        Some(codex_protocol::protocol::MultiAgentVersion::V2)
-    );
-
-    manager
-        .agent_control()
-        .shutdown_live_agent(target_id)
-        .await
-        .expect("V2 target shutdown should succeed");
 }
 
 #[tokio::test]
@@ -3409,7 +3545,87 @@ async fn projected_v1_bound_target_does_not_follow_reused_uuid_into_v2() {
 }
 
 #[tokio::test]
-async fn projected_v1_target_guard_rejects_persisted_v2_before_reload() {
+async fn cross_runtime_close_does_not_follow_reused_root_uuid() {
+    let (_session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let original = manager
+        .resume_thread_with_history(
+            (*turn.config).clone(),
+            InitialHistory::Forked(vec![RolloutItem::ResponseItem(ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "bind cross-runtime close target".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            })]),
+            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
+            /*parent_trace*/ None,
+            /*supports_openai_form_elicitation*/ false,
+        )
+        .await
+        .expect("original V1 target should start");
+    let target_id = original.thread_id;
+    let close_target = manager
+        .agent_control()
+        .resolve_close_target(target_id)
+        .await
+        .expect("original target should bind for cross-runtime close");
+
+    let mut v2_config = (*turn.config).clone();
+    v2_config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let replacement = manager
+        .start_thread(v2_config)
+        .await
+        .expect("replacement V2 should start");
+    let displaced = manager
+        .replace_thread_for_tests(target_id, replacement.thread.clone())
+        .await
+        .expect("original V1 target should be displaced");
+    assert!(Arc::ptr_eq(&displaced, &original.thread));
+
+    let close_error = manager
+        .agent_control()
+        .close_resolved_agent(close_target)
+        .await
+        .expect_err("cross-runtime close should reject a reused root UUID");
+    assert!(
+        close_error
+            .to_string()
+            .contains("changed runtime after close validation"),
+        "{close_error}"
+    );
+    let current = manager
+        .get_thread(target_id)
+        .await
+        .expect("replacement V2 must remain mapped");
+    assert!(Arc::ptr_eq(&current, &replacement.thread));
+    assert_ne!(current.agent_status().await, AgentStatus::Shutdown);
+
+    let removed_alias = manager
+        .remove_thread(&target_id)
+        .await
+        .expect("test replacement alias should be removable");
+    assert!(Arc::ptr_eq(&removed_alias, &replacement.thread));
+    original
+        .thread
+        .submit(Op::Shutdown {})
+        .await
+        .expect("displaced V1 target should accept shutdown");
+    original.thread.wait_until_terminated().await;
+    manager
+        .agent_control()
+        .shutdown_live_agent(replacement.thread_id)
+        .await
+        .expect("replacement V2 cleanup should succeed");
+}
+
+#[tokio::test]
+async fn projected_v1_close_accepts_persisted_v2_without_reload() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let mut config = (*turn.config).clone();
@@ -3417,19 +3633,47 @@ async fn projected_v1_target_guard_rejects_persisted_v2_before_reload() {
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
-    let target = manager
+    let root = manager
         .start_thread(config.clone())
         .await
-        .expect("V2 target should start");
-    let _ = target.thread.session.new_default_turn().await;
+        .expect("V2 root should start");
+    let target = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "persist target".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(
+                    AgentPath::try_from("/root/target").expect("target path should be valid"),
+                ),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(root.thread_id),
+                environments: Some(
+                    manager.default_environment_selections(&config.cwd, &config.workspace_roots),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("V2 target should spawn");
     let target_id = target.thread_id;
-    target
-        .thread
+    let target_thread = manager
+        .get_thread(target_id)
+        .await
+        .expect("V2 target should be live");
+    target_thread
         .inject_user_message_without_turn("persist target".to_string())
         .await;
-    target.thread.ensure_rollout_materialized().await;
-    target
-        .thread
+    target_thread.ensure_rollout_materialized().await;
+    target_thread
         .flush_rollout()
         .await
         .expect("V2 target rollout should flush");
@@ -3441,9 +3685,10 @@ async fn projected_v1_target_guard_rejects_persisted_v2_before_reload() {
     assert!(manager.get_thread(target_id).await.is_err());
 
     session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
     set_turn_config(&mut turn, config);
     let ops_before = manager.captured_ops();
-    let Err(error) = ProjectedCloseAgentHandler
+    ProjectedCloseAgentHandler
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -3451,15 +3696,164 @@ async fn projected_v1_target_guard_rejects_persisted_v2_before_reload() {
             function_payload(json!({"target": target_id.to_string()})),
         ))
         .await
-    else {
-        panic!("projected close_agent should reject a persisted V2 target");
-    };
-    let FunctionCallError::RespondToModel(message) = error else {
-        panic!("expected a model-facing target-version error");
-    };
-    assert!(message.contains("does not use the V1 multi-agent runtime"));
+        .expect("projected close_agent should close a persisted V2 target");
     assert_eq!(manager.captured_ops(), ops_before);
     assert!(manager.get_thread(target_id).await.is_err());
+    assert_eq!(
+        manager.agent_control().get_status(target_id).await,
+        AgentStatus::NotFound
+    );
+}
+
+#[tokio::test]
+async fn projected_v1_close_accepts_legacy_spawn_source_without_parent_column() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("V2 root should start");
+    let target = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "legacy persisted V1 target".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(root.thread_id),
+                environments: Some(
+                    manager.default_environment_selections(&config.cwd, &config.workspace_roots),
+                ),
+                multi_agent_runtime: MultiAgentRuntimeIntent::ExactV1Spawn,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("V1 target should spawn");
+    let target_id = target.thread_id;
+    let target_thread = manager
+        .get_thread(target_id)
+        .await
+        .expect("V1 target should be live");
+    target_thread.ensure_rollout_materialized().await;
+    target_thread
+        .flush_rollout()
+        .await
+        .expect("V1 target rollout should flush");
+    let rollout_path = target_thread
+        .rollout_path()
+        .expect("V1 target should have a rollout");
+    manager
+        .agent_control()
+        .shutdown_live_agent(target_id)
+        .await
+        .expect("V1 target should unload");
+
+    let mut rollout_lines = std::fs::read_to_string(&rollout_path)
+        .expect("legacy target rollout should be readable")
+        .lines()
+        .map(|line| serde_json::from_str::<RolloutLine>(line).expect("parse rollout line"))
+        .collect::<Vec<_>>();
+    let RolloutItem::SessionMeta(meta_line) = &mut rollout_lines[0].item else {
+        panic!("legacy target rollout should start with session metadata");
+    };
+    meta_line.meta.parent_thread_id = None;
+    meta_line.meta.multi_agent_version = None;
+    let legacy_rollout = rollout_lines
+        .iter()
+        .map(|line| serde_json::to_string(line).expect("serialize rollout line"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&rollout_path, format!("{legacy_rollout}\n"))
+        .expect("legacy rollout should persist");
+
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    set_turn_config(&mut turn, config);
+    ProjectedCloseAgentHandler
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "close_agent",
+            function_payload(json!({"target": target_id.to_string()})),
+        ))
+        .await
+        .expect("legacy ThreadSpawn source should remain a closeable spawned agent");
+    assert!(manager.get_thread(target_id).await.is_err());
+}
+
+#[tokio::test]
+async fn cross_runtime_close_rejects_live_and_persisted_foreign_roots() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let caller = manager
+        .start_thread(config.clone())
+        .await
+        .expect("caller root should start");
+    let foreign_root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("foreign root should start");
+    let foreign_root_id = foreign_root.thread_id;
+    foreign_root
+        .thread
+        .inject_user_message_without_turn("persist foreign root".to_string())
+        .await;
+    foreign_root.thread.ensure_rollout_materialized().await;
+    foreign_root
+        .thread
+        .flush_rollout()
+        .await
+        .expect("foreign root rollout should flush");
+
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = caller.thread_id;
+    set_turn_config(&mut turn, config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    for expected_state in ["live", "persisted"] {
+        let Err(error) = ProjectedCloseAgentHandler
+            .handle(invocation(
+                session.clone(),
+                turn.clone(),
+                "close_agent",
+                function_payload(json!({"target": foreign_root_id.to_string()})),
+            ))
+            .await
+        else {
+            panic!("foreign root must not be closeable as an agent");
+        };
+        let FunctionCallError::RespondToModel(message) = error else {
+            panic!("expected a model-facing root rejection");
+        };
+        assert_eq!(message, "root is not a spawned agent", "{expected_state}");
+        if expected_state == "live" {
+            manager
+                .agent_control()
+                .shutdown_live_agent(foreign_root_id)
+                .await
+                .expect("foreign root should unload");
+        }
+    }
 }
 
 #[tokio::test]
@@ -3578,7 +3972,7 @@ async fn projected_v1_persisted_disabled_and_unresolved_targets_fail_before_effe
     let session = Arc::new(session);
     let turn = Arc::new(turn);
     for (target_id, expected_error_fragment) in [
-        (disabled_id, "does not use the V1 multi-agent runtime"),
+        (disabled_id, "has multi-agent support disabled"),
         (unresolved_id, "has no resolved multi-agent runtime"),
     ] {
         let ops_before = manager.captured_ops();
@@ -3603,7 +3997,94 @@ async fn projected_v1_persisted_disabled_and_unresolved_targets_fail_before_effe
 }
 
 #[tokio::test]
-async fn projected_v1_close_accepts_persisted_target_without_registry_metadata() {
+async fn multi_agent_v2_close_live_v1_releases_capacity_for_next_v1_spawn() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow V2");
+    config.agent_max_threads = Some(1);
+    let root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("V2 root should start");
+    let first = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "first V1 target".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(root.thread_id),
+                environments: Some(
+                    manager.default_environment_selections(&config.cwd, &config.workspace_roots),
+                ),
+                multi_agent_runtime: MultiAgentRuntimeIntent::ExactV1Spawn,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("first V1 target should spawn");
+
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    set_turn_config(&mut turn, config.clone());
+    CloseAgentHandlerV2
+        .handle(invocation(
+            Arc::new(session),
+            Arc::new(turn),
+            "close_agent",
+            function_payload(json!({"target": first.thread_id.to_string()})),
+        ))
+        .await
+        .expect("V2 close should close a live V1 target");
+
+    let second = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "second V1 target".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(root.thread_id),
+                environments: Some(
+                    manager.default_environment_selections(&config.cwd, &config.workspace_roots),
+                ),
+                multi_agent_runtime: MultiAgentRuntimeIntent::ExactV1Spawn,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("V2 close should release the first V1 capacity slot");
+    manager
+        .agent_control()
+        .close_agent(second.thread_id)
+        .await
+        .expect("second V1 cleanup should succeed");
+}
+
+#[tokio::test]
+async fn multi_agent_v2_close_accepts_persisted_v1_uuid_without_registry_metadata() {
     let (mut session, mut turn) = make_session_and_context().await;
     let mut v2_config = (*turn.config).clone();
     v2_config
@@ -3695,7 +4176,7 @@ async fn projected_v1_close_accepts_persisted_target_without_registry_metadata()
     let turn = Arc::new(turn);
     let ops_before = manager.captured_ops();
     for _ in 0..2 {
-        let output = ProjectedCloseAgentHandler
+        let output = CloseAgentHandlerV2
             .handle(invocation(
                 Arc::clone(&session),
                 Arc::clone(&turn),
@@ -3703,7 +4184,7 @@ async fn projected_v1_close_accepts_persisted_target_without_registry_metadata()
                 function_payload(json!({"target": target_id.to_string()})),
             ))
             .await
-            .expect("persisted V1 close should be idempotent without registry metadata");
+            .expect("V2 close should be idempotent for a persisted V1 target");
         let (content, success) = expect_text_output(output);
         let result: close_agent::CloseAgentResult =
             serde_json::from_str(&content).expect("close result should be json");
@@ -3801,10 +4282,10 @@ async fn projected_v1_live_close_persists_closed_before_shutdown() {
     let target_id = target.thread_id;
     let control = manager.agent_control();
     let target = control
-        .resolve_v1_lifecycle_target(target_id)
+        .resolve_close_target(target_id)
         .await
         .expect("exact V1 target should validate");
-    let close_task = tokio::spawn(async move { control.close_projected_v1_agent(target).await });
+    let close_task = tokio::spawn(async move { control.close_resolved_agent(target).await });
 
     timeout(
         Duration::from_secs(5),
@@ -3856,15 +4337,334 @@ async fn projected_v1_live_close_persists_closed_before_shutdown() {
     let failing_target_id = target_with_failing_store.thread_id;
     let control = manager.agent_control();
     let target_with_failing_store = control
-        .resolve_v1_lifecycle_target(failing_target_id)
+        .resolve_close_target(failing_target_id)
         .await
         .expect("second exact V1 target should validate");
     control
-        .close_projected_v1_agent(target_with_failing_store)
+        .close_resolved_agent(target_with_failing_store)
         .await
         .expect("live close should preserve native warning-only graph failure policy");
     assert!(manager.get_thread(failing_target_id).await.is_err());
 
+    manager
+        .agent_control()
+        .shutdown_live_agent(root.thread_id)
+        .await
+        .expect("V2 root cleanup should succeed");
+}
+
+#[tokio::test]
+async fn cross_runtime_close_does_not_follow_reused_descendant_uuid_after_snapshot() {
+    let (_session, turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
+    let graph_store = Arc::new(BlockingCloseAgentGraphStore::default());
+    let manager_graph_store: Arc<dyn codex_agent_graph_store::AgentGraphStore> =
+        graph_store.clone();
+    let manager = ThreadManager::new(
+        &config,
+        Arc::clone(&auth_manager),
+        crate::thread_manager::build_models_manager(&config, auth_manager),
+        crate::CodexAppsToolsCache::default(),
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        /*analytics_events_client*/ None,
+        thread_store_from_config(&config, /*state_db*/ None),
+        Some(manager_graph_store),
+        "11111111-1111-4111-8111-111111111111".to_string(),
+        /*attestation_provider*/ None,
+        /*external_time_provider*/ None,
+    );
+    let root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("V2 root should start");
+    let worker = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "worker close target".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(
+                    AgentPath::try_from("/root/worker").expect("worker path should be valid"),
+                ),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(root.thread_id),
+                environments: Some(
+                    manager.default_environment_selections(&config.cwd, &config.workspace_roots),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("V2 worker should start");
+    let child = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "descendant close target".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: worker.thread_id,
+                depth: 2,
+                agent_path: Some(
+                    AgentPath::try_from("/root/worker/child").expect("child path should be valid"),
+                ),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(worker.thread_id),
+                environments: Some(
+                    manager.default_environment_selections(&config.cwd, &config.workspace_roots),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("V2 child should start");
+    let original_child = manager
+        .get_thread(child.thread_id)
+        .await
+        .expect("original child should be live");
+    let replacement = manager
+        .start_thread(config.clone())
+        .await
+        .expect("replacement V2 should start");
+    let control = manager.agent_control();
+    let close_target = control
+        .resolve_close_target(worker.thread_id)
+        .await
+        .expect("worker should resolve for cross-runtime close");
+    let close_task = tokio::spawn(async move { control.close_resolved_agent(close_target).await });
+
+    timeout(
+        Duration::from_secs(5),
+        graph_store.closed_write_started.acquire(),
+    )
+    .await
+    .expect("close should reach the root Closed write after binding descendants")
+    .expect("close write semaphore should remain open")
+    .forget();
+    let displaced = manager
+        .replace_thread_for_tests(child.thread_id, replacement.thread.clone())
+        .await
+        .expect("bound descendant should be displaced");
+    assert!(Arc::ptr_eq(&displaced, &original_child));
+    graph_store.release_closed_write.add_permits(1);
+
+    let close_error = close_task
+        .await
+        .expect("close task should not panic")
+        .expect_err("close should reject the descendant replacement");
+    assert!(
+        close_error
+            .to_string()
+            .contains("changed runtime after close validation"),
+        "{close_error}"
+    );
+    let current = manager
+        .get_thread(child.thread_id)
+        .await
+        .expect("replacement descendant must remain mapped");
+    assert!(Arc::ptr_eq(&current, &replacement.thread));
+    assert_ne!(current.agent_status().await, AgentStatus::Shutdown);
+
+    let removed_alias = manager
+        .remove_thread(&child.thread_id)
+        .await
+        .expect("replacement descendant alias should be removable");
+    assert!(Arc::ptr_eq(&removed_alias, &replacement.thread));
+    original_child
+        .submit(Op::Shutdown {})
+        .await
+        .expect("displaced child should accept shutdown");
+    original_child.wait_until_terminated().await;
+    manager
+        .agent_control()
+        .shutdown_live_agent(replacement.thread_id)
+        .await
+        .expect("replacement cleanup should succeed");
+    manager
+        .agent_control()
+        .shutdown_live_agent(root.thread_id)
+        .await
+        .expect("V2 root cleanup should succeed");
+}
+
+#[tokio::test]
+async fn concurrent_close_prevents_late_v1_spawn_and_preserves_capacity() {
+    let (_session, turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.agent_max_threads = Some(1);
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
+    let graph_store = Arc::new(BlockingCloseAgentGraphStore::default());
+    let manager_graph_store: Arc<dyn codex_agent_graph_store::AgentGraphStore> =
+        graph_store.clone();
+    let manager = ThreadManager::new(
+        &config,
+        Arc::clone(&auth_manager),
+        crate::thread_manager::build_models_manager(&config, auth_manager),
+        crate::CodexAppsToolsCache::default(),
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        /*analytics_events_client*/ None,
+        thread_store_from_config(&config, /*state_db*/ None),
+        Some(manager_graph_store),
+        "11111111-1111-4111-8111-111111111111".to_string(),
+        /*attestation_provider*/ None,
+        /*external_time_provider*/ None,
+    );
+    let root = manager
+        .start_thread(config.clone())
+        .await
+        .expect("V2 root should start");
+    let worker = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "worker close target".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: Some(
+                    AgentPath::try_from("/root/worker").expect("worker path should be valid"),
+                ),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(root.thread_id),
+                environments: Some(
+                    manager.default_environment_selections(&config.cwd, &config.workspace_roots),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("V2 worker should start");
+    let close_control = manager.agent_control();
+    let close_target = close_control
+        .resolve_close_target(worker.thread_id)
+        .await
+        .expect("worker should resolve for close");
+    let close_task =
+        tokio::spawn(async move { close_control.close_resolved_agent(close_target).await });
+    timeout(
+        Duration::from_secs(5),
+        graph_store.closed_write_started.acquire(),
+    )
+    .await
+    .expect("close should block on the durable status update")
+    .expect("close write semaphore should remain open")
+    .forget();
+
+    let spawn_control = manager.agent_control();
+    let spawn_config = config.clone();
+    let environments = manager.default_environment_selections(&config.cwd, &config.workspace_roots);
+    let worker_id = worker.thread_id;
+    let mut spawn_task = tokio::spawn(async move {
+        spawn_control
+            .spawn_agent_with_metadata(
+                spawn_config,
+                vec![UserInput::Text {
+                    text: "must not become an orphan".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: worker_id,
+                    depth: 2,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: None,
+                })),
+                SpawnAgentOptions {
+                    parent_thread_id: Some(worker_id),
+                    environments: Some(environments),
+                    multi_agent_runtime: MultiAgentRuntimeIntent::ExactV1Spawn,
+                    ..Default::default()
+                },
+            )
+            .await
+    });
+    assert!(
+        timeout(Duration::from_millis(100), &mut spawn_task)
+            .await
+            .is_err(),
+        "spawn should wait for the close-held parent lifecycle guard"
+    );
+
+    graph_store.release_closed_write.add_permits(1);
+    close_task
+        .await
+        .expect("close task should not panic")
+        .expect("worker close should succeed");
+    let spawn_error = spawn_task
+        .await
+        .expect("spawn task should not panic")
+        .expect_err("spawn should fail after its parent closes");
+    assert!(matches!(spawn_error, CodexErr::ThreadNotFound(id) if id == worker.thread_id));
+    assert_eq!(
+        manager.agent_control().get_status(worker.thread_id).await,
+        AgentStatus::NotFound
+    );
+
+    let next_v1 = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "prove the failed spawn did not leak V1 capacity".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(root.thread_id),
+                environments: Some(
+                    manager.default_environment_selections(&config.cwd, &config.workspace_roots),
+                ),
+                multi_agent_runtime: MultiAgentRuntimeIntent::ExactV1Spawn,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("dedicated V1 capacity should remain available");
+    manager
+        .agent_control()
+        .shutdown_live_agent(next_v1.thread_id)
+        .await
+        .expect("V1 cleanup should succeed");
     manager
         .agent_control()
         .shutdown_live_agent(root.thread_id)
@@ -4001,37 +4801,45 @@ async fn projected_v1_cross_root_uuid_addressing_remains_allowed() {
 }
 
 #[tokio::test]
-async fn projected_v1_close_stops_before_live_v2_descendant_branch() {
+async fn projected_v1_close_removes_live_v2_descendant_branch() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
-    let v1_root = manager
-        .resume_thread_with_history(
-            (*turn.config).clone(),
-            InitialHistory::Forked(vec![RolloutItem::ResponseItem(ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![ContentItem::InputText {
-                    text: "foreign V1 target".to_string(),
-                }],
-                phase: None,
-                internal_chat_message_metadata_passthrough: None,
-            })]),
-            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
-            /*parent_trace*/ None,
-            /*supports_openai_form_elicitation*/ false,
-        )
-        .await
-        .expect("V1 target should start");
-    assert_eq!(
-        v1_root.thread.multi_agent_version(),
-        Some(codex_protocol::protocol::MultiAgentVersion::V1)
-    );
-
     let mut v2_config = (*turn.config).clone();
     v2_config
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
+    let owner_root = manager
+        .start_thread(v2_config.clone())
+        .await
+        .expect("owner root should start");
+    let v1_root = manager
+        .agent_control()
+        .spawn_agent_with_metadata(
+            v2_config.clone(),
+            vec![UserInput::Text {
+                text: "mixed-runtime subtree root".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: owner_root.thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(owner_root.thread_id),
+                environments: Some(
+                    manager
+                        .default_environment_selections(&v2_config.cwd, &v2_config.workspace_roots),
+                ),
+                multi_agent_runtime: MultiAgentRuntimeIntent::ExactV1Spawn,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("V1 subtree root should spawn");
     let v2_child_id = manager
         .agent_control()
         .spawn_agent_with_metadata(
@@ -4042,7 +4850,7 @@ async fn projected_v1_close_stops_before_live_v2_descendant_branch() {
             }],
             Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                 parent_thread_id: v1_root.thread_id,
-                depth: 1,
+                depth: 2,
                 agent_path: Some(AgentPath::root().join("mixed_v2").expect("mixed V2 path")),
                 agent_nickname: None,
                 agent_role: None,
@@ -4065,6 +4873,7 @@ async fn projected_v1_close_stops_before_live_v2_descendant_branch() {
     );
 
     session.services.agent_control = manager.agent_control();
+    session.thread_id = owner_root.thread_id;
     set_turn_config(&mut turn, v2_config);
     let output = ProjectedCloseAgentHandler
         .handle(invocation(
@@ -4078,20 +4887,12 @@ async fn projected_v1_close_stops_before_live_v2_descendant_branch() {
     let (_, success) = expect_text_output(output);
     assert_eq!(success, Some(true));
     assert!(manager.get_thread(v1_root.thread_id).await.is_err());
-    assert_eq!(
-        manager
-            .get_thread(v2_child_id)
-            .await
-            .expect("V2 descendant branch must remain live")
-            .multi_agent_version(),
-        Some(codex_protocol::protocol::MultiAgentVersion::V2)
-    );
-
+    assert!(manager.get_thread(v2_child_id).await.is_err());
     manager
         .agent_control()
-        .shutdown_live_agent(v2_child_id)
+        .shutdown_live_agent(owner_root.thread_id)
         .await
-        .expect("V2 descendant cleanup should succeed");
+        .expect("owner root cleanup should succeed");
 }
 
 #[tokio::test]
@@ -5173,6 +5974,128 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
     );
     assert!(!content.contains("sensitive child output"));
     assert_eq!(success, None);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_close_removes_live_task_name_subtree() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread((*turn.config).clone())
+        .await
+        .expect("root thread should start");
+    session.services.agent_control = manager.agent_control();
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config.clone());
+
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "worker"
+            })),
+        ))
+        .await
+        .expect("worker spawn should succeed");
+    let worker_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker path should resolve");
+    let worker_thread = manager
+        .get_thread(worker_id)
+        .await
+        .expect("worker should be live");
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            worker_thread.session.clone(),
+            worker_thread.session.new_default_turn().await,
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect a child task",
+                "task_name": "child"
+            })),
+        ))
+        .await
+        .expect("child spawn should succeed");
+    let child_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker/child")
+        .await
+        .expect("child path should resolve");
+
+    CloseAgentHandlerV2
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "close_agent",
+            function_payload(json!({"target": "/root/worker"})),
+        ))
+        .await
+        .expect("V2 close should remove the target subtree");
+
+    assert_eq!(
+        session.services.agent_control.get_status(worker_id).await,
+        AgentStatus::NotFound
+    );
+    assert_eq!(
+        session.services.agent_control.get_status(child_id).await,
+        AgentStatus::NotFound
+    );
+    session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect_err("closed worker path should leave the catalog");
+    session
+        .services
+        .agent_control
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker/child")
+        .await
+        .expect_err("closed child path should leave the catalog");
+
+    let spawn_error = session
+        .services
+        .agent_control
+        .spawn_agent_with_metadata(
+            config.clone(),
+            vec![UserInput::Text {
+                text: "must not become an orphan".to_string(),
+                text_elements: Vec::new(),
+            }],
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: worker_id,
+                depth: 2,
+                agent_path: Some(
+                    AgentPath::try_from("/root/worker").expect("worker path should be valid"),
+                ),
+                agent_nickname: None,
+                agent_role: None,
+            })),
+            SpawnAgentOptions {
+                parent_thread_id: Some(worker_id),
+                environments: Some(
+                    manager.default_environment_selections(&config.cwd, &config.workspace_roots),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("a closed parent must not publish a late child");
+    assert!(matches!(spawn_error, CodexErr::ThreadNotFound(id) if id == worker_id));
 }
 
 #[tokio::test]

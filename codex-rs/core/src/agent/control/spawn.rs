@@ -121,7 +121,7 @@ impl AgentControl {
                     .map_err(|err| {
                         CodexErr::InvalidRequest(format!("invalid stored agent path: {err}"))
                     })?;
-                let mut reservation = self.state.reserve_spawn_slot(/*max_threads*/ None)?;
+                let mut reservation = self.state.reserve_spawn_slot(SpawnCapacity::CatalogOnly)?;
                 let mut metadata = self.prepare_agent_metadata(
                     &mut reservation,
                     config,
@@ -354,6 +354,22 @@ impl AgentControl {
         }
 
         let state = self.upgrade()?;
+        let parent_thread_id = options.parent_thread_id.or_else(|| {
+            session_source.as_ref().and_then(|source| match source {
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id, ..
+                }) => Some(*parent_thread_id),
+                _ => None,
+            })
+        });
+        let _parent_lifecycle_guard = if let Some(parent_thread_id) = parent_thread_id {
+            let lifecycle_guard = state.lock_thread_lifecycle(parent_thread_id).await;
+            debug_assert_eq!(lifecycle_guard.thread_id(), parent_thread_id);
+            state.get_thread(parent_thread_id).await?;
+            Some(lifecycle_guard)
+        } else {
+            None
+        };
         let multi_agent_version = state
             .effective_multi_agent_version_for_spawn(
                 &InitialHistory::New,
@@ -380,12 +396,14 @@ impl AgentControl {
         } else {
             None
         };
-        let reservation_max_threads = if spawn_uses_v2_residency {
-            None
+        let spawn_capacity = if spawn_uses_v2_residency {
+            SpawnCapacity::CatalogOnly
         } else {
-            agent_max_threads
+            SpawnCapacity::V1Limited {
+                max_threads: agent_max_threads.unwrap_or(usize::MAX),
+            }
         };
-        let mut reservation = self.state.reserve_spawn_slot(reservation_max_threads)?;
+        let mut reservation = self.state.reserve_spawn_slot(spawn_capacity)?;
         let inheritance = SpawnAgentThreadInheritance {
             environments: self
                 .inherited_environments_for_source(&state, session_source.as_ref())

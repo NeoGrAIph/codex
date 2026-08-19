@@ -3998,7 +3998,7 @@ async fn resume_agent_from_rollout_holds_root_lifecycle_guard_through_descendant
 }
 
 #[tokio::test]
-async fn projected_v1_resume_and_close_reject_cyclic_thread_spawn_graphs() {
+async fn projected_v1_resume_and_cross_runtime_close_reject_cyclic_thread_spawn_graphs() {
     let (home, mut config) = test_config().await;
     config
         .features
@@ -4087,14 +4087,14 @@ async fn projected_v1_resume_and_close_reject_cyclic_thread_spawn_graphs() {
     .expect("failed resume should release the root lifecycle guard");
     drop(root_guard);
 
-    let bound_root = harness
+    let close_target = harness
         .control
-        .resolve_v1_lifecycle_target(root_thread_id)
+        .resolve_close_target(root_thread_id)
         .await
-        .expect("resumed V1 root should bind");
+        .expect("resumed V1 root should resolve for cross-runtime close");
     let close_error = timeout(
         Duration::from_secs(2),
-        harness.control.close_projected_v1_agent(bound_root),
+        harness.control.close_resolved_agent(close_target),
     )
     .await
     .expect("cyclic close should not hang")
@@ -4102,7 +4102,7 @@ async fn projected_v1_resume_and_close_reject_cyclic_thread_spawn_graphs() {
     assert!(
         close_error
             .to_string()
-            .contains("cyclic live thread-spawn graph"),
+            .contains("cyclic or multiply-owned thread-spawn graph"),
         "{close_error}"
     );
     let root_guard = timeout(
